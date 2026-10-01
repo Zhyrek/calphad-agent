@@ -1,0 +1,94 @@
+$CRFE
+$ -----------------------------------------------------------------------------
+$ 2012.5.10
+$ 
+$ TDB file created by T.Abe, K.Hashimoto and Y.Sawada,
+$
+$ Thermodynamics Modeling Group, National Institute for 
+$ Materials Science. 1-2-1 Sengen, Tsukuba, Ibaraki 305-0047, Japan
+$ 
+$ e-mail: abe.taichi @ nims.go.jp
+$
+$ Copyright (C) NIMS 2012
+$ -----------------------------------------------------------------------------
+$
+$ The parameter set is taken from
+$ A thermodynamic analysis of the Fe-Cr system, S.Hertzman, B.Sundman,
+$ CALPHAD, 6 (1982) 67-80.
+$
+$ The lattice stability is taken from 
+$ [1967Kau] Phase stability in metals and alloys, L.Kaufman, eds.P.S.Rudman,
+$ J.Stringer, R.I.Jaffe, McGraw-Hill, New York, 1967. 
+$ [1978Agr] J.Agren, Met. Trans., 10A (1979) 1847-1852.
+$ [Chin] C.P.Chin. S.Hertzman, B.Sundman, Internal Report KTH, Sweden.
+$
+$ -----------------------------------------------------------------------------
+$ Comments
+$ The sublattce setting for the sigma phase is 10-4-16, which is widely 
+$ accepted at present instead of 8-4-18. Both fcc and bcc are 
+$ treated as magnetic phases.
+$                                                                    T.A.
+$ -----------------------------------------------------------------------------
+$
+ ELEMENT CR  BCC_A2          5.1996E+01 4.0500E+03 2.3560E+01!
+ ELEMENT FE  BCC_A2          5.5847E+01 4.4890E+03 2.7280E+01!
+$
+$--------1---------2---------3---------4---------5---------6---------7---------8
+$
+ TYPE_DEFINITION % SEQ *!
+ DEFINE_SYSTEM_DEFAULT ELEMENT 2 !
+$
+$ -----------------------------------------------------------------------------
+ FUNCTION GBCCCR 300 +0;                                            6000 N !
+ FUNCTION GBCCFE 300 +1462.4-8.282*T+1.15*T*LN(T)-6.4E-4*T**2;      6000 N !
+ FUNCTION GFCCCR 300 +10460+0.628*T;                                6000 N !
+ FUNCTION GFCCFE 300 +0;                                            6000 N !
+ FUNCTION GLIQCR 300 +16933-7.95*T;                                 6000 N !
+ FUNCTION GLIQFE 300 -11274+163.878*T-22.03*T*LN(T)+4.1755E-3*T**2; 6000 N !
+$
+$ -----------------------------------------------------------------------------
+ PHASE LIQUID:L % 1 1.0 !
+  CONSTITUENT LIQUID:L :CR,FE : !
+ PARAMETER G(LIQUID,CR;0)    300 +GLIQCR;                       6000 N ! $1967Kau
+ PARAMETER G(LIQUID,FE;0)    300 +GLIQFE;                       6000 N ! $1979Agr
+ PARAMETER G(LIQUID,CR,FE;0) 300 +17638-11.375*T;               6000 N ! $Present work
+$
+$ -----------------------------------------------------------------------------
+ TYPE_DEFINITION & GES A_P_D BCC_A2 MAGNETIC -1.0  4.00000E-01 !
+ PHASE BCC_A2 %& 1 1 !
+  CONSTITUENT BCC_A2 :CR%,FE% : !
+  PARAMETER G(BCC_A2,CR;0)        300 +GBCCCR;                  6000 N ! $1967Kau
+  PARAMETER TC(BCC_A2,CR;0)       300 -310;                     6000 N ! $Present work
+  PARAMETER BMAGN(BCC_A2,CR;0)    300 -0.40;                    6000 N ! $Present work
+  PARAMETER G(BCC_A2,FE;0)        300 +GBCCFE;                  6000 N ! $1979Agr
+  PARAMETER TC(BCC_A2,FE;0)       300 +1043;                    6000 N ! $1979Agr
+  PARAMETER BMAGN(BCC_A2,FE;0)    300 +2.22;                    6000 N ! $1979Agr
+  PARAMETER TC(BCC_A2,CR,FE;0)    300 +850;                     6000 N ! $Present work
+  PARAMETER TC(BCC_A2,CR,FE;1)    300 -670;                     6000 N ! $Present work
+  PARAMETER BMAGN(BCC_A2,CR,FE;0) 300 -0.40;                    6000 N ! $Present work
+  PARAMETER G(BCC_A2,CR,FE;0)     300 +22000-11.375*T;          6000 N ! $Present work
+$
+$ -----------------------------------------------------------------------------
+ TYPE_DEFINITION ' GES A_P_D FCC_A1 MAGNETIC -3.0  2.80000E-01 !
+ PHASE FCC_A1 %' 1 1 !
+  CONSTITUENT FCC_A1 :CR,FE : !
+  PARAMETER G(FCC_A1,CR;0)     300 +GFCCCR;                     6000 N ! $1967Kau
+  PARAMETER TC(FCC_A1,CR;0)    300 -1109;                       6000 N ! $Chin
+  PARAMETER BMAGN(FCC_A1,CR;0) 300 -2.46;                       6000 N ! $Chin
+  PARAMETER G(FCC_A1,FE;0)     300 +GFCCFE;                     6000 N ! $1979Agr
+  PARAMETER TC(FCC_A1,FE;0)    300 -201;                        6000 N ! $Chin
+  PARAMETER BMAGN(FCC_A1,FE;0) 300 -2.1;                        6000 N ! $Chin
+  PARAMETER G(FCC_A1,CR,FE;0)  300 +7100-9.375*T;               6000 N ! $Present work
+$
+$ -----------------------------------------------------------------------------
+ PHASE SIGMA % 3 10  4  16 !
+  CONSTITUENT SIGMA : FE : CR : CR,FE : !
+  PARAMETER G(SIGMA,FE:CR:CR;0) 300 
+     +109990.5-142.725*T+10*GFCCFE+4*GBCCCR+16*GBCCCR; 6000 N ! $Present work
+  PARAMETER G(SIGMA,FE:CR:FE;0) 300 
+     -11811.3+45.606*T  +10*GFCCFE+4*GBCCCR+16*GBCCFE; 6000 N ! $Present work
+$
+$ -----------------------------------------------------------------------------
+$CRFE-NIMS
+
+

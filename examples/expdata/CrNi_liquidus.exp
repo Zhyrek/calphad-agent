@@ -1,0 +1,16 @@
+PROLOGUE 1 Cr-Ni experimental data
+ XSCALE 0 1
+ YSCALE 1000 2200
+ XTEXT MOLE FRACTION CR
+ YTEXT TEMPERATURE CELSIUS
+$ Liquidus, fcc side (synthetic test values)
+DATASET 1 Liquidus (fcc) Smith 1960
+ CLIP OFF
+ 0.10 1420 S1
+ 0.20 1390 S1
+ 0.30 1360 S1
+DATASET 2 Solvus fcc/bcc  fcc side
+$ fcc boundary of fcc+bcc at subsolidus temperatures
+ 0.45 1300 S2
+ 0.42 1100 S2
+BLOCKEND

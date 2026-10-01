@@ -1,0 +1,31 @@
+# Example ESPEI campaign for `calphad-tools espei-flux examples/espei_campaign.yaml -o espei_runs/`
+# Paths are relative to this file.
+flux:
+  nodes: 2
+  cores_per_node: 56
+  time_limit: 12h
+  gen_time_limit: 1h
+  queue: pbatch          # your queue / partition
+  bank: mybank           # your allocation bank (remove if not used)
+  mode: per-job          # per-job | bundle
+  setup:                 # lines run at the start of every job
+    - module load python/3.12
+    - source ~/venvs/espei/bin/activate
+
+defaults:                # applied to every run unless overridden
+  ref_state: SGTE91
+  iterations: 2000
+  save_interval: 20
+  chains_per_parameter: 2
+  chain_std_deviation: 0.1
+
+runs:
+  - name: CrNi
+    phase_models: ../outputs/espei_demo/CrNi/phase_models.json
+    datasets: ../outputs/espei_demo/CrNi/datasets
+  - name: CrNi_restart_from_tdb
+    phase_models: ../outputs/espei_demo/CrNi/phase_models.json
+    datasets: ../outputs/espei_demo/CrNi/datasets
+    input_db: tdbs/CrNi-06Hal.tdb
+    generate_parameters: false
+    symbols: [VV0001, VV0002]

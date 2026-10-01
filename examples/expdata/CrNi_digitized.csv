@@ -1,0 +1,4 @@
+T_C,phase_1,X(CR)_1,phase_2,X(CR)_2,reference
+1300,FCC_A1,0.45,BCC_A2,0.88,Jones 1975
+1100,FCC_A1,0.42,BCC_A2,,Jones 1975
+1345,LIQUID,0.49,FCC_A1,0.47,Brown 1980

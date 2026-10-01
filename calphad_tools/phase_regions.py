@@ -1,0 +1,398 @@
+"""Phase regions of a binary T-x diagram or a ternary isotherm, in the coordinates of the plot.
+
+Needs pycalphad and numpy only.  A *recipe* describes the diagram::
+
+    {"kind": "binary" | "ternary", "elements": [balance, x_el(, y_el)], "phases": [...], "P": 101325,
+     "T_K": 1173.15 (ternary), "tmap": [a, b] (binary: T in K = a * y + b),
+     "comp": {"scale": 1 | 100, "weight": False, "masses": {el: g/mol}}}   # plotted composition / scale
+
+Region identity is a *key*: the sorted phase names with composition-set markers removed, e.g.
+('BCC_A2', 'BCC_A2') for a miscibility gap.  An ordered phase whose ordered sublattices are equivalent is named
+after its disordered phase (B2_BCC -> BCC_A2), as in the phase-boundary data.
+
+* :func:`regions_from_lines` - exact two-phase polygons (the two phase-boundary traces of each ZPF line),
+  tie-triangles, line compounds and binary invariant lines from mapped ZPF data;
+* :func:`map_lines` - that ZPF data from a pycalphad mapping strategy;
+* :func:`equilibrium_grid` - stable phase set on a coarse grid (finds regions the mapping did not trace);
+* :func:`key_at` - phase set at one plotted point (used to confirm every label position).
+"""
+from __future__ import annotations
+
+import itertools
+import re
+import warnings
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+
+KELVIN = 273.15
+
+
+# ---------------------------------------------------------------------------------------------------------
+# names
+# ---------------------------------------------------------------------------------------------------------
+def base_name(name: str) -> str:
+    """Phase name without a composition-set marker (#2)."""
+    return re.sub(r"#\d+$", "", str(name).strip().upper())
+
+
+def key_of(names: Sequence[str]) -> Tuple[str, ...]:
+    return tuple(sorted(base_name(n) for n in names))
+
+
+def ordered_info(db, comps, phases, models=None) -> Dict[str, tuple]:
+    """Ordered phase -> (disordered name, number of ordered sublattices, {(sublattice, species): dof index})."""
+    out = {}
+    for name in phases:
+        ph = db.phases.get(name)
+        if ph is None or ph.model_hints.get("ordered_phase") != name:
+            continue
+        dis = ph.model_hints.get("disordered_phase")
+        if not dis or dis not in db.phases:
+            continue
+        n_sub = len(db.phases[name].sublattices) - (len(db.phases[dis].sublattices) - 1)
+        if n_sub < 2:
+            continue
+        m = re.fullmatch(r"([A-Z]\d+)_([A-Z]+)", dis)       # A1_FCC -> FCC_A1 if that phase also exists
+        if m and f"{m.group(2)}_{m.group(1)}" in db.phases:
+            dis = f"{m.group(2)}_{m.group(1)}"
+        mod = (models or {}).get(name)
+        if mod is None:
+            from pycalphad import Model
+            mod = Model(db, comps, name)
+        idx = {(int(y.sublattice_index), str(y.species.name)): j for j, y in enumerate(mod.site_fractions)}
+        out[name] = (dis, n_sub, idx)
+    return out
+
+
+def state_name(phase: str, y, info: Dict[str, tuple], tol: float = 1e-4) -> str:
+    """Name of a phase state: the disordered phase's name if the ordered sublattices are equivalent."""
+    inf = info.get(phase)
+    if inf is None:
+        return phase
+    dis, n_sub, idx = inf
+    y = np.asarray(y, dtype=float)
+    for sp in {sp for (s, sp) in idx if s < n_sub}:
+        vals = [y[idx[(s, sp)]] if (s, sp) in idx else 0.0 for s in range(n_sub)]
+        if np.ptp(vals) > tol:
+            return phase
+    return dis
+
+
+def compset_names(compsets, info: Dict[str, tuple]) -> List[str]:
+    """Names of the composition sets of a mapping point (second set of one phase: PHASE#2)."""
+    out, seen = [], {}
+    for cs in compsets:
+        n = state_name(cs.phase_record.phase_name, np.asarray(cs.dof)[cs.phase_record.num_statevars:], info)
+        seen[n] = seen.get(n, 0) + 1
+        out.append(n if seen[n] == 1 else f"{n}#{seen[n]}")
+    return out
+
+
+# ---------------------------------------------------------------------------------------------------------
+# plotted coordinates <-> conditions
+# ---------------------------------------------------------------------------------------------------------
+def _to_mole(fr: Dict[str, float], masses: Dict[str, float]) -> Dict[str, float]:
+    tot = sum(fr[e] / masses[e] for e in fr)
+    return {e: (fr[e] / masses[e]) / tot for e in fr}
+
+
+def plot_to_fractions(recipe: Dict, x, y=None) -> Dict[str, np.ndarray]:
+    """Mole fractions of the axis elements at plotted composition(s)."""
+    els = recipe["elements"]
+    c = recipe.get("comp") or {}
+    s = float(c.get("scale", 1.0))
+    if recipe["kind"] == "binary":
+        fr = {els[1]: np.asarray(x, float) / s}
+        fr[els[0]] = 1.0 - fr[els[1]]
+    else:
+        fr = {els[1]: np.asarray(x, float) / s, els[2]: np.asarray(y, float) / s}
+        fr[els[0]] = 1.0 - fr[els[1]] - fr[els[2]]
+    if c.get("weight"):
+        fr = _to_mole(fr, {e: float(c["masses"][e]) for e in fr})
+    return fr
+
+
+def fractions_to_plot(recipe: Dict, X: Dict[str, float]) -> Tuple[float, float]:
+    """Plotted composition(s) of a phase with mole fractions X (ternary: (x, y); binary: x only in [0])."""
+    els = recipe["elements"]
+    c = recipe.get("comp") or {}
+    s = float(c.get("scale", 1.0))
+    fr = {e: float(X[e]) for e in els}
+    if c.get("weight"):
+        m = {e: float(c["masses"][e]) for e in els}
+        tot = sum(fr[e] * m[e] for e in els)
+        fr = {e: fr[e] * m[e] / tot for e in els}
+    if recipe["kind"] == "binary":
+        return fr[els[1]] * s, float("nan")
+    return fr[els[1]] * s, fr[els[2]] * s
+
+
+def T_of_y(recipe: Dict, y):
+    a, b = recipe.get("tmap", (1.0, 0.0))
+    return np.asarray(y, float) * a + b
+
+
+def y_of_T(recipe: Dict, T):
+    a, b = recipe.get("tmap", (1.0, 0.0))
+    return (np.asarray(T, float) - b) / a
+
+
+def xy_of(recipe: Dict, X: Dict[str, float], T: float) -> Tuple[float, float]:
+    """Plotted point of a phase composition X at temperature T (K)."""
+    px, py = fractions_to_plot(recipe, X)
+    if recipe["kind"] == "binary":
+        return px, float(y_of_T(recipe, T))
+    return px, py
+
+
+# ---------------------------------------------------------------------------------------------------------
+# regions from mapped ZPF data
+# ---------------------------------------------------------------------------------------------------------
+def regions_from_lines(lines, invariants, recipe: Dict) -> Dict:
+    """Polygons / compounds / invariant lines (plotted coordinates) from ZPF lines and three-phase nodes.
+
+    lines: [{"phases": [n1, n2], "points": [{"T": K, "phases": [(n1, X1), (n2, X2)]}, ...]}, ...]
+    invariants: [{"T_K": K, "phases": [...], "compositions": {name: {el: x}}, "type": optional}, ...]"""
+    kind = recipe["kind"]
+    polys, traces = [], {}
+    for ln in lines:
+        pts = ln["points"]
+        if len(pts) < 2 or len(ln["phases"]) != 2:
+            continue
+        a = [xy_of(recipe, p["phases"][0][1], p["T"]) for p in pts]
+        b = [xy_of(recipe, p["phases"][1][1], p["T"]) for p in pts]
+        polys.append({"key": key_of(ln["phases"]), "xy": [list(map(float, q)) for q in a + b[::-1]],
+                      "ties": [[list(map(float, p)), list(map(float, q))] for p, q in zip(a, b)]})
+        for k, n in enumerate(ln["phases"]):
+            X = np.array([[p["phases"][k][1][e] for e in recipe["elements"]] for p in pts], float)
+            traces.setdefault(base_name(n), []).append((X, a if k == 0 else b))
+    compounds = []
+    for n, trs in traces.items():
+        for X, path in trs:
+            xs = np.array(path, float)
+            ptp = np.ptp(X, axis=0)
+            if kind == "ternary" and ptp.max() > 1e-3:
+                # a line phase (one element fixed, e.g. M3V between Ni3V and Co3V): label along the line
+                fixed = [i for i, d in enumerate(ptp) if d < 1e-4 and X[:, i].mean() > 2e-3]
+                span = np.ptp(xs, axis=0)
+                if not fixed or np.hypot(*span) < 0.05:
+                    continue
+                d = xs - xs.mean(axis=0)
+                u = np.linalg.svd(d, full_matrices=False)[2][0]           # direction of the line
+                t = d @ u
+                ends = [xs.mean(axis=0) + t.min() * u, xs.mean(axis=0) + t.max() * u]
+                def off_line(c):                 # distance of this trace from a line found before
+                    a0, a1 = np.asarray(c["line"][0]), np.asarray(c["line"][1])
+                    e = (a1 - a0) / (np.linalg.norm(a1 - a0) or 1.0)
+                    q = np.asarray(ends[0]) - a0
+                    return abs(float(e[0] * q[1] - e[1] * q[0]))
+                hit = next((c for c in compounds if c["key"] == (n,) and "line" in c and off_line(c) < 2e-3), None)
+                if hit:                          # the same line seen from another field: extend it
+                    pts = np.array(hit["line"] + [list(e) for e in ends], float)
+                    dd = pts - pts.mean(axis=0)
+                    tt = dd @ u
+                    hit["line"] = [list(map(float, pts[int(np.argmin(tt))])), list(map(float, pts[int(np.argmax(tt))]))]
+                else:
+                    compounds.append({"key": (n,), "line": [list(map(float, e)) for e in ends]})
+                continue
+            if ptp.max() > 1e-3:
+                continue
+            if kind == "binary":
+                xc = float(np.mean(xs[:, 0]))
+                x_frac = float(np.mean(X[:, 1]))
+                if min(x_frac, 1 - x_frac) < 2e-3:
+                    continue                     # pure element edge
+                hit = next((c for c in compounds if c["key"] == (n,) and abs(c["x"] - xc) < 1e-6 + 1e-3 * abs(xc)),
+                           None)
+                y0, y1 = float(np.min(xs[:, 1])), float(np.max(xs[:, 1]))
+                if hit:
+                    hit["y0"], hit["y1"] = min(hit["y0"], y0), max(hit["y1"], y1)
+                else:
+                    compounds.append({"key": (n,), "x": xc, "y0": y0, "y1": y1})
+            else:
+                xc, yc = float(np.mean(xs[:, 0])), float(np.mean(xs[:, 1]))
+                if min(X.mean(axis=0)) < 2e-3:
+                    continue
+                if not any(c["key"] == (n,) and abs(c["x"] - xc) < 2e-3 and abs(c["y"] - yc) < 2e-3
+                           for c in compounds):
+                    compounds.append({"key": (n,), "x": xc, "y": yc})
+    tris, inv_lines = [], []
+    for inv in invariants or []:
+        names = list(inv["phases"])
+        pts = [xy_of(recipe, inv["compositions"][n], inv["T_K"]) for n in names]
+        if kind == "ternary":
+            tris.append({"key": key_of(names), "xy": [list(map(float, p)) for p in pts], "tri": True})
+        else:
+            xs = [p[0] for p in pts]
+            inv_lines.append({"key": key_of(names), "T_K": float(inv["T_K"]), "y": float(pts[0][1]),
+                              "x0": float(min(xs)), "x1": float(max(xs)), "type": inv.get("type", "")})
+    return {"polygons": tris + polys, "compounds": compounds, "invariants": inv_lines}
+
+
+def mapping_conditions(recipe: Dict, step: float = 0.02, T_step: float = 10.0) -> Dict:
+    from pycalphad import variables as v
+    els = recipe["elements"]
+    conds = {v.P: float(recipe.get("P", 101325.0)), v.N: 1}
+    if recipe["kind"] == "binary":
+        conds[v.T] = tuple(float(t) for t in recipe["T_range"]) + (float(T_step),)
+        xr = recipe.get("x_range") or [0.0, 1.0]
+        conds[v.X(els[1])] = (float(xr[0]), float(xr[1]), float(step))
+    else:
+        conds[v.T] = float(recipe["T_K"])
+        conds[v.X(els[1])] = (0, 1, float(step))
+        conds[v.X(els[2])] = (0, 1, float(step))
+    return conds
+
+
+def map_lines(db, recipe: Dict, info: Dict[str, tuple], step: float = 0.02, T_step: float = 10.0,
+              time_limit: float = 600.0):
+    """(lines, invariants) of a pycalphad mapping strategy for the recipe (same structures as regions_from_lines
+    reads)."""
+    import time
+    from pycalphad import variables as v
+    from pycalphad.mapping import BinaryStrategy, TernaryStrategy
+    els = recipe["elements"]
+    comps = sorted(els) + ["VA"]
+    Strat = BinaryStrategy if recipe["kind"] == "binary" else TernaryStrategy
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        strategy = Strat(db, comps, list(recipe["phases"]), mapping_conditions(recipe, step, T_step))
+        strategy.generate_automatic_starting_points()
+        t0 = time.time()
+        while not strategy.iterate():
+            if time.time() - t0 > time_limit:
+                break
+    info = {**ordered_info(db, comps, recipe["phases"], strategy.models), **(info or {})}
+    s_els = [e for e in strategy.elements if e != "VA"]
+
+    def comp(cs):
+        return dict(zip(s_els, np.asarray(cs.X, dtype=float)))
+
+    def temp(p):
+        return float(np.squeeze(p.global_conditions[v.T]))
+    lines = []
+    for z in strategy.zpf_lines:
+        if len(z.points) < 2:
+            continue
+        if all(max(np.max(np.abs(np.asarray(a.X, float) - np.asarray(b.X, float)))
+                   for a, b in itertools.combinations(p.stable_composition_sets, 2)) < 1e-5
+               for p in z.points if len(p.stable_composition_sets) > 1):
+            continue                        # zero-length tie-lines along an edge
+        names = compset_names(z.points[len(z.points) // 2].stable_composition_sets, info)
+        lines.append({"phases": names, "points": [{"T": temp(p), "phases": [(n, comp(cs)) for n, cs in
+                                                                          zip(names, p.stable_composition_sets)]}
+                                                  for p in z.points]})
+    invariants = []
+    for node in strategy.node_queue.nodes:
+        if len(node.stable_composition_sets) != 3:
+            continue
+        names = compset_names(node.stable_composition_sets, info)
+        T = temp(node)
+        X = {n: comp(cs) for n, cs in zip(names, node.stable_composition_sets)}
+        key = sorted(tuple(round(c[e], 3) for e in els) for c in X.values())
+        if any(abs(i["T_K"] - T) < 0.05 and i["_key"] == key for i in invariants):
+            continue
+        invariants.append({"T_K": T, "phases": names, "compositions": X, "_key": key})
+    return lines, invariants
+
+
+# ---------------------------------------------------------------------------------------------------------
+# equilibrium classification
+# ---------------------------------------------------------------------------------------------------------
+def _keys_from_eq(eq, info: Dict[str, tuple], np_min: float = 1e-6, dx: float = 2e-3) -> List[Optional[tuple]]:
+    ph = np.asarray(eq.Phase.values)
+    nv = ph.shape[-1]
+    ph = ph.reshape(-1, nv)
+    npf = np.asarray(eq.NP.values, float).reshape(-1, nv)
+    X = np.asarray(eq.X.values, float)
+    X = X.reshape(-1, nv, X.shape[-1])
+    Y = np.asarray(eq.Y.values, float)
+    Y = Y.reshape(-1, nv, Y.shape[-1])
+    out: List[Optional[tuple]] = []
+    for i in range(ph.shape[0]):
+        items = []
+        for k in range(nv):
+            name = str(ph[i, k])
+            if not name or not np.isfinite(npf[i, k]) or npf[i, k] <= np_min:
+                continue
+            n = state_name(name, Y[i, k], info)
+            if any(m == n and np.max(np.abs(X[i, k] - xk)) < dx for m, xk in items):
+                continue                    # the same phase state found twice
+            items.append((n, X[i, k]))
+        out.append(tuple(sorted(n for n, _ in items)) if items else None)
+    return out
+
+
+def conditions_at(recipe: Dict, x, y) -> Dict:
+    from pycalphad import variables as v
+    els = recipe["elements"]
+    fr = plot_to_fractions(recipe, x, y)
+    conds = {v.P: float(recipe.get("P", 101325.0)), v.N: 1}
+    if recipe["kind"] == "binary":
+        conds[v.T] = float(T_of_y(recipe, y))
+        conds[v.X(els[1])] = float(np.clip(fr[els[1]], 1e-6, 1 - 1e-6))
+    else:
+        conds[v.T] = float(recipe["T_K"])
+        for e in els[1:]:
+            conds[v.X(e)] = float(np.clip(fr[e], 1e-6, 1 - 1e-6))
+    return conds
+
+
+def key_at(db, recipe: Dict, info: Dict[str, tuple], x: float, y: float) -> Optional[tuple]:
+    """Stable phase set (a region key) at a plotted point, or None (outside the diagram / no result)."""
+    from pycalphad import equilibrium
+    els = recipe["elements"]
+    fr = plot_to_fractions(recipe, x, y)
+    if any(not (-1e-9 <= float(fr[e]) <= 1 + 1e-9) for e in els):
+        return None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        eq = equilibrium(db, sorted(els) + ["VA"], list(recipe["phases"]), conditions_at(recipe, x, y))
+    return _keys_from_eq(eq, info)[0]
+
+
+def equilibrium_grid(db, recipe: Dict, info: Dict[str, tuple], xlim, ylim, n: Tuple[int, int] = (80, 60)) -> Dict:
+    """Stable phase sets on a grid over the plotted area: {"xy": [N, 2] plotted points, "keys": [N] int (index
+    into "table", -1 = none), "table": [key, ...]}."""
+    from pycalphad import equilibrium, variables as v
+    els = recipe["elements"]
+    comps = sorted(els) + ["VA"]
+    if recipe["kind"] == "binary":
+        nx, ny = int(n[0]), int(n[1])
+        xs = xlim[0] + (np.arange(nx) + 0.5) / nx * (xlim[1] - xlim[0])
+        ys = ylim[0] + (np.arange(ny) + 0.5) / ny * (ylim[1] - ylim[0])
+        Xb = np.clip(plot_to_fractions(recipe, xs)[els[1]], 1e-6, 1 - 1e-6)
+        conds = {v.P: float(recipe.get("P", 101325.0)), v.N: 1, v.T: T_of_y(recipe, ys), v.X(els[1]): Xb}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            eq = equilibrium(db, comps, list(recipe["phases"]), conds)
+        keys = _keys_from_eq(eq, info)                       # T major, then X
+        pts = np.array([[x, y] for y in ys for x in xs], float)
+    else:
+        m = int(n[0])
+        g = (np.arange(m) + 0.5) / m
+        conds = {v.P: float(recipe.get("P", 101325.0)), v.N: 1, v.T: float(recipe["T_K"]),
+                 v.X(els[1]): g, v.X(els[2]): g}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            eq = equilibrium(db, comps, list(recipe["phases"]), conds)
+        order = [str(d)[2:] for d in eq.Phase.dims if str(d).startswith("X_")]   # condition dimension order
+        keys = _keys_from_eq(eq, info)
+        pts = []
+        for a in g:
+            for b in g:
+                X = {order[0]: a, order[1]: b}
+                X[els[0]] = 1 - a - b
+                pts.append(fractions_to_plot(recipe, X) if X[els[0]] > 0 else (np.nan, np.nan))
+        pts = np.array(pts, float)
+    table, ids = [], []
+    for k in keys:
+        if k is None:
+            ids.append(-1)
+            continue
+        if k not in table:
+            table.append(k)
+        ids.append(table.index(k))
+    ok = np.all(np.isfinite(pts), axis=1)
+    return {"xy": pts[ok], "keys": np.asarray(ids, int)[ok], "table": table}

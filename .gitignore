@@ -1,0 +1,15 @@
+.venv/
+*.egg-info/
+__pycache__/
+calphad_agent.toml
+calphad_outputs/
+outputs/
+.pytest_cache/
+pycalphad-agent-venv/
+start-agent.sh
+start-agent.bat
+.DS_Store
+.claude/
+examples/calphad_outputs/
+pycalphad-agent-env.sh
+*.zip

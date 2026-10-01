@@ -1,0 +1,27 @@
+$ Example PARROT experiment file (synthetic values for testing the converter)
+$ Liquidus / solidus tie-lines, Cr-Ni
+CREATE_NEW_EQUILIBRIUM 1,1
+CHANGE_STATUS PHASE LIQ,FCC=FIX 1
+SET_CONDITION P=101325 T=1650
+EXPERIMENT X(LIQ,CR)=0.35:0.01, X(FCC,CR)=0.33:0.01
+LABEL ATIE
+$ table of liquidus points (overall composition given, liquid at amount 1)
+TABLE_HEAD 10
+CREATE_NEW_EQUILIBRIUM @@,1
+CH-ST PH LIQ=FIX 1
+CH-ST PH BCC=FIX 0
+S-C P=1E5 X(CR)=@2
+EXPERIMENT T=@1:5
+LABEL ALIQ
+TABLE_VALUES
+$ T     X(CR)
+1700  0.60
+1800  0.70
+1900  0.80
+TABLE_END
+$ A thermochemical point - not ZPF, should be skipped
+CREATE_NEW_EQUILIBRIUM 20,1
+CHANGE_STATUS PHASE LIQ=FIX 1
+SET_CONDITION T=1873 P=1E5 X(CR)=0.5
+EXPERIMENT ACR(CR)=0.4:0.05
+LABEL AACR

@@ -1,0 +1,1218 @@
+[
+ {
+  "name": "equilibrium",
+  "path": "pycalphad.equilibrium",
+  "kind": "data-output",
+  "signature": "(dbf, comps, phases, conditions, output=None, model=None, verbose=False, calc_opts=None, to_xarray=True, parameters=None, solver=None, phase_records=None, **kwargs)",
+  "summary": "Global equilibrium over a grid of conditions; returns xarray Dataset (NP, GM, MU, X, Y, Phase + `output` props).",
+  "area": "top-level"
+ },
+ {
+  "name": "calculate",
+  "path": "pycalphad.calculate",
+  "kind": "data-output",
+  "signature": "(dbf, comps, phases, mode=None, output='GM', fake_points=False, broadcast=True, parameters=None, to_xarray=True, phase_records=None, conditions=None, **kwargs)",
+  "summary": "Sample a Model property (output='GM','HM',...) over site-fraction points for phases; returns xarray Dataset (X, Y, Phase, <output>).",
+  "area": "top-level"
+ },
+ {
+  "name": "Workspace",
+  "path": "pycalphad.Workspace",
+  "kind": "data-output",
+  "signature": "(database, components, phases, conditions, *, models=None, parameters=None, calc_opts=None, solver=None, verbose=False, constituents=None, phase_record_factory=None)",
+  "summary": "Reactive equilibrium calculator (db, components, phases, conditions); wks.get(*props) returns arrays of any computable property.",
+  "area": "top-level"
+ },
+ {
+  "name": "binplot",
+  "path": "pycalphad.binplot",
+  "kind": "plotting",
+  "signature": "(database, components, phases, conditions, return_strategy=False, plot_kwargs=None, **map_kwargs)",
+  "summary": "Binary isobaric phase diagram via BinaryStrategy + plot_binary; return_strategy=True also returns the strategy (data).",
+  "area": "top-level"
+ },
+ {
+  "name": "ternplot",
+  "path": "pycalphad.ternplot",
+  "kind": "plotting",
+  "signature": "(dbf, comps, phases, conds, x=None, y=None, return_strategy=False, map_kwargs=None, **plot_kwargs)",
+  "summary": "Ternary isothermal section via TernaryStrategy + plot_ternary; return_strategy=True also returns the strategy (data).",
+  "area": "top-level"
+ },
+ {
+  "name": "eqplot",
+  "path": "pycalphad.eqplot",
+  "kind": "plotting",
+  "signature": "(eq, ax=None, x=None, y=None, z=None, tielines=True, tieline_color=(0, 1, 0, 1), tie_triangle_color=(1, 0, 0, 1), legend_generator=<function phase_legend>, **kwargs)",
+  "summary": "Plot an equilibrium() result (binary T-x or ternary isothermal) with tielines / tie-triangles.",
+  "area": "top-level"
+ },
+ {
+  "name": "as_property",
+  "path": "pycalphad.as_property",
+  "kind": "support",
+  "signature": "(inp: Union[str, symengine.lib.symengine_wrapper.Basic, pycalphad.property_framework.types.ComputableProperty]) -> pycalphad.property_framework.types.ComputableProperty",
+  "summary": "Parse a property string ('GM', 'NP(FCC_A1)', 'X(LIQUID,CR)', 'HM.T', ...) into a ComputableProperty.",
+  "area": "top-level"
+ },
+ {
+  "name": "Database",
+  "path": "pycalphad.Database",
+  "kind": "data-output",
+  "signature": "(fname_or_tdb_string=None)",
+  "summary": "Thermodynamic database: read TDB/DAT, write TDB (to_file/to_string), search parameters.",
+  "area": "top-level"
+ },
+ {
+  "name": "Model",
+  "path": "pycalphad.Model",
+  "kind": "data-output",
+  "signature": "(dbe, comps, phase_name, parameters=None)",
+  "summary": "Symbolic CALPHAD model of one phase: GM, HM, SM, CPM, mixing props, DOO, TC, BMAG, VM, contributions.",
+  "area": "top-level"
+ },
+ {
+  "name": "ReferenceState (Model)",
+  "path": "pycalphad.ReferenceState",
+  "kind": "support",
+  "signature": "(species, reference_phase, fixed_statevars=None)",
+  "summary": "Pure-element reference state (species, phase, fixed_statevars) for Model.shift_reference_state.",
+  "area": "top-level"
+ },
+ {
+  "name": "variables (v)",
+  "path": "pycalphad.variables",
+  "kind": "support",
+  "signature": "(module)",
+  "summary": "State variables / conditions / properties: T, P, N, X, W, MU, NP, Y, Species, Component.",
+  "area": "top-level"
+ },
+ {
+  "name": "eqplot",
+  "path": "pycalphad.plot.eqplot.eqplot",
+  "kind": "plotting",
+  "signature": "(eq, ax=None, x=None, y=None, z=None, tielines=True, tieline_color=(0, 1, 0, 1), tie_triangle_color=(1, 0, 0, 1), legend_generator=<function phase_legend>, **kwargs)",
+  "summary": "Scatter-plot phase boundaries from an equilibrium Dataset (x/y/z StateVariables auto-detected).",
+  "area": "plot"
+ },
+ {
+  "name": "phase_legend",
+  "path": "pycalphad.plot.utils.phase_legend",
+  "kind": "plotting",
+  "signature": "(phases)",
+  "summary": "Build matplotlib legend handles and a phase->color dict for a list of phases.",
+  "area": "plot"
+ },
+ {
+  "name": "TriangularAxes",
+  "path": "pycalphad.plot.triangular.TriangularAxes",
+  "kind": "plotting",
+  "signature": "(*args, **kwargs)",
+  "summary": "matplotlib projection 'triangular' for Gibbs-triangle ternary plots (fig.add_subplot(projection='triangular')).",
+  "area": "plot"
+ },
+ {
+  "name": "ternplot (legacy)",
+  "path": "pycalphad.plot.ternary.ternplot",
+  "kind": "plotting",
+  "signature": "(dbf, comps, phases, conds, x=None, y=None, eq_kwargs=None, **plot_kwargs)",
+  "summary": "Legacy ternary isotherm: equilibrium on a composition grid then eqplot.",
+  "area": "plot"
+ },
+ {
+  "name": "binplot (legacy)",
+  "path": "pycalphad.plot.binary.plot.binplot",
+  "kind": "plotting",
+  "signature": "(database, components, phases, conditions, plot_kwargs=None, **map_kwargs)",
+  "summary": "Legacy binary mapper (map_binary + plot_boundaries).",
+  "area": "plot"
+ },
+ {
+  "name": "plot_boundaries",
+  "path": "pycalphad.plot.binary.plot.plot_boundaries",
+  "kind": "plotting",
+  "signature": "(zpf_boundary_sets, tielines=True, tieline_color=(0, 1, 0, 1), scatter=True, legend_generator=<function phase_legend>, ax=None, gridlines=False)",
+  "summary": "Plot ZPFBoundarySets (legacy binary mapper) as lines/scatter with tielines.",
+  "area": "plot"
+ },
+ {
+  "name": "map_binary",
+  "path": "pycalphad.plot.binary.map.map_binary",
+  "kind": "data-output",
+  "signature": "(dbf, comps, phases, conds, eq_kwargs=None, calc_kwargs=None, boundary_sets=None, verbose=False, summary=False)",
+  "summary": "Legacy binary T-X mapping; returns ZPFBoundarySets (phase-boundary data).",
+  "area": "plot"
+ },
+ {
+  "name": "ZPFBoundarySets",
+  "path": "pycalphad.plot.binary.zpf_boundary_sets.ZPFBoundarySets",
+  "kind": "both",
+  "signature": "(comps, indep_composition_condition)",
+  "summary": "Legacy container of two-phase regions; get_line_plot_boundaries/get_scatter_plot_boundaries/get_phases.",
+  "area": "plot"
+ },
+ {
+  "name": "ZPFBoundarySets.get_line_plot_boundaries",
+  "path": "pycalphad.plot.binary.zpf_boundary_sets.ZPFBoundarySets.get_line_plot_boundaries",
+  "kind": "both",
+  "signature": "(self, close_miscibility_gaps=0.05, tieline_color=(0, 1, 0, 1), legend_generator=<function phase_legend>)",
+  "summary": "Line collections + legend for each two-phase region boundary (data for custom plots).",
+  "area": "plot"
+ },
+ {
+  "name": "ZPFBoundarySets.get_scatter_plot_boundaries",
+  "path": "pycalphad.plot.binary.zpf_boundary_sets.ZPFBoundarySets.get_scatter_plot_boundaries",
+  "kind": "both",
+  "signature": "(self, tieline_color=(0, 1, 0, 1), legend_generator=<function phase_legend>)",
+  "summary": "Scatter x/y/colors + tieline collection for boundaries.",
+  "area": "plot"
+ },
+ {
+  "name": "get_compsets",
+  "path": "pycalphad.plot.binary.compsets.get_compsets",
+  "kind": "data-output",
+  "signature": "(eq_dataset, indep_comp=None, indep_comp_index=None)",
+  "summary": "Extract a pair of binary composition sets (phase, T, x, site fractions) from an equilibrium Dataset point.",
+  "area": "plot"
+ },
+ {
+  "name": "find_two_phase_region_compsets",
+  "path": "pycalphad.plot.binary.compsets.find_two_phase_region_compsets",
+  "kind": "data-output",
+  "signature": "(hull, temperature, indep_comp, indep_comp_idx, misc_gap_tol=0.1, minimum_composition=None)",
+  "summary": "Two-phase composition sets from a 1D convex hull at fixed T, P.",
+  "area": "plot"
+ },
+ {
+  "name": "binplot (mapping)",
+  "path": "pycalphad.mapping.compat_api.binplot",
+  "kind": "both",
+  "signature": "(database, components, phases, conditions, return_strategy=False, plot_kwargs=None, **map_kwargs)",
+  "summary": "Map + plot binary diagram; return_strategy=True returns (ax, BinaryStrategy) for data export.",
+  "area": "mapping"
+ },
+ {
+  "name": "ternplot (mapping)",
+  "path": "pycalphad.mapping.compat_api.ternplot",
+  "kind": "both",
+  "signature": "(dbf, comps, phases, conds, x=None, y=None, return_strategy=False, map_kwargs=None, **plot_kwargs)",
+  "summary": "Map + plot ternary isotherm; return_strategy=True returns (ax, TernaryStrategy).",
+  "area": "mapping"
+ },
+ {
+  "name": "MapStrategy",
+  "path": "pycalphad.mapping.strategy.strategy_base.MapStrategy",
+  "kind": "data-output",
+  "signature": "(dbf: pycalphad.io.database.Database, components: list[str], phases: list[str], conditions: dict[pycalphad.variables.StateVariable, typing.Union[float, tuple[float]]], **kwargs)",
+  "summary": "Base mapping strategy: do_map(), zpf_lines, node_queue, get_all_phases(); kwargs GLOBAL_MIN_PDENS etc.",
+  "area": "mapping"
+ },
+ {
+  "name": "MapStrategy.do_map",
+  "path": "pycalphad.mapping.strategy.strategy_base.MapStrategy.do_map",
+  "kind": "support",
+  "signature": "(self, max_iter: int = -1)",
+  "summary": "Run the mapping until all nodes are exhausted (max_iter).",
+  "area": "mapping"
+ },
+ {
+  "name": "MapStrategy.get_all_phases",
+  "path": "pycalphad.mapping.strategy.strategy_base.MapStrategy.get_all_phases",
+  "kind": "data-output",
+  "signature": "(self)",
+  "summary": "All phases found along ZPF lines (miscibility gaps as PHASE#2).",
+  "area": "mapping"
+ },
+ {
+  "name": "MapStrategy.add_nodes_from_conditions",
+  "path": "pycalphad.mapping.strategy.strategy_base.MapStrategy.add_nodes_from_conditions",
+  "kind": "support",
+  "signature": "(self, conditions: dict[pycalphad.variables.StateVariable, float], direction: pycalphad.mapping.primitives.Direction = None, force_add: bool = True)",
+  "summary": "Add a starting point computed from explicit conditions (optionally direction).",
+  "area": "mapping"
+ },
+ {
+  "name": "BinaryStrategy",
+  "path": "pycalphad.mapping.BinaryStrategy",
+  "kind": "data-output",
+  "signature": "(dbf: pycalphad.io.database.Database, components: list[str], phases: list[str], conditions: dict[pycalphad.variables.StateVariable, typing.Union[float, tuple[float]]], **kwargs)",
+  "summary": "Binary mapping (1 composition + 1 potential axis); data via get_tieline_data/get_invariant_data.",
+  "area": "mapping"
+ },
+ {
+  "name": "BinaryStrategy.get_tieline_data",
+  "path": "pycalphad.mapping.strategy.binary_strategy.BinaryStrategy.get_tieline_data",
+  "kind": "data-output",
+  "signature": "(self, x: pycalphad.variables.StateVariable, y: pycalphad.variables.StateVariable, global_x: bool = False, global_y: bool = False) -> list[pycalphad.mapping.strategy.strategy_data.StrategyData]",
+  "summary": "List[StrategyData]: per ZPF line, phase-labelled x/y arrays (tieline end points) for any x,y variables.",
+  "area": "mapping"
+ },
+ {
+  "name": "BinaryStrategy.get_invariant_data",
+  "path": "pycalphad.mapping.strategy.binary_strategy.BinaryStrategy.get_invariant_data",
+  "kind": "data-output",
+  "signature": "(self, x: pycalphad.variables.StateVariable, y: pycalphad.variables.StateVariable, global_x: bool = False, global_y: bool = False) -> list[pycalphad.mapping.strategy.strategy_data.StrategyData]",
+  "summary": "List[StrategyData]: three-phase invariant nodes (phase, x, y).",
+  "area": "mapping"
+ },
+ {
+  "name": "TernaryStrategy",
+  "path": "pycalphad.mapping.TernaryStrategy",
+  "kind": "data-output",
+  "signature": "(dbf: pycalphad.io.database.Database, components: list[str], phases: list[str], conditions: dict[pycalphad.variables.StateVariable, typing.Union[float, tuple[float]]], **kwargs)",
+  "summary": "Ternary isothermal mapping (2 composition axes); get_tieline_data/get_invariant_data (tie-triangles).",
+  "area": "mapping"
+ },
+ {
+  "name": "TernaryStrategy.get_tieline_data",
+  "path": "pycalphad.mapping.strategy.ternary_strategy.TernaryStrategy.get_tieline_data",
+  "kind": "data-output",
+  "signature": "(self, x: pycalphad.variables.StateVariable, y: pycalphad.variables.StateVariable, global_x: bool = False, global_y: bool = False) -> list[pycalphad.mapping.strategy.strategy_data.StrategyData]",
+  "summary": "List[StrategyData] of two-phase tieline end points.",
+  "area": "mapping"
+ },
+ {
+  "name": "TernaryStrategy.get_invariant_data",
+  "path": "pycalphad.mapping.strategy.ternary_strategy.TernaryStrategy.get_invariant_data",
+  "kind": "data-output",
+  "signature": "(self, x: pycalphad.variables.StateVariable, y: pycalphad.variables.StateVariable, global_x: bool = False, global_y: bool = False) -> list[pycalphad.mapping.strategy.strategy_data.StrategyData]",
+  "summary": "List[StrategyData] of three-phase tie-triangles.",
+  "area": "mapping"
+ },
+ {
+  "name": "IsoplethStrategy",
+  "path": "pycalphad.mapping.IsoplethStrategy",
+  "kind": "data-output",
+  "signature": "(dbf: pycalphad.io.database.Database, components: list[str], phases: list[str], conditions: dict[pycalphad.variables.StateVariable, typing.Union[float, tuple[float]]], **kwargs)",
+  "summary": "Isopleth (vertical section) mapping; get_zpf_data/get_invariant_data.",
+  "area": "mapping"
+ },
+ {
+  "name": "IsoplethStrategy.get_zpf_data",
+  "path": "pycalphad.mapping.strategy.isopleth_strategy.IsoplethStrategy.get_zpf_data",
+  "kind": "data-output",
+  "signature": "(self, x: pycalphad.variables.StateVariable, y: pycalphad.variables.StateVariable) -> pycalphad.mapping.strategy.strategy_data.StrategyData",
+  "summary": "StrategyData of zero-phase-fraction boundary lines (phase, x, y) for the isopleth.",
+  "area": "mapping"
+ },
+ {
+  "name": "IsoplethStrategy.get_invariant_data",
+  "path": "pycalphad.mapping.strategy.isopleth_strategy.IsoplethStrategy.get_invariant_data",
+  "kind": "data-output",
+  "signature": "(self, x: pycalphad.variables.StateVariable, y: pycalphad.variables.StateVariable) -> list[pycalphad.mapping.strategy.strategy_data.StrategyData]",
+  "summary": "List[StrategyData] of invariant lines/nodes in the isopleth.",
+  "area": "mapping"
+ },
+ {
+  "name": "StepStrategy",
+  "path": "pycalphad.mapping.StepStrategy",
+  "kind": "data-output",
+  "signature": "(dbf: pycalphad.io.database.Database, components: list[str], phases: list[str], conditions: dict[pycalphad.variables.StateVariable, typing.Union[float, tuple[float]]], **kwargs)",
+  "summary": "One-axis step calculation (e.g. T or X); get_data(x, y) for any property vs axis.",
+  "area": "mapping"
+ },
+ {
+  "name": "StepStrategy.get_data",
+  "path": "pycalphad.mapping.strategy.step_strategy.StepStrategy.get_data",
+  "kind": "data-output",
+  "signature": "(self, x: pycalphad.variables.StateVariable, y: pycalphad.variables.StateVariable, global_x: bool = False, global_y: bool = False, set_nan_to_zero: bool = False) -> pycalphad.mapping.strategy.strategy_data.StrategyData",
+  "summary": "StrategyData of y vs x per stable phase (or 'SYSTEM' for global props); global_x/global_y, set_nan_to_zero.",
+  "area": "mapping"
+ },
+ {
+  "name": "add_starting_points_from_step",
+  "path": "pycalphad.mapping.strategy.binary_strategy.BinaryStrategy.add_starting_points_from_step",
+  "kind": "support",
+  "signature": "(self, step: pycalphad.mapping.strategy.step_strategy.StepStrategy)",
+  "summary": "Seed a Binary/Ternary/Isopleth map from a StepStrategy result.",
+  "area": "mapping"
+ },
+ {
+  "name": "generate_automatic_starting_points",
+  "path": "pycalphad.mapping.strategy.strategy_base.MapStrategy.generate_automatic_starting_points",
+  "kind": "support",
+  "signature": "(self)",
+  "summary": "Automatic starting-point search along axis limits.",
+  "area": "mapping"
+ },
+ {
+  "name": "StrategyData",
+  "path": "pycalphad.mapping.strategy.strategy_data.StrategyData",
+  "kind": "data-output",
+  "signature": "(data: list[pycalphad.mapping.strategy.strategy_data.SinglePhaseData]) -> None",
+  "summary": "Container: .data (list of SinglePhaseData), .phases, .x, .y.",
+  "area": "mapping"
+ },
+ {
+  "name": "SinglePhaseData",
+  "path": "pycalphad.mapping.strategy.strategy_data.SinglePhaseData",
+  "kind": "data-output",
+  "signature": "(phase: str, x: float | list[float], y: float | list[float]) -> None",
+  "summary": "phase name + x + y arrays for one phase / line.",
+  "area": "mapping"
+ },
+ {
+  "name": "PhaseRegionData",
+  "path": "pycalphad.mapping.strategy.strategy_data.PhaseRegionData",
+  "kind": "data-output",
+  "signature": "(data: list[pycalphad.mapping.strategy.strategy_data.SinglePhaseData]) -> None",
+  "summary": "StrategyData subclass for one phase region (tieline / invariant).",
+  "area": "mapping"
+ },
+ {
+  "name": "get_tieline_data_from_tieline_strategy",
+  "path": "pycalphad.mapping.strategy.strategy_data.get_tieline_data_from_tieline_strategy",
+  "kind": "data-output",
+  "signature": "(strategy, x: pycalphad.variables.StateVariable, y: pycalphad.variables.StateVariable, global_x=False, global_y=False) -> list[pycalphad.mapping.strategy.strategy_data.StrategyData]",
+  "summary": "Shared implementation of get_tieline_data for Binary/Ternary strategies.",
+  "area": "mapping"
+ },
+ {
+  "name": "get_invariant_data_from_tieline_strategy",
+  "path": "pycalphad.mapping.strategy.strategy_data.get_invariant_data_from_tieline_strategy",
+  "kind": "data-output",
+  "signature": "(strategy, x: pycalphad.variables.StateVariable, y: pycalphad.variables.StateVariable, global_x=False, global_y=False) -> list[pycalphad.mapping.strategy.strategy_data.StrategyData]",
+  "summary": "Shared implementation of get_invariant_data for Binary/Ternary strategies.",
+  "area": "mapping"
+ },
+ {
+  "name": "plot_binary",
+  "path": "pycalphad.mapping.plot_binary",
+  "kind": "plotting",
+  "signature": "(strategy: pycalphad.mapping.strategy.binary_strategy.BinaryStrategy, x: pycalphad.variables.StateVariable = None, y: pycalphad.variables.StateVariable = None, ax=None, tielines=1, label_nodes=False, legend_generator=<function phase_legend>, tieline_color=(0, 1, 0, 1), tie_triangle_color=(1, 0, 0, 1), *args, **kwargs)",
+  "summary": "Plot a finished BinaryStrategy (x/y vars, tielines every n, label_nodes, colors).",
+  "area": "mapping"
+ },
+ {
+  "name": "plot_ternary",
+  "path": "pycalphad.mapping.plot_ternary",
+  "kind": "plotting",
+  "signature": "(strategy: pycalphad.mapping.strategy.ternary_strategy.TernaryStrategy, x: pycalphad.variables.StateVariable = None, y: pycalphad.variables.StateVariable = None, ax=None, tielines=1, label_nodes=False, legend_generator=<function phase_legend>, tieline_color=(0, 1, 0, 1), tie_triangle_color=(1, 0, 0, 1), *args, **kwargs)",
+  "summary": "Plot a finished TernaryStrategy on triangular axes.",
+  "area": "mapping"
+ },
+ {
+  "name": "plot_isopleth",
+  "path": "pycalphad.mapping.plot_isopleth",
+  "kind": "plotting",
+  "signature": "(strategy: pycalphad.mapping.strategy.isopleth_strategy.IsoplethStrategy, x: pycalphad.variables.StateVariable = None, y: pycalphad.variables.StateVariable = None, ax=None, legend_generator=<function phase_legend>, tie_triangle_color=(1, 0, 0, 1), *args, **kwargs)",
+  "summary": "Plot a finished IsoplethStrategy (ZPF lines + invariants).",
+  "area": "mapping"
+ },
+ {
+  "name": "plot_step",
+  "path": "pycalphad.mapping.plot_step",
+  "kind": "plotting",
+  "signature": "(strategy: pycalphad.mapping.strategy.step_strategy.StepStrategy, x: pycalphad.variables.StateVariable = None, y: pycalphad.variables.StateVariable = None, ax=None, legend_generator=<function phase_legend>, set_nan_to_zero=True, *args, **kwargs)",
+  "summary": "Plot a finished StepStrategy (any y property vs step axis, per phase).",
+  "area": "mapping"
+ },
+ {
+  "name": "plot_tielines",
+  "path": "pycalphad.mapping.plotting.plot_tielines",
+  "kind": "plotting",
+  "signature": "(ax, strategy: Union[pycalphad.mapping.strategy.binary_strategy.BinaryStrategy, pycalphad.mapping.strategy.ternary_strategy.TernaryStrategy], x: pycalphad.variables.StateVariable, y: pycalphad.variables.StateVariable, phase_colors, tielines=1, tieline_color=(0, 1, 0, 1))",
+  "summary": "Draw tielines of a Binary/Ternary strategy on an axis.",
+  "area": "mapping"
+ },
+ {
+  "name": "plot_invariants",
+  "path": "pycalphad.mapping.plotting.plot_invariants",
+  "kind": "plotting",
+  "signature": "(ax, strategy: Union[pycalphad.mapping.strategy.binary_strategy.BinaryStrategy, pycalphad.mapping.strategy.ternary_strategy.TernaryStrategy], x: pycalphad.variables.StateVariable, y: pycalphad.variables.StateVariable, phase_colors, label_end_points: bool = False, tie_triangle_color=(1, 0, 0, 1))",
+  "summary": "Draw invariant nodes / tie-triangles of a Binary/Ternary strategy on an axis.",
+  "area": "mapping"
+ },
+ {
+  "name": "get_label",
+  "path": "pycalphad.mapping.plotting.get_label",
+  "kind": "plotting",
+  "signature": "(var: pycalphad.variables.StateVariable)",
+  "summary": "Axis label text for a StateVariable.",
+  "area": "mapping"
+ },
+ {
+  "name": "ZPFLine",
+  "path": "pycalphad.mapping.primitives.ZPFLine",
+  "kind": "data-output",
+  "signature": "(fixed_phases: List[str], free_phases: List[str], points: Optional[List[pycalphad.mapping.primitives.Point]] = None, status: pycalphad.mapping.primitives.ZPFState = <ZPFState.NOT_FINISHED: 0>, axis_var: pycalphad.variables.StateVariable | None = None, axis_direction: pycalphad.mapping.primitives.Direction | None = None, current_delta: float = 1)",
+  "summary": "One zero-phase-fraction line: fixed/free phases, points, status; get_var_list(var).",
+  "area": "mapping"
+ },
+ {
+  "name": "ZPFLine.get_var_list",
+  "path": "pycalphad.mapping.primitives.ZPFLine.get_var_list",
+  "kind": "data-output",
+  "signature": "(self, var: pycalphad.variables.StateVariable)",
+  "summary": "Values of a variable along a ZPF line.",
+  "area": "mapping"
+ },
+ {
+  "name": "Point",
+  "path": "pycalphad.mapping.primitives.Point",
+  "kind": "data-output",
+  "signature": "(global_conditions: Mapping[pycalphad.variables.StateVariable, float], chemical_potentials: List[float], _fixed_composition_sets: List[pycalphad.core.composition_set.CompositionSet], _free_composition_sets: List[pycalphad.core.composition_set.CompositionSet]) -> None",
+  "summary": "Map point: global_conditions, chemical_potentials, stable phases/composition sets; get_property(var), get_local_property.",
+  "area": "mapping"
+ },
+ {
+  "name": "Node",
+  "path": "pycalphad.mapping.primitives.Node",
+  "kind": "data-output",
+  "signature": "(global_conditions: Mapping[pycalphad.variables.StateVariable, float], chemical_potentials: List[float], _fixed_composition_sets: List[pycalphad.core.composition_set.CompositionSet], _free_composition_sets: List[pycalphad.core.composition_set.CompositionSet], parent: pycalphad.mapping.primitives.Point, axis_var: pycalphad.variables.StateVariable = None, axis_direction: pycalphad.mapping.primitives.Direction = None, exit_hint: pycalphad.mapping.primitives.ExitHint = <ExitHint.NORMAL: 0>) -> None",
+  "summary": "Special Point where phases change (invariant / start of new ZPF lines).",
+  "area": "mapping"
+ },
+ {
+  "name": "point_from_equilibrium",
+  "path": "pycalphad.mapping.starting_points.point_from_equilibrium",
+  "kind": "data-output",
+  "signature": "(dbf: pycalphad.io.database.Database, components: list[str], phases: list[str], conditions: dict[pycalphad.variables.StateVariable, float], **eq_kwargs)",
+  "summary": "Compute a mapping Point from an equilibrium at given conditions.",
+  "area": "mapping"
+ },
+ {
+  "name": "degrees_of_freedom",
+  "path": "pycalphad.mapping.utils.degrees_of_freedom",
+  "kind": "data-output",
+  "signature": "(point: Union[pycalphad.mapping.primitives.Point, pycalphad.mapping.primitives.Node], components: list[str], num_potential_conditions: int)",
+  "summary": "Gibbs-phase-rule degrees of freedom of a Point/Node.",
+  "area": "mapping"
+ },
+ {
+  "name": "Workspace.get",
+  "path": "pycalphad.core.workspace.Workspace.get",
+  "kind": "data-output",
+  "signature": "(self, *args: Tuple[pycalphad.property_framework.types.ComputableProperty])",
+  "summary": "Compute one or more properties over the condition grid; arrays shaped like the conditions (display units).",
+  "area": "workspace"
+ },
+ {
+  "name": "Workspace.get_dict",
+  "path": "pycalphad.core.workspace.Workspace.get_dict",
+  "kind": "data-output",
+  "signature": "(self, *args: Tuple[pycalphad.property_framework.types.ComputableProperty])",
+  "summary": "Like get() but returns {property: array} (wildcards like 'NP(*)' expand to one key per phase).",
+  "area": "workspace"
+ },
+ {
+  "name": "Workspace.eq",
+  "path": "pycalphad.core.workspace.Workspace.eq",
+  "kind": "data-output",
+  "signature": "(attribute: LightDataset | None)",
+  "summary": "Underlying LightDataset equilibrium result (NP, GM, MU, X, Y, Phase); .get_dataset() -> xarray.",
+  "area": "workspace"
+ },
+ {
+  "name": "Workspace.enumerate_composition_sets",
+  "path": "pycalphad.core.workspace.Workspace.enumerate_composition_sets",
+  "kind": "data-output",
+  "signature": "(self)",
+  "summary": "Yield (index, [CompositionSet]) for every grid point (stable phases, site fractions, NP).",
+  "area": "workspace"
+ },
+ {
+  "name": "Workspace.get_composition_sets",
+  "path": "pycalphad.core.workspace.Workspace.get_composition_sets",
+  "kind": "data-output",
+  "signature": "(self)",
+  "summary": "Composition sets of a point calculation (ndim == 0).",
+  "area": "workspace"
+ },
+ {
+  "name": "Workspace.copy",
+  "path": "pycalphad.core.workspace.Workspace.copy",
+  "kind": "support",
+  "signature": "(self)",
+  "summary": "Copy a workspace (then change conditions/phases).",
+  "area": "workspace"
+ },
+ {
+  "name": "Workspace.ndim / condition_axis_order",
+  "path": "pycalphad.core.workspace.Workspace.condition_axis_order",
+  "kind": "support",
+  "signature": "(property)",
+  "summary": "Number of varying conditions and their axis order in returned arrays.",
+  "area": "workspace"
+ },
+ {
+  "name": "Conditions",
+  "path": "pycalphad.core.conditions.Conditions",
+  "kind": "support",
+  "signature": "(wks: Optional[ForwardRef('Workspace')])",
+  "summary": "Workspace conditions mapping (keys, str_keys, items(units=...)).",
+  "area": "workspace"
+ },
+ {
+  "name": "ModelComputedProperty",
+  "path": "pycalphad.property_framework.ModelComputedProperty",
+  "kind": "data-output",
+  "signature": "(model_attr_name: str, phase_name: Optional[str] = None)",
+  "summary": "Any Model attribute as a property: 'GM', 'HM(FCC_A1)', 'DOO(BCC_B2)', 'TC', 'VM'...; ['units'] changes display units.",
+  "area": "property framework"
+ },
+ {
+  "name": "JanssonDerivative",
+  "path": "pycalphad.property_framework.JanssonDerivative",
+  "kind": "data-output",
+  "signature": "(numerator: pycalphad.property_framework.types.DifferentiableComputableProperty, denominator: pycalphad.property_framework.types.ConditionableComputableProperty)",
+  "summary": "Derivative of an equilibrium property w.r.t. a condition: 'HM.T' (=Cp), 'X(LIQUID,CR).T', 'MU(CR).X(CR)'.",
+  "area": "property framework"
+ },
+ {
+  "name": "LinearCombination",
+  "path": "pycalphad.property_framework.computed_property.LinearCombination",
+  "kind": "support",
+  "signature": "(expr: symengine.lib.symengine_wrapper.Basic)",
+  "summary": "Symbolic linear combination of properties usable as condition (e.g. v.X('A') - v.X('B')).",
+  "area": "property framework"
+ },
+ {
+  "name": "IsolatedPhase",
+  "path": "pycalphad.property_framework.IsolatedPhase",
+  "kind": "data-output",
+  "signature": "(phase: Union[pycalphad.core.composition_set.CompositionSet, str], wks: Optional[ForwardRef('Workspace')])",
+  "summary": "Meta-property: property of one phase minimized alone under the same conditions (metastable single-phase, e.g. GM curves).",
+  "area": "property framework"
+ },
+ {
+  "name": "DormantPhase",
+  "path": "pycalphad.property_framework.DormantPhase",
+  "kind": "data-output",
+  "signature": "(phase: Union[pycalphad.core.composition_set.CompositionSet, str], wks: Optional[ForwardRef('Workspace')])",
+  "summary": "Meta-property: phase minimized at the equilibrium potentials without becoming stable; .driving_force.",
+  "area": "property framework"
+ },
+ {
+  "name": "DormantPhase.driving_force",
+  "path": "pycalphad.property_framework.metaproperties.DormantPhase.driving_force",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Driving force (J/mol) for precipitation of a dormant phase; >0 means it wants to form.",
+  "area": "property framework"
+ },
+ {
+  "name": "DrivingForce",
+  "path": "pycalphad.property_framework.DrivingForce",
+  "kind": "data-output",
+  "signature": "(phase_name)",
+  "summary": "Driving force property class used by DormantPhase(...).driving_force.",
+  "area": "property framework"
+ },
+ {
+  "name": "ReferenceState (property)",
+  "path": "pycalphad.property_framework.ReferenceState",
+  "kind": "data-output",
+  "signature": "(reference_conditions: List[Tuple[str, Dict]], wks: 'Workspace')",
+  "summary": "Meta-property re-referencing a property to phases at given conditions: ReferenceState([('FCC_A1',{v.X('CR'):0}),...], wks)('HM').",
+  "area": "property framework"
+ },
+ {
+  "name": "T0",
+  "path": "pycalphad.property_framework.T0",
+  "kind": "data-output",
+  "signature": "(phase_one: Union[pycalphad.core.composition_set.CompositionSet, str], phase_two: Union[pycalphad.core.composition_set.CompositionSet, str], wks: Optional[ForwardRef('Workspace')])",
+  "summary": "Property: T0 temperature where GM(phase1) == GM(phase2) at the current composition.",
+  "area": "property framework"
+ },
+ {
+  "name": "as_quantity",
+  "path": "pycalphad.property_framework.as_quantity",
+  "kind": "data-output",
+  "signature": "(prop: 'ComputableProperty', qt: ArrayLike)",
+  "summary": "Wrap a property value as a pint Quantity in the property's display units.",
+  "area": "property framework"
+ },
+ {
+  "name": "to_display_units",
+  "path": "pycalphad.property_framework.units.to_display_units",
+  "kind": "data-output",
+  "signature": "(value: ArrayLike, comp_sets: Sequence[pycalphad.core.composition_set.CompositionSet], prop: 'ComputableProperty') -> ArrayLike",
+  "summary": "Convert implementation units -> display units (J/mol -> J/g etc. using phase molar masses).",
+  "area": "property framework"
+ },
+ {
+  "name": "DimensionalityError",
+  "path": "pycalphad.property_framework.DimensionalityError",
+  "kind": "support",
+  "signature": "(units1: 'ty.Any', units2: 'ty.Any', dim1: \"'str | UnitsContainerT'\" = '', dim2: \"'str | UnitsContainerT'\" = '', extra_msg: 'str' = '') -> 'None'",
+  "summary": "pint error raised by an impossible unit conversion.",
+  "area": "property framework"
+ },
+ {
+  "name": "ComputableProperty",
+  "path": "pycalphad.property_framework.ComputableProperty",
+  "kind": "support",
+  "signature": "(*args, **kwargs)",
+  "summary": "Protocol any property must satisfy (compute_property, shape, units, display_name).",
+  "area": "property framework"
+ },
+ {
+  "name": "ConditionableComputableProperty",
+  "path": "pycalphad.property_framework.ConditionableComputableProperty",
+  "kind": "support",
+  "signature": "(*args, **kwargs)",
+  "summary": "Protocol: may appear in the denominator of a Jansson derivative (T, P, X, MU, N ...).",
+  "area": "property framework"
+ },
+ {
+  "name": "DifferentiableComputableProperty",
+  "path": "pycalphad.property_framework.DifferentiableComputableProperty",
+  "kind": "support",
+  "signature": "(*args, **kwargs)",
+  "summary": "Protocol: may appear in the numerator of a Jansson derivative.",
+  "area": "property framework"
+ },
+ {
+  "name": "T",
+  "path": "pycalphad.variables.T",
+  "kind": "support",
+  "signature": "(TemperatureType instance; v.T['degC'] for display units)",
+  "summary": "Temperature (K). v.T['degC'] gives display in Celsius.",
+  "area": "variables"
+ },
+ {
+  "name": "P",
+  "path": "pycalphad.variables.P",
+  "kind": "support",
+  "signature": "(PressureType instance)",
+  "summary": "Pressure (Pa); usual condition v.P: 101325.",
+  "area": "variables"
+ },
+ {
+  "name": "N",
+  "path": "pycalphad.variables.N",
+  "kind": "support",
+  "signature": "(SystemMolesType instance)",
+  "summary": "Total system moles (usually v.N: 1).",
+  "area": "variables"
+ },
+ {
+  "name": "X",
+  "path": "pycalphad.variables.X",
+  "kind": "data-output",
+  "signature": "(*args)",
+  "summary": "Mole fraction: v.X('CR') overall or v.X('FCC_A1','CR') in a phase; condition and property.",
+  "area": "variables"
+ },
+ {
+  "name": "W",
+  "path": "pycalphad.variables.W",
+  "kind": "data-output",
+  "signature": "(*args)",
+  "summary": "Mass fraction: v.W('CR') / v.W(phase, 'CR'); condition and property.",
+  "area": "variables"
+ },
+ {
+  "name": "MU",
+  "path": "pycalphad.variables.MU",
+  "kind": "data-output",
+  "signature": "(species)",
+  "summary": "Chemical potential v.MU('CR') (J/mol); property and condition.",
+  "area": "variables"
+ },
+ {
+  "name": "NP",
+  "path": "pycalphad.variables.NP",
+  "kind": "data-output",
+  "signature": "(phase_name)",
+  "summary": "Phase fraction v.NP('FCC_A1') (moles of atoms); 'NP(*)' for all phases.",
+  "area": "variables"
+ },
+ {
+  "name": "Y (site fraction)",
+  "path": "pycalphad.variables.Y",
+  "kind": "data-output",
+  "signature": "(phase_name, subl_index, species)",
+  "summary": "Site fraction v.Y('BCC_B2', sublattice_index, 'AL'); string 'Y(BCC_B2,0,AL)'.",
+  "area": "variables"
+ },
+ {
+  "name": "Species",
+  "path": "pycalphad.variables.Species",
+  "kind": "support",
+  "signature": "(name, constituents=None, charge=0)",
+  "summary": "Chemical species (name, constituents, charge); .weight.",
+  "area": "variables"
+ },
+ {
+  "name": "Component",
+  "path": "pycalphad.variables.Component",
+  "kind": "support",
+  "signature": "(name, constituents=None)",
+  "summary": "Component (pure element or linear combination).",
+  "area": "variables"
+ },
+ {
+  "name": "StateVariable",
+  "path": "pycalphad.variables.StateVariable",
+  "kind": "support",
+  "signature": "(*args, **kwargs)",
+  "summary": "Base class of all variables; prop['units'] sets display units; display_name.",
+  "area": "variables"
+ },
+ {
+  "name": "get_mass_fractions",
+  "path": "pycalphad.variables.get_mass_fractions",
+  "kind": "data-output",
+  "signature": "(mole_fractions, dependent_species, pure_element_mass_dict)",
+  "summary": "Convert mole fractions -> mass fractions for a point composition.",
+  "area": "variables"
+ },
+ {
+  "name": "get_mole_fractions",
+  "path": "pycalphad.variables.get_mole_fractions",
+  "kind": "data-output",
+  "signature": "(mass_fractions, dependent_species, pure_element_mass_dict)",
+  "summary": "Convert mass fractions -> mole fractions (e.g. wt% alloy spec -> conditions).",
+  "area": "variables"
+ },
+ {
+  "name": "unpack_components",
+  "path": "pycalphad.variables.unpack_components",
+  "kind": "support",
+  "signature": "(components: 'Sequence[Component | Species | str]', dbf: Optional[ForwardRef('Database')] = None)",
+  "summary": "Normalize component list (strings/Species) to Components.",
+  "area": "variables"
+ },
+ {
+  "name": "Model.GM",
+  "path": "pycalphad.Model.GM",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Molar Gibbs energy per mole of atoms (J/mol) (alias energy).",
+  "area": "model"
+ },
+ {
+  "name": "Model.G",
+  "path": "pycalphad.Model.G",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Gibbs energy per formula unit (J) (alias formulaenergy).",
+  "area": "model"
+ },
+ {
+  "name": "Model.HM",
+  "path": "pycalphad.Model.HM",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Molar enthalpy (alias enthalpy).",
+  "area": "model"
+ },
+ {
+  "name": "Model.H",
+  "path": "pycalphad.Model.H",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Enthalpy per formula unit (alias formulaenthalpy).",
+  "area": "model"
+ },
+ {
+  "name": "Model.SM",
+  "path": "pycalphad.Model.SM",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Molar entropy (alias entropy).",
+  "area": "model"
+ },
+ {
+  "name": "Model.CPM",
+  "path": "pycalphad.Model.CPM",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Molar heat capacity of the phase (alias heat_capacity); apparent equilibrium Cp incl. transformations = 'HM.T'.",
+  "area": "model"
+ },
+ {
+  "name": "Model.GM_MIX",
+  "path": "pycalphad.Model.GM_MIX",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Gibbs energy of mixing relative to endmembers (alias mixing_energy).",
+  "area": "model"
+ },
+ {
+  "name": "Model.HM_MIX",
+  "path": "pycalphad.Model.HM_MIX",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Enthalpy of mixing (alias mixing_enthalpy).",
+  "area": "model"
+ },
+ {
+  "name": "Model.SM_MIX",
+  "path": "pycalphad.Model.SM_MIX",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Entropy of mixing (alias mixing_entropy).",
+  "area": "model"
+ },
+ {
+  "name": "Model.CPM_MIX",
+  "path": "pycalphad.Model.CPM_MIX",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Heat capacity of mixing (alias mixing_heat_capacity).",
+  "area": "model"
+ },
+ {
+  "name": "Model.DOO",
+  "path": "pycalphad.Model.degree_of_ordering",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Degree of ordering (0 disordered .. 1), property 'DOO(PHASE)'.",
+  "area": "model"
+ },
+ {
+  "name": "Model.TC / BMAG / NT",
+  "path": "pycalphad.Model.TC",
+  "kind": "data-output",
+  "signature": "(instance attribute, symbolic; also BMAG, NT)",
+  "summary": "Curie temperature, Bohr magneton number (BMAG), Neel temperature of the phase (symbolic).",
+  "area": "model"
+ },
+ {
+  "name": "Model.VM",
+  "path": "pycalphad.Model.volume_energy",
+  "kind": "data-output",
+  "signature": "(self, dbe)",
+  "summary": "Molar volume VM (and V0, VA, VC, VK) from volume parameters.",
+  "area": "model"
+ },
+ {
+  "name": "Model.models",
+  "path": "pycalphad.Model.build_phase",
+  "kind": "data-output",
+  "signature": "(self, dbe)",
+  "summary": "Dict of energy contributions: ref, idmix, xsmix, mag, 2st, ein, vol, ord (each a symbolic expression).",
+  "area": "model"
+ },
+ {
+  "name": "Model.ast",
+  "path": "pycalphad.Model.ast",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Full symbolic Gibbs-energy expression (SymEngine).",
+  "area": "model"
+ },
+ {
+  "name": "Model.variables",
+  "path": "pycalphad.Model.variables",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "State variables + site fractions in the model.",
+  "area": "model"
+ },
+ {
+  "name": "Model.moles",
+  "path": "pycalphad.Model.moles",
+  "kind": "data-output",
+  "signature": "(self, species, per_formula_unit=False)",
+  "summary": "Symbolic moles of a species/element in the phase.",
+  "area": "model"
+ },
+ {
+  "name": "Model.endmember_reference_model",
+  "path": "pycalphad.Model.endmember_reference_model",
+  "kind": "data-output",
+  "signature": "(property)",
+  "summary": "Model with only endmember contributions (reference for *_MIX properties).",
+  "area": "model"
+ },
+ {
+  "name": "Model.shift_reference_state",
+  "path": "pycalphad.Model.shift_reference_state",
+  "kind": "data-output",
+  "signature": "(self, reference_states, dbe, contrib_mods=None, output=('GM', 'HM', 'SM', 'CPM'), fmt_str='{}R')",
+  "summary": "Adds GMR/HMR/SMR/CPMR attributes: properties relative to given pure-element ReferenceStates.",
+  "area": "model"
+ },
+ {
+  "name": "Model energy contributions",
+  "path": "pycalphad.Model.excess_mixing_energy",
+  "kind": "data-output",
+  "signature": "(self, dbe)",
+  "summary": "reference_energy, ideal_mixing_energy, excess_mixing_energy, magnetic_energy, atomic_ordering_energy, twostate_energy, einstein_energy, volume_energy (symbolic pieces).",
+  "area": "model"
+ },
+ {
+  "name": "ModelMQMQA",
+  "path": "pycalphad.models.model_mqmqa.ModelMQMQA",
+  "kind": "data-output",
+  "signature": "(dbe, comps, phase_name, parameters=None)",
+  "summary": "Modified quasichemical (MQMQA) model used for ChemSage DAT SUBQ phases.",
+  "area": "model"
+ },
+ {
+  "name": "Database.from_file",
+  "path": "pycalphad.Database.from_file",
+  "kind": "support",
+  "signature": "(fname, fmt=None)",
+  "summary": "Read database (fmt 'tdb' or 'dat', autodetected).",
+  "area": "database"
+ },
+ {
+  "name": "Database.from_string",
+  "path": "pycalphad.Database.from_string",
+  "kind": "support",
+  "signature": "(cls, data, **kwargs)",
+  "summary": "Read database from a string (fmt=...).",
+  "area": "database"
+ },
+ {
+  "name": "Database.to_file",
+  "path": "pycalphad.Database.to_file",
+  "kind": "data-output",
+  "signature": "(self, fname, fmt=None, if_exists='raise', **write_kwargs)",
+  "summary": "Write database (only 'tdb' writable); if_exists raise|rename|overwrite; write kwargs groupby, if_incompatible.",
+  "area": "database"
+ },
+ {
+  "name": "Database.to_string",
+  "path": "pycalphad.Database.to_string",
+  "kind": "data-output",
+  "signature": "(self, **kwargs)",
+  "summary": "Database as TDB text (fmt='tdb').",
+  "area": "database"
+ },
+ {
+  "name": "Database.search",
+  "path": "pycalphad.Database.search",
+  "kind": "data-output",
+  "signature": "(self, query)",
+  "summary": "Query parameters (tinydb where('phase_name')==...) -> list of parameter dicts.",
+  "area": "database"
+ },
+ {
+  "name": "Database.register_format",
+  "path": "pycalphad.Database.register_format",
+  "kind": "support",
+  "signature": "(fmt, read=None, write=None)",
+  "summary": "Register read/write functions for a format.",
+  "area": "database"
+ },
+ {
+  "name": "Database.add_parameter / add_phase",
+  "path": "pycalphad.Database.add_parameter",
+  "kind": "support",
+  "signature": "(self, param_type, phase_name, constituent_array, param_order, param, ref=None, diffusing_species=None, force_insert=True, **kwargs)",
+  "summary": "Build/modify databases programmatically.",
+  "area": "database"
+ },
+ {
+  "name": "Database attributes",
+  "path": "pycalphad.io.database.Database",
+  "kind": "data-output",
+  "signature": "(fname_or_tdb_string=None)",
+  "summary": "elements, species, phases (Phase: sublattices, constituents, model_hints), symbols (FUNCTIONs), refstates, _parameters.",
+  "area": "database"
+ },
+ {
+  "name": "Phase",
+  "path": "pycalphad.io.database.Phase",
+  "kind": "data-output",
+  "signature": "()",
+  "summary": "Phase record: name, constituents, sublattices, model_hints.",
+  "area": "database"
+ },
+ {
+  "name": "write_tdb",
+  "path": "pycalphad.io.tdb.write_tdb",
+  "kind": "data-output",
+  "signature": "(dbf, fd, groupby='subsystem', if_incompatible='warn')",
+  "summary": "TDB writer: groupby 'subsystem'|'phase'; if_incompatible 'warn'|'raise'|'ignore'|'fix' (name mangling, line length).",
+  "area": "database"
+ },
+ {
+  "name": "read_tdb",
+  "path": "pycalphad.io.tdb.read_tdb",
+  "kind": "support",
+  "signature": "(dbf, fd)",
+  "summary": "TDB parser used by Database.from_file.",
+  "area": "database"
+ },
+ {
+  "name": "TCPrinter",
+  "path": "pycalphad.io.tdb.TCPrinter",
+  "kind": "data-output",
+  "signature": "(if_incompatible='warn')",
+  "summary": "Print SymEngine expressions in Thermo-Calc syntax.",
+  "area": "database"
+ },
+ {
+  "name": "reflow_text",
+  "path": "pycalphad.io.tdb.reflow_text",
+  "kind": "data-output",
+  "signature": "(text, linewidth=80)",
+  "summary": "Wrap TDB text lines to <= linewidth.",
+  "area": "database"
+ },
+ {
+  "name": "read_cs_dat",
+  "path": "pycalphad.io.cs_dat.read_cs_dat",
+  "kind": "support",
+  "signature": "(dbf: pycalphad.io.database.Database, fd)",
+  "summary": "ChemSage/FactSage DAT reader (read-only format).",
+  "area": "database"
+ },
+ {
+  "name": "format_registry",
+  "path": "pycalphad.io.database.format_registry",
+  "kind": "support",
+  "signature": "(dict: fmt -> DatabaseFormat(read, write))",
+  "summary": "Registered formats: tdb (read+write), dat (read only).",
+  "area": "database"
+ },
+ {
+  "name": "equilibrium Dataset",
+  "path": "xarray.Dataset",
+  "kind": "data-output",
+  "signature": "(data_vars: 'DataVars | None' = None, coords: 'Mapping[Any, Any] | None' = None, attrs: 'Mapping[Any, Any] | None' = None) -> 'None'",
+  "summary": "equilibrium()/calculate() return xarray.Dataset; dims = condition axes (N,P,T,X_..), vertex, component, internal_dof.",
+  "area": "results"
+ },
+ {
+  "name": "Dataset.to_netcdf",
+  "path": "xarray.Dataset.to_netcdf",
+  "kind": "data-output",
+  "signature": "(self, path: 'str | PathLike | io.IOBase | None' = None, mode: 'NetcdfWriteModes' = 'w', format: 'T_NetcdfTypes | None' = None, group: 'str | None' = None, engine: 'T_NetcdfEngine | None' = None, encoding: 'Mapping[Any, Mapping[str, Any]] | None' = None, unlimited_dims: 'Iterable[Hashable] | None' = None, compute: 'bool' = True, invalid_netcdf: 'bool' = False, auto_complex: 'bool | None' = None) -> 'memoryview | Delayed | None'",
+  "summary": "Save a full equilibrium/calculate result to NetCDF.",
+  "area": "results"
+ },
+ {
+  "name": "Dataset.to_dataframe",
+  "path": "xarray.Dataset.to_dataframe",
+  "kind": "data-output",
+  "signature": "(self, dim_order: 'Sequence[Hashable] | None' = None) -> 'pd.DataFrame'",
+  "summary": "Flatten a result to a pandas DataFrame (then .to_csv).",
+  "area": "results"
+ },
+ {
+  "name": "Dataset.sel / squeeze / where",
+  "path": "xarray.Dataset.sel",
+  "kind": "data-output",
+  "signature": "(self, indexers: 'Mapping[Any, Any] | None' = None, method: 'str | None' = None, tolerance: 'int | float | Iterable[int | float] | None' = None, drop: 'bool' = False, **indexers_kwargs: 'Any') -> 'Self'",
+  "summary": "Slice results, e.g. eq.NP.sel(T=1000).squeeze().",
+  "area": "results"
+ },
+ {
+  "name": "LightDataset.get_dataset",
+  "path": "pycalphad.core.light_dataset.LightDataset.get_dataset",
+  "kind": "data-output",
+  "signature": "(self)",
+  "summary": "Convert equilibrium(to_xarray=False) / Workspace.eq result to an xarray Dataset.",
+  "area": "results"
+ },
+ {
+  "name": "filter_phases",
+  "path": "pycalphad.core.utils.filter_phases",
+  "kind": "support",
+  "signature": "(dbf, comps, candidate_phases=None)",
+  "summary": "Phases valid for the given components.",
+  "area": "utils"
+ },
+ {
+  "name": "instantiate_models",
+  "path": "pycalphad.core.utils.instantiate_models",
+  "kind": "support",
+  "signature": "(dbf, comps, phases, model=None, parameters=None, symbols_only=True)",
+  "summary": "Build {phase: Model} dict (custom Model classes).",
+  "area": "utils"
+ },
+ {
+  "name": "get_pure_elements",
+  "path": "pycalphad.core.utils.get_pure_elements",
+  "kind": "support",
+  "signature": "(dbf, comps)",
+  "summary": "Pure elements of a component list.",
+  "area": "utils"
+ },
+ {
+  "name": "unpack_species",
+  "path": "pycalphad.core.utils.unpack_species",
+  "kind": "support",
+  "signature": "(dbf, comps)",
+  "summary": "Component names -> Species set.",
+  "area": "utils"
+ },
+ {
+  "name": "generate_dof",
+  "path": "pycalphad.core.utils.generate_dof",
+  "kind": "data-output",
+  "signature": "(phase, active_comps)",
+  "summary": "Site-fraction variable list of a phase for given components.",
+  "area": "utils"
+ },
+ {
+  "name": "endmember_matrix",
+  "path": "pycalphad.core.utils.endmember_matrix",
+  "kind": "data-output",
+  "signature": "(dof, vacancy_indices=None)",
+  "summary": "Endmember site-fraction matrix (for sampling/plots).",
+  "area": "utils"
+ },
+ {
+  "name": "point_sample",
+  "path": "pycalphad.core.utils.point_sample",
+  "kind": "support",
+  "signature": "(comp_count, pdof=10)",
+  "summary": "Random site-fraction sampling used by calculate.",
+  "area": "utils"
+ },
+ {
+  "name": "PhaseRecordFactory",
+  "path": "pycalphad.codegen.phase_record_factory.PhaseRecordFactory",
+  "kind": "support",
+  "signature": "(dbf, comps, state_variables, models, parameters=None)",
+  "summary": "Compiled phase records (fast property evaluation) used by Workspace/mapping.",
+  "area": "utils"
+ },
+ {
+  "name": "simulate_scheil_solidification",
+  "path": "scheil.simulate_scheil_solidification",
+  "kind": "data-output",
+  "signature": "(dbf, comps, phases, composition, start_temperature, step_temperature=1.0, liquid_phase_name='LIQUID', eq_kwargs=None, stop=0.0001, verbose=False, adaptive=True, output: list[str | pycalphad.property_framework.types.ComputableProperty] | None = None)",
+  "summary": "Scheil-Gulliver solidification path (scheil 0.3): returns SolidificationResult.",
+  "area": "related packages"
+ },
+ {
+  "name": "simulate_equilibrium_solidification",
+  "path": "scheil.simulate_equilibrium_solidification",
+  "kind": "data-output",
+  "signature": "(dbf, comps, phases, composition, start_temperature, step_temperature=1.0, liquid_phase_name='LIQUID', adaptive=True, eq_kwargs=None, binary_search_tol=0.1, verbose=False, output: list[str | pycalphad.property_framework.types.ComputableProperty] | None = None)",
+  "summary": "Equilibrium (lever-rule) solidification path: returns SolidificationResult.",
+  "area": "related packages"
+ },
+ {
+  "name": "SolidificationResult",
+  "path": "scheil.SolidificationResult",
+  "kind": "data-output",
+  "signature": "(phase_compositions, fraction_solid, temperatures, phase_amounts, converged, method, output: dict[str, ArrayLike] | None = None, validate_invariants=True)",
+  "summary": "fraction_solid, temperatures, phase_amounts, phase_compositions; to_dict/from_dict/to_dataframe.",
+  "area": "related packages"
+ },
+ {
+  "name": "espei dataplot",
+  "path": "espei.plot.dataplot",
+  "kind": "plotting",
+  "signature": "(comps, phases, conds, datasets, tielines=True, ax=None, legend_generator=<function phase_legend>, plot_kwargs=None, tieline_plot_kwargs=None) -> matplotlib.axes._axes.Axes",
+  "summary": "Overlay ESPEI ZPF datasets (experimental phase boundaries) on a phase-diagram axis.",
+  "area": "related packages"
+ },
+ {
+  "name": "espei plot_endmember",
+  "path": "espei.plot.plot_endmember",
+  "kind": "plotting",
+  "signature": "(dbf, comps, phase_name, configuration, output, datasets=None, symmetry=None, x='T', ax=None, plot_kwargs=None, dataplot_kwargs=None) -> matplotlib.axes._axes.Axes",
+  "summary": "Plot an endmember property vs T with thermochemical datasets.",
+  "area": "related packages"
+ },
+ {
+  "name": "espei plot_interaction",
+  "path": "espei.plot.plot_interaction",
+  "kind": "plotting",
+  "signature": "(dbf, comps, phase_name, configuration, output, datasets=None, symmetry=None, ax=None, plot_kwargs=None, dataplot_kwargs=None) -> matplotlib.axes._axes.Axes",
+  "summary": "Plot an interaction (mixing) property vs composition with datasets.",
+  "area": "related packages"
+ }
+]

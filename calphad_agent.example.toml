@@ -1,0 +1,31 @@
+# calphad_agent.toml  -  settings for `calphad-agent`
+# Put this file in the directory you run calphad-agent from (or ~/.config/calphad_tools/config.toml).
+# Keep it out of version control if it contains your key; you can instead leave api_key empty
+# and export CALPHAD_LLM_API_KEY=... in your shell.
+
+[llm]
+provider = "openai"                       # any OpenAI-compatible endpoint (vLLM, LiteLLM, Azure-style gateways...)
+base_url = "https://YOUR-LLM-HOST/v1"     # <-- custom URL of your hosted model
+api_key  = ""                             # <-- your key (or set CALPHAD_LLM_API_KEY)
+api_key_env = ""                          # or: the NAME of an env variable holding the key, e.g. "SOL_API_KEY"
+model    = "gpt-5.6-sol"                  # model name exactly as your endpoint expects it
+api      = "chat"                         # "chat" = /chat/completions ; "responses" = /responses
+reasoning_effort = "medium"               # low | medium | high ; "" if the endpoint rejects it
+max_output_tokens = 16000                 # ceiling; each request reserves initial_output_tokens (6000)
+vision = true                             # let the model look at the plots it makes
+tokens_per_minute = "auto"                # rate limits: "auto" learns a pace from the first 429; or your TPM quota; 0 = off
+# image_detail = "auto"                   # "low" = ~85 tokens per plot image
+# extra_headers = { "X-Custom-Header" = "value" }
+# verify_ssl = true
+# ca_bundle = "/etc/ssl/certs/my-institution-ca.pem"
+
+# --- alternative: Claude via the Anthropic API ---
+# provider = "anthropic"
+# model = "claude-opus-5"
+# api_key = ""                            # or ANTHROPIC_API_KEY
+
+[agent]
+workdir = "."                             # relative paths in chat are resolved against this
+output_dir = "calphad_outputs"            # plots, decks, datasets are written here
+python_tool = "ask"                       # ask | auto | off : may the model run arbitrary Python?
+max_tool_rounds = 40

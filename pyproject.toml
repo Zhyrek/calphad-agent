@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "calphad-tools"
+version = "0.1.0"
+description = "CALPHAD automation: TDB compare/merge, diagram decks, ESPEI data + Flux batch scripts, and an LLM chat agent for pycalphad"
+requires-python = ">=3.11"
+dependencies = [
+    "pycalphad>=0.11",
+    "espei>=0.9",
+    "python-pptx>=1.0",
+    "matplotlib",
+    "numpy",
+    "pypdf",
+    "pyyaml",
+    "pillow",
+    "scheil>=0.3",
+    "pandas",
+    "scipy",
+    "xarray",
+    "openpyxl",
+    "openai>=1.40",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.40"]
+anthropic = ["anthropic>=1.0"]
+llm = ["openai>=1.40", "anthropic>=1.0"]
+
+[project.scripts]
+calphad-tools = "calphad_tools.cli:main"
+calphad-agent = "calphad_tools.agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["calphad_tools*"]
