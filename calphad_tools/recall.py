@@ -26,7 +26,7 @@ REF = re.compile(r"^@(?:last(?::(?P<tool>[A-Za-z_][\w]*))?|call:(?P<idx>\d+))(?P
 NOT_RESULTS = {"recent_results", "rerun_call", "session_log", "provenance", "export_session", "show_code",
                "list_files", "find_databases", "describe_figure", "plot_ops_help", "view_image", "view_pdf_page",
                "inspect_data", "tdb_info", "job_status", "list_jobs", "wait_job", "stop_job", "calc_cache",
-               "report_problem", "package_feedback", "pycalphad_help", "list_calphad_capabilities", "ask_user"}
+               "report_problem", "package_feedback", "tool_help", "pycalphad_help", "list_calphad_capabilities", "ask_user"}
 
 
 def _records(tb) -> List[Tuple[str, Dict[str, Any]]]:

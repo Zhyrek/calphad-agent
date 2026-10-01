@@ -98,7 +98,9 @@ python_tool = "auto_verify"             # ask | auto_verify | off
 
 The conversation is append-only, and each conversation sends one `prompt_cache_key`, so repeated requests reuse the provider's prompt cache. That makes them cheaper and faster. Whether cached tokens also count toward your TPM quota is up to the provider. `/usage` and the web header show input tokens, the cached share, and the current pace.
 
-Most of each request is fixed overhead: about 22k tokens of tool descriptions plus the growing conversation. Plot images are downscaled to `image_max_px` (1600 px) when they're added. `image_detail = "low"` cuts each image to about 85 tokens, at the cost of detail. Raising the deployment's TPM quota in Azure AI Foundry (Deployments → Edit → Tokens per Minute) is the direct fix if you want full speed.
+**Tool descriptions on demand.** By default (`tool_descriptions = "compact"` under `[agent]`), only the about 15 everyday tools are sent in full: databases, equilibrium, phase diagrams, plotting, viewing images, recent results, `show_code`. Each of the other about 70 tools is sent as one line plus its argument names, ending in `[tool_help]`. Before using one for the first time, the model calls `tool_help` with the names of all the tools it is about to use, in one call. The tool list stays fixed for the whole conversation, so it stays cacheable. This cuts the fixed overhead per model call from about 23k to about 9k tokens. Wrong or missing arguments are caught before the tool runs, and the error includes that tool's full help, so one retry fixes it. `tool_descriptions = "full"` restores the old behaviour.
+
+Most of each request is fixed overhead: about 9k tokens of tool descriptions (23k with `tool_descriptions = "full"`) plus the growing conversation. Plot images are downscaled to `image_max_px` (1600 px) when they're added. `image_detail = "low"` cuts each image to about 85 tokens, at the cost of detail. Raising the deployment's TPM quota in Azure AI Foundry (Deployments → Edit → Tokens per Minute) is the direct fix if you want full speed.
 
 Other settings you may need:
 

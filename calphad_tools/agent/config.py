@@ -64,6 +64,7 @@ class AgentConfig:
     output_dir: str = "calphad_outputs"
     python_tool: str = "ask"          # ask | auto_verify | auto | off   (arbitrary Python execution)
     max_tool_rounds: int = 40
+    tool_descriptions: str = "compact"    # compact: core tools in full, the rest one line + tool_help on demand
     max_tool_output_chars: int = 8000     # longer replies: the rest goes to <output_dir>/.tool_outputs/
     auto_failure_reports: bool = True     # save a problem report when a turn ends in failure
     report_max_input_mb: float = 5.0      # copy input files up to this size into problem reports

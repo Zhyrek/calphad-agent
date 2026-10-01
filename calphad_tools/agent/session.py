@@ -72,6 +72,8 @@ output: it gives standalone pycalphad/matplotlib code including the steps it was
 - "The previous plot/result": any file argument accepts '@last' (latest image), '@last.csv', '@last:TOOL' or
 '@call:N' (recent_results lists them). To add points/lines/labels to an existing figure use edit_figure with
 image='@last' (no recalculation); to repeat a calculation with different settings use rerun_call.
+- Tools whose description ends in "[tool_help]" are listed in short form (purpose + argument names, * = required):
+before using one for the first time, call tool_help with the names of ALL the tools you are about to use (one call).
 - Keep the conversation small: the tools' replies already summarise what they wrote - don't open the PowerPoints,
 workbooks or images they produced just to check them. Look at an image (view_image) only when you need to see it;
 tables go through inspect_data.
@@ -141,7 +143,8 @@ class Agent:
         llm = copy.copy(self.cfg.llm)
         if str(llm.prompt_cache_key).strip().lower() == "auto":
             llm.prompt_cache_key = "calphad-agent-" + secrets.token_hex(6)
-        b = make_backend(llm, self.system, self.toolbox.specs())
+        b = make_backend(llm, self.system, self.toolbox.model_specs(getattr(self.cfg.agent, "tool_descriptions",
+                                                                              "compact")))
         guard = getattr(b, "guard", None)
         if guard is not None:
             guard.notify = lambda m: self.ui.progress(m)

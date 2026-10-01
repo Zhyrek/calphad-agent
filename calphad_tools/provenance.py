@@ -38,7 +38,7 @@ SECRET_VALUE_RE = re.compile(r"\b(sk-[A-Za-z0-9_\-]{16,}|sk-ant-[A-Za-z0-9_\-]{1
 REDACTED = "[REDACTED]"
 OUTPUT_ARG_RE = re.compile(r"^(output.*|out|.*_output|output_name|output_dir|save_as|dest.*)$", re.I)
 SKIP_EXPORT = {"session_log", "export_session", "provenance", "ask_user", "recent_results",
-               "rerun_call", "package_feedback", "report_problem"}   # rerun_call: its inner call is logged (and replayed) on its own
+               "rerun_call", "package_feedback", "report_problem", "tool_help"}   # rerun_call: its inner call is logged (and replayed) on its own
 TEXT_EXTS = {".csv", ".json", ".txt", ".tdb", ".dat", ".yaml", ".yml", ".exp", ".pop", ".dop", ".tsv", ".md"}
 HASH_LIMIT = 1 << 30                    # don't hash files > 1 GiB (size + mtime only)
 MAX_SCAN = 50000                        # output-dir entries scanned per call for new files

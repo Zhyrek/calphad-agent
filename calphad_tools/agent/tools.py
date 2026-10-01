@@ -33,6 +33,29 @@ PLUGIN_MODULES = ["calphad_tools.figures", "calphad_tools.figdata", "calphad_too
                   "calphad_tools.recall", "calphad_tools.phase_inventory", "calphad_tools.system_coverage"]
 
 
+# tools sent to the model with their full description and argument schema; every other tool is sent as one line
+# plus its argument names, and the model reads the details with tool_help (once, when it first needs the tool)
+CORE_TOOLS = ("list_files", "find_databases", "tdb_info", "calculate_equilibrium", "map_phase_diagram", "make_plot",
+              "edit_figure", "describe_figure", "view_image", "inspect_data", "recent_results", "ask_user",
+              "show_code", "tool_help", "list_calphad_capabilities")
+
+
+def sig_explicit(fn) -> bool:
+    """True if the function names its parameters (not just **kwargs)."""
+    import inspect
+    try:
+        return any(p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY) for p in inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return False
+
+
+def _summary(desc: str, n: int = 170) -> str:
+    """First sentence of a tool description (the compact form the model sees)."""
+    m = re.match(r"(.+?[.!?])(\s|$)", desc.strip(), re.S)
+    first = (m.group(1) if m else desc.strip()).replace("\n", " ")
+    return first if len(first) <= n else first[: n - 3].rsplit(" ", 1)[0] + "..."
+
+
 def _pptx_text(path: str, limit: int = 6000) -> str:
     """Slide titles and table/text content of a PowerPoint (compact; never the raw zip bytes)."""
     from pptx import Presentation
@@ -193,6 +216,65 @@ class ToolBox:
     def specs(self) -> List[ToolSpec]:
         return [t.spec for t in self.tools.values()]
 
+    def model_specs(self, mode: str = "compact", core=CORE_TOOLS) -> List[ToolSpec]:
+        """The tool list sent to the model.  "compact": the core tools in full, every other tool as a one-line
+        summary + its argument names (details on demand with tool_help) - about 70 % fewer tokens on every call,
+        and the list never changes during a conversation (prompt caching).  "full": everything in full."""
+        if str(mode).lower() == "full":
+            return self.specs()
+        out = []
+        for t in self.tools.values():
+            sp = t.spec
+            if sp.name in core:
+                out.append(sp)
+                continue
+            props = (sp.parameters or {}).get("properties", {}) or {}
+            req = set((sp.parameters or {}).get("required", []) or [])
+            args = ", ".join(n + ("*" if n in req else "") for n in props) or "none"
+            out.append(ToolSpec(sp.name, f"{_summary(sp.description, 100)} Args: {args} [tool_help]",
+                                {"type": "object"}))
+        return out
+
+    def help_text(self, name: str) -> str:
+        t = self.tools.get(name)
+        if t is None:
+            import difflib
+            close = difflib.get_close_matches(name, list(self.tools), n=3)
+            return f"{name}: no such tool" + (f" (did you mean {', '.join(close)}?)" if close else "")
+        sp = t.spec
+        params = sp.parameters or {}
+        return (f"## {sp.name}\n{sp.description}\nrequired: {params.get('required', [])}\narguments: "
+                + json.dumps(params.get("properties", {}), separators=(",", ":"), default=str))
+
+    def _check_args(self, name: str, args: Dict) -> Optional[str]:
+        """Unknown or missing arguments, caught before the tool runs (compact tool descriptions make guesses more
+        likely): the error carries the tool's full help, so one retry fixes it."""
+        t = self.tools.get(name)
+        if t is None or not isinstance(args, dict):
+            return None
+        params = t.spec.parameters or {}
+        props = params.get("properties") or {}
+        if params.get("additionalProperties", False) is not False and not props:
+            return None
+        unknown = [k for k in args if props and k not in props]
+        # "required" in a schema tells the model what to give; only arguments the tool really cannot do without
+        # (no default in the code) are refused here
+        import inspect
+        try:
+            sig = inspect.signature(t.fn).parameters
+            has_default = {n for n, p_ in sig.items() if p_.default is not inspect.Parameter.empty}
+            takes_kwargs = any(p_.kind == p_.VAR_KEYWORD for p_ in sig.values())
+        except (TypeError, ValueError):
+            has_default, takes_kwargs = set(), True
+        missing = [k for k in params.get("required", []) or [] if k not in args and k not in has_default]
+        if takes_kwargs and not sig_explicit(t.fn):
+            missing = []                                  # **kwargs-only tools validate their own arguments
+        if not unknown and not missing:
+            return None
+        why = "; ".join(x for x in (f"unknown argument(s) {unknown}" if unknown else "",
+                                    f"missing required {missing}" if missing else "") if x)
+        return f"bad arguments for {name}: {why}.\n{self.help_text(name)}"
+
     def call(self, name: str, args: Dict) -> Tuple[str, List[str], bool]:
         t0 = time.time()
         refs: Dict[str, str] = {}
@@ -222,6 +304,9 @@ class ToolBox:
         t = self.tools.get(name)
         if t is None:
             return f"unknown tool {name!r}", [], True
+        bad = self._check_args(name, args)
+        if bad:
+            return bad, [], True
         try:
             text, images = t.fn(**args)
             if len(text) > self.max_chars:
@@ -237,7 +322,11 @@ class ToolBox:
                 text = text[: self.max_chars] + f"\n...[truncated: {where}]"
             return text, images, False
         except TypeError as e:
-            return f"bad arguments for {name}: {e}", [], True
+            msg = str(e)
+            if "argument" in msg and ("unexpected" in msg or "missing" in msg or "positional" in msg):
+                return f"bad arguments for {name}: {e}\n{self.help_text(name)}", [], True
+            tb = traceback.format_exc(limit=3)
+            return f"TypeError: {e}\n{tb[-1500:]}", [], True
         except Exception as e:  # noqa: BLE001 - report every failure back to the model
             tb = traceback.format_exc(limit=3)
             return f"{type(e).__name__}: {e}\n{tb[-1500:]}", [], True
@@ -249,6 +338,13 @@ class ToolBox:
     # ------------------------------------------------------------------ tools
     def _register_all(self):  # noqa: C901 - one long list of small tool definitions
         from .. import calc, compare, diagrams, espei_flux, expdata, merge
+
+        @self.add("tool_help", "Full description and argument schema of one or more tools (give every tool you are "
+                  "about to use in ONE call). Tools listed with 'Args: ...' need this before their first use.",
+                  {"names": {"type": "array", "items": {"type": "string"}}}, ["names"])
+        def tool_help(names):
+            names = [names] if isinstance(names, str) else list(names or [])
+            return "\n\n".join(self.help_text(str(n)) for n in names[:12]) or "give tool names", []
 
         @self.add("list_files", "List files under the working directory (glob pattern, recursive). Use to find "
                   "TDB/POP/EXP/PDF/CSV files before using them.",

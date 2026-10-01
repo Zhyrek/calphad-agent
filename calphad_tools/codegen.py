@@ -120,7 +120,7 @@ def _call_record(tb, index: int) -> Dict[str, Any]:
 
 
 # tools that describe, list or echo files but never create the thing being reproduced
-NON_PRODUCERS = {"recent_results", "rerun_call", "package_feedback",
+NON_PRODUCERS = {"recent_results", "rerun_call", "package_feedback", "tool_help",
                  "show_code", "describe_figure", "plot_ops_help", "session_log", "provenance", "export_session",
                  "report_problem", "list_files", "find_databases", "read_file", "view_image", "pycalphad_help", "tdb_info",
                  "inspect_data", "list_jobs", "job_status", "wait_job", "stop_job", "espei_validate_input"}
