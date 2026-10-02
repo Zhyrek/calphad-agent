@@ -120,7 +120,7 @@ def _major_ticks(text, axis):
 def test_workflow_phase_diagram_with_experimental_points(tb, tmp_path):
     """Digitise coloured experimental points drawn on a real computed phase diagram (lines, tie-lines, legend)."""
     _, imgs = call(tb, "map_phase_diagram", {"tdb": "CrNi-06Hal.tdb", "elements": ["CR", "NI"], "tmin": 800,
-                                             "tmax": 2000, "temperature_unit": "C"})
+                                             "tmax": 2000, "temperature_unit": "C", "style": "color"})
     stars = [(0.30, 1450), (0.45, 1300), (0.60, 1100), (0.75, 1500), (0.2, 950)]
     squares = [(0.10, 1700), (0.52, 1650), (0.85, 1250)]
     _, imgs2 = call(tb, "edit_figure", {"image": imgs[0], "output": "with_exp.png", "operations": [
@@ -152,7 +152,8 @@ def test_workflow_phase_diagram_with_experimental_points(tb, tmp_path):
 def test_workflow_trace_liquidus(tb, tmp_path):
     """Trace the liquidus of a computed diagram and compare with the exact boundary data."""
     text, imgs = call(tb, "map_phase_diagram", {"tdb": "CrNi-06Hal.tdb", "elements": ["CR", "NI"], "tmin": 800,
-                                                "tmax": 2000, "temperature_unit": "C", "tielines": 0})
+                                                "tmax": 2000, "temperature_unit": "C", "tielines": 0,
+                                                "style": "color"})          # phase colours: trace the liquidus by colour
     info = json.loads(call(tb, "describe_figure", {"image": imgs[0]})[0])
     liq_color = info["axes"][0]["legend"]["LIQUID"]
     t, _ = call(tb, "digitize_setup", {"image": imgs[0]})

@@ -18,6 +18,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from .diagrams import KELVIN, TIELINE_COLOR, phases_for, to_celsius_axis  # noqa: E402
+from .mapping_tools import STYLE_SCHEMA  # noqa: E402
 
 S = {"type": "string"}
 N = {"type": "number"}
@@ -54,8 +55,8 @@ def _consistent_legend(all_phases: List[str]):
     return gen
 
 
-def _save(fig, out: str, formats, label_regions: bool) -> List[str]:
-    fmts = formats if formats is not None else (["svg", "pdf"] if label_regions else [])
+def _save(fig, out: str, formats, label_regions: bool, shaded: bool = False) -> List[str]:
+    fmts = formats if formats is not None else (["svg", "pdf"] if label_regions or shaded else [])
     fig.savefig(out, dpi=150, bbox_inches="tight")
     files = [out]
     for ext in fmts:
@@ -70,8 +71,27 @@ def _save(fig, out: str, formats, label_regions: bool) -> List[str]:
     return files
 
 
+def _data_legend(legend):
+    """legend_generator for the shaded style with a calculated diagram: the data markers keep their phase colours,
+    but the legend lists only the data references (markers); the phases are named by the region labels."""
+    def gen(phases):
+        return [], legend(phases)[1]
+    return gen
+
+
+def _legend_inside(ax, loc: str = "best") -> None:
+    """Shaded style: move the (data reference) legend into the axes, where it hides no data."""
+    leg = ax.get_legend()
+    if leg is None:
+        return
+    handles, texts = list(leg.legend_handles), [t.get_text() for t in leg.get_texts()]
+    leg.remove()
+    if handles:
+        ax.legend(handles, texts, loc=loc, fontsize=8, framealpha=0.85)
+
+
 def _ternary_with_data(tb, els, datasets_dir, tdb, T_K, off, phases, output_png, label_regions, phase_labels,
-                       label_style, formats, T_tolerance):
+                       label_style, formats, T_tolerance, style="shaded"):
     """Ternary isotherm (pycalphad mapping) + ZPF data within T_tolerance of T, placed through the corners."""
     import matplotlib.lines as mlines
     from espei.utils import bib_marker_map
@@ -79,7 +99,11 @@ def _ternary_with_data(tb, els, datasets_dir, tdb, T_K, off, phases, output_png,
     from pycalphad.plot import triangular  # noqa: F401 - registers the projection
     from .calc import get_db
     from .orientation import corner_labels, orientation_text, plot_zpf, zpf_equilibria
+    from . import diagram_style as ds
+    shaded = style == "shaded"
     a, b, c = els
+    if label_regions is None:   # shaded: no phase legend, so the phases are named inside the figure
+        label_regions = shaded and bool(tdb)
     if label_regions and not tdb:
         raise ValueError("label_regions needs a tdb")
     datasets, nfiles = _load_datasets(tb.p(datasets_dir))
@@ -97,11 +121,15 @@ def _ternary_with_data(tb, els, datasets_dir, tdb, T_K, off, phases, output_png,
         else:
             ph = ph or sorted(data_phases)
         legend = _consistent_legend(sorted(set(ph) | data_phases))
-        if tdb:
-            _, strat = ternplot(db, [a, b, c, "VA"], ph, {v.X(b): (0, 1, 0.02), v.X(c): (0, 1, 0.02), v.T: T_K,
-                                                          v.P: 101325, v.N: 1},
-                                x=v.X(b), y=v.X(c), ax=ax, tielines=4, tieline_color=TIELINE_COLOR,
-                                legend_generator=legend, return_strategy=True)
+        conds = {v.X(b): (0, 1, 0.02), v.X(c): (0, 1, 0.02), v.T: T_K, v.P: 101325, v.N: 1}
+        if tdb and shaded:      # grey boundaries and tie-triangle edges, no tie-lines (diagram_style)
+            from pycalphad.mapping import TernaryStrategy
+            strat = TernaryStrategy(db, [a, b, c, "VA"], ph, conds)
+            strat.do_map()
+            ds.draw_shaded(ax, *ds.strategy_boundaries(strat, v.X(b), v.X(c)), kind="ternary")
+        elif tdb:
+            _, strat = ternplot(db, [a, b, c, "VA"], ph, conds, x=v.X(b), y=v.X(c), ax=ax, tielines=4,
+                                tieline_color=TIELINE_COLOR, legend_generator=legend, return_strategy=True)
             shown |= {cs.phase_record.phase_name for z in strat.zpf_lines for p in z.points
                       for cs in p.stable_composition_sets}
     recipe = {"kind": "ternary", "tdb": str(Path(tb._find_tdb(tdb)).resolve()) if tdb else None, "elements": list(els),
@@ -111,12 +139,15 @@ def _ternary_with_data(tb, els, datasets_dir, tdb, T_K, off, phases, output_png,
     refs = sorted({eq["reference"] for eq in eqs})
     markers = bib_marker_map(refs)
     colors = legend(sorted(set(ph) | data_phases))[1]
-    handles = legend(sorted(shown))[0]
+    handles = legend(sorted(shown))[0] if not (shaded and tdb) else []   # shaded: phases named by region labels
     n = plot_zpf(ax, recipe, eqs, colors, markers)
     handles = list(handles) + [mlines.Line2D([], [], linestyle="", color="k", marker=markers[r]["markers"]["marker"],
                                              fillstyle=markers[r]["markers"]["fillstyle"], markersize=6,
                                              label=markers[r]["formatted"]) for r in refs]
-    ax.legend(handles=handles, loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8, frameon=False)
+    if shaded and handles:      # inside the axes, in the empty top-right corner beside the triangle
+        ax.legend(handles=handles, loc="upper right", fontsize=8, framealpha=0.85)
+    elif handles:
+        ax.legend(handles=handles, loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8, frameon=False)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.set_xlabel(f"Mole fraction {b.capitalize()}")
@@ -126,13 +157,13 @@ def _ternary_with_data(tb, els, datasets_dir, tdb, T_K, off, phases, output_png,
     corner_labels(ax, els)
     ax.set_title(f"{a.capitalize()}–{b.capitalize()}–{c.capitalize()}   {T_K - KELVIN:.0f} °C ({T_K:.0f} K)"
                  + (f"  ({Path(tdb).name} + data)" if tdb else "  (data)"), fontsize=11)
-    ax._calphad_diagram = {"recipe": recipe} if tdb else {"orientation": recipe}
+    ax._calphad_diagram = {"recipe": recipe, "style": style} if tdb else {"orientation": recipe, "style": style}
     note = ""
     if label_regions:
         from .region_labels import label_axes
         note = "\n" + label_axes(ax, recipe, phase_labels=phase_labels, style=label_style)["text"]
     out = tb.outp(output_png, f"diagram_data_{a}-{b}-{c}_{T_K - off:g}{'C' if off else 'K'}.png")
-    files = _save(fig, out, formats, label_regions)
+    files = _save(fig, out, formats, label_regions, shaded)
     return (f"saved {', '.join(tb.rel(f) for f in files)}: {nfiles} dataset files loaded; {len(eqs)} ZPF "
             f"equilibria of {a}-{b}-{c} within {T_tolerance:g} K of {T_K:.2f} K ({n['tielines']} tie-lines, "
             f"{n['single']} single points of broken tie-lines, {n['triangles']} tie-triangles)"
@@ -153,18 +184,24 @@ def register(tb) -> None:
              "corners": {"type": "object", "properties": {"left": S, "right": S, "top": S},
                          "description": "ternary: element at bottom-left, bottom-right, top"},
              "label_regions": {"type": "boolean", "description": "write the phases of each region and invariant "
-                                                                 "temperatures on the plot, clear of the data points"},
+                                                                 "temperatures on the plot, clear of the data points "
+                                                                 "(default on when shaded with a tdb)"},
              "phase_labels": {"type": "object", "additionalProperties": {"type": "string"}},
              "label_style": {"type": "object", "description": "as in map_phase_diagram"},
-             "formats": {**STRS, "description": "extra files svg/pdf (default svg+pdf when labelling)"}},
+             "formats": {**STRS, "description": "extra files svg/pdf (default svg+pdf when shaded or labelling)"},
+             "style": STYLE_SCHEMA},
             ["elements", "datasets_dir"])
     def plot_diagram_with_data(elements, datasets_dir, tdb: Optional[str] = None, tmin: float = 300,
                                tmax: float = 2500, temperature_unit: str = "K", phases=None,
-                               output_png: Optional[str] = None, label_regions: bool = False, phase_labels=None,
+                               output_png: Optional[str] = None, label_regions: Optional[bool] = None,
+                               phase_labels=None,
                                label_style=None, formats=None, right: Optional[str] = None,
                                corners: Optional[Dict[str, str]] = None, temperature: Optional[float] = None,
-                               T_tolerance: float = 10.0):
+                               T_tolerance: float = 10.0, style: Optional[str] = None):
+        from . import diagram_style as ds
         from .orientation import binary_order, orientation_text, ternary_order
+        style = ds.check_style(style or tb.diagram_style)
+        shaded = style == "shaded"
         els = sorted(e.upper() for e in elements)
         off = KELVIN if temperature_unit.upper().startswith("C") else 0.0
         if len(els) == 3:
@@ -172,11 +209,13 @@ def register(tb) -> None:
                 raise ValueError("a ternary (3 elements) needs the isotherm temperature")
             els = ternary_order(els, corners, right)
             return _ternary_with_data(tb, els, datasets_dir, tdb, float(temperature) + off, off, phases, output_png,
-                                      label_regions, phase_labels, label_style, formats, float(T_tolerance))
+                                      label_regions, phase_labels, label_style, formats, float(T_tolerance), style)
         if len(els) != 2:
             raise ValueError("give 2 elements (binary T-x) or 3 elements + temperature (ternary isotherm)")
         if corners:
             raise ValueError("corners is for ternary isotherms; a binary uses right")
+        if label_regions is None:   # shaded: no phase legend, so the phases are named inside the figure
+            label_regions = shaded and bool(tdb)
         from espei.plot import dataplot
         from pycalphad import binplot, variables as v
         from .calc import get_db
@@ -199,16 +238,28 @@ def register(tb) -> None:
                 ph = ph or sorted(data_phases)
             # one colour per phase, shared by the calculated lines and the data markers
             legend = _consistent_legend(sorted(set(ph) | data_phases))
-            if tdb:
+            if tdb and shaded:  # black boundaries + aliceblue two-phase fields, no tie-lines (diagram_style)
+                from pycalphad.mapping import BinaryStrategy
+                strat = BinaryStrategy(db, comps, ph, conds)
+                strat.do_map()
+                ds.draw_shaded(ax, *ds.strategy_boundaries(strat, v.X(b), v.T), kind="binary")
+            elif tdb:
                 binplot(db, comps, ph, conds, plot_kwargs=dict(ax=ax, tielines=4, tieline_color=TIELINE_COLOR,
                                                                legend_generator=legend))
-            dataplot(comps, ph, conds, datasets, ax=ax, legend_generator=legend)
+            dataplot(comps, ph, conds, datasets, ax=ax,
+                     legend_generator=_data_legend(legend) if shaded and tdb else legend)
         n_pts = sum(len(d.get("values", [])) for d in datasets.all()
                     if d.get("output") == "ZPF" and set(d.get("components", [])) <= set(comps))
         ax.set_xlim(0, 1)
         ax.set_ylim(lo, hi)
         if off:
             to_celsius_axis(ax)
+        else:
+            ax.set_ylabel("Temperature (K)")
+        if shaded:
+            ds.ticks_in(ax)
+            ax.grid(False)
+            _legend_inside(ax)
         ax.set_xlabel(f"Mole fraction {b.capitalize()}")
         ax.set_title(f"{a.capitalize()}–{b.capitalize()}" + (f"  ({Path(tdb).name} + data)" if tdb else "  (data)"))
         out = tb.outp(output_png, f"diagram_data_{a}-{b}.png")
@@ -220,11 +271,11 @@ def register(tb) -> None:
                   "composition_step": 0.02, "temperature_step": 10.0, "T_unit": "C" if off else "K",
                   "tmap": [1.0, 0.0], "T_range": [lo, hi], "x_range": [0.0, 1.0],
                   "comp": {"scale": 1.0, "weight": False}}
-        ax._calphad_diagram = {"recipe": recipe} if tdb else {"orientation": recipe}
+        ax._calphad_diagram = {"recipe": recipe, "style": style} if tdb else {"orientation": recipe, "style": style}
         if label_regions:
             from .region_labels import label_axes
             note = "\n" + label_axes(ax, recipe, phase_labels=phase_labels, style=label_style)["text"]
-        files = _save(fig, out, formats, label_regions)
+        files = _save(fig, out, formats, label_regions, shaded)
         return (f"saved {', '.join(tb.rel(f) for f in files)}: {nfiles} dataset files loaded, {n_pts} ZPF points "
                 f"in {a}-{b}" + ("" if tdb else " (no TDB: data only)") + "\n"
                 + orientation_text("binary", [a, b], f"mole fraction {b.capitalize()}") + note), [out]

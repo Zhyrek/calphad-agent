@@ -36,6 +36,10 @@ import numpy as np  # noqa: E402
 from . import pcache  # noqa: E402  (process-wide model / compiled-code cache)
 
 KELVIN = 273.15
+STYLE_SCHEMA = {"type": "string", "enum": ["shaded", "color"],
+                "description": "shaded: black lines, two-phase fields filled, grey ternary, phases named by labels "
+                               "in the figure (no legend); color: colour per phase + tie-lines + legend. Default: "
+                               "config diagram_style (shaded)"}
 TIELINE_COLOR = (0.45, 0.45, 0.45, 0.45)
 INVARIANT_COLOR = "#d62728"
 
@@ -377,20 +381,27 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
                       phases=None, exclude_phases=None, phase_colors: Optional[Dict[str, str]] = None,
                       title: Optional[str] = None, rename_disordered: bool = True,
                       pressure: float = 101325.0, time_limit_s: float = 600.0, dpi: int = 150,
-                      label_regions: bool = False, label_invariants: bool = True,
+                      label_regions: Optional[bool] = None, label_invariants: bool = True,
                       phase_labels: Optional[Dict[str, str]] = None, label_style: Optional[Dict] = None,
                       formats: Optional[Sequence[str]] = None, right: Optional[str] = None,
-                      corners: Optional[Dict[str, str]] = None) -> Dict:
+                      corners: Optional[Dict[str, str]] = None, style: Optional[str] = "shaded") -> Dict:
     """Run a pycalphad mapping strategy and write PNG + CSV/JSON data.  Returns a result dict.
 
     label_regions: write the phases of every region / tie-triangle (and binary invariant temperatures) on the
-    diagram (see region_labels); formats: extra outputs next to the PNG (default svg + pdf when labelling).
+    diagram (see region_labels); None = on in the shaded style (binary T-x and ternary isotherms; isopleth and
+    T-MU lines are named on the line instead), off in the color style.  formats: extra outputs next to the PNG
+    (default svg + pdf in the shaded style or when labelling).  style: "shaded" (black boundaries, aliceblue
+    two-phase fields, grey ternaries, no legend; see diagram_style) or "color" (one colour per phase, tie-lines,
+    phase legend).
     Orientation (see orientation.py): right = element on the right of a binary (x axis = its fraction; isopleth:
     the varying element); corners = {left, right, top} of a ternary; otherwise the element order decides
     (binary [left, right], ternary [bottom-left, bottom-right, top])."""
     from pycalphad import variables as v
     from pycalphad.mapping import BinaryStrategy, IsoplethStrategy, TernaryStrategy
     from .calc import get_db
+    from . import diagram_style as ds
+    style = ds.check_style(style)
+    shaded = style == "shaded"
 
     db = get_db(tdb)
     els = _check_elements(db, elements)
@@ -454,6 +465,8 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
         for k, val in fixed.items():
             conds[v.X(k)] = val
         Strat = IsoplethStrategy
+    if label_regions is None:   # shaded: no legend, so the phases are named inside the figure
+        label_regions = shaded and kind in ("binary", "ternary") and not potential_axis
     if label_regions and kind == "isopleth":
         raise ValueError("label_regions is available for binary T-x diagrams and ternary isotherms, not isopleths")
     if label_regions and potential_axis:
@@ -462,7 +475,7 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
         from .region_labels import check_style
         check_style(label_style)
     fmts = [str(f).lower().lstrip(".") for f in (formats if formats is not None else
-                                                  (["svg", "pdf"] if label_regions else []))]
+                                                  (["svg", "pdf"] if label_regions or shaded else []))]
     bad = [f for f in fmts if f not in ("png", "svg", "pdf", "eps")]
     if bad:
         raise ValueError(f"unsupported formats {bad} (png, svg, pdf, eps)")
@@ -499,12 +512,12 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
     else:
         ax = fig.add_subplot()
     if kind == "isopleth":
-        _plot_isopleth(ax, res, phase_colors)
+        _plot_isopleth(ax, res, phase_colors, style)
         ax.set_xlabel(U.comp_label(axis_el))
         ax.set_ylabel(U.T_label())
         legend_title = "ZPF line of"
     else:
-        _plot_tielines(ax, res, kind, tielines, label_nodes, phase_colors, mu_el)
+        _plot_tielines(ax, res, kind, tielines, label_nodes, phase_colors, mu_el, style)
         legend_title = None
         if kind == "binary":
             ax.set_xlabel(f"MU({_cap(mu_el)}) (kJ/mol)" if mu_el else U.comp_label(els[1]))
@@ -530,12 +543,18 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
             elif res.get("xlim"):
                 ax.set_xlim(*res["xlim"])
         ax.set_ylim(U.T(conds[v.T][0]), U.T(conds[v.T][1]))
-        ax.grid(alpha=0.25)
+        if shaded:
+            ds.ticks_in(ax)
+        else:
+            ax.grid(alpha=0.25)
     if xlim:
         ax.set_xlim(float(xlim[0]), float(xlim[1]))
     if ylim:
         ax.set_ylim(float(ylim[0]), float(ylim[1]))
-    _legend(ax, sorted(res["phases_found"]), phase_colors, title=legend_title)
+    if not shaded:
+        _legend(ax, sorted(res["phases_found"]), phase_colors, title=legend_title)
+    elif kind == "isopleth" or mu_el:   # no region labels there: name each line on the line
+        _shaded_line_labels(ax, res, kind, els, mu_el, phase_labels)
     if kind == "ternary":
         Tk = conds[v.T]
         default_title = f"{system}   {Tk - KELVIN:.0f} °C ({Tk:.0f} K)"
@@ -553,14 +572,15 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
     if kind == "isopleth":      # orientation / units for composition points (no region labels on isopleths)
         balance = [e for e in els if e != axis_el and e not in fixed][0]
         recipe.update(axis_element=axis_el, balance=balance, fixed=dict(fixed))
-        ax._calphad_diagram = {"recipe": recipe}
+        ax._calphad_diagram = {"recipe": recipe, "style": style}
         recipe = None
     labels = None
     if recipe is not None:      # what edit_figure label_phase_regions / composition_points need later
         from .phase_regions import regions_from_lines
         ax._calphad_diagram = {"recipe": recipe, "regions": regions_from_lines(res["lines"], res["invariants"],
                                                                                recipe),
-                               "invariant_types": {inv["T_K"]: inv.get("type", "") for inv in res["invariants"]}}
+                               "invariant_types": {inv["T_K"]: inv.get("type", "") for inv in res["invariants"]},
+                               "style": style}
     if label_regions:
         from .region_labels import label_axes
         labels = label_axes(ax, recipe, label_invariants=label_invariants, phase_labels=phase_labels,
@@ -584,7 +604,7 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
                     "degenerate_edge_lines_dropped": res.get("degenerate_lines_dropped", 0),
                     "duplicate_lines_dropped": res.get("duplicate_lines_dropped", 0)},
         "regions": res["regions"], "invariants": res["invariants"], "files": files,
-        "renamed_when_disordered": dict(lab.renamed),
+        "renamed_when_disordered": dict(lab.renamed), "style": style,
     }
     if kind == "isopleth":
         bal = [e for e in els if e != axis_el and e not in fixed][0]
@@ -818,7 +838,7 @@ def _isopleth_data(strategy, db, els, axis_el, fixed, s_els, lab, U, outdir, ste
             "phases_found": found, "xlim": xlim, "U": U}
 
 
-def _plot_tielines(ax, res, kind, tielines, label_nodes, colors, mu_el):
+def _plot_tielines(ax, res, kind, tielines, label_nodes, colors, mu_el, style="color"):
     from matplotlib.collections import LineCollection
     U, els = res["U"], res["els"]
 
@@ -837,7 +857,14 @@ def _plot_tielines(ax, res, kind, tielines, label_nodes, colors, mu_el):
         return
     allxy = np.array(allxy)
     rng = np.ptp(allxy, axis=0) * 1e-3
-    for ln in res["lines"]:
+    if style == "shaded":       # black boundaries + aliceblue two-phase fields (binary), grey (ternary); diagram_style
+        from .diagram_style import draw_shaded
+        bounds = [[np.array([xy(p["phases"][k][1], p["T"], p["mu"]) for p in ln["points"]])
+                   for k in range(len(ln["phases"]))] for ln in res["lines"]]
+        invs = [np.array([xy(inv["compositions"][n], inv["T_K"], inv["MU"]) for n in inv["phases"]])
+                for inv in res["invariants"]]
+        draw_shaded(ax, bounds, invs, "potential" if mu_el else kind)
+    for ln in (res["lines"] if style != "shaded" else []):
         for k, n in enumerate(ln["phases"]):
             pts = np.array([xy(p["phases"][k][1], p["T"], p["mu"]) for p in ln["points"]])
             c = phase_color(n, colors)
@@ -853,7 +880,8 @@ def _plot_tielines(ax, res, kind, tielines, label_nodes, colors, mu_el):
     for inv in res["invariants"]:
         pts = [xy(inv["compositions"][n], inv["T_K"], inv["MU"]) for n in inv["phases"]]
         loop = pts + [pts[0]]
-        ax.plot([p[0] for p in loop], [p[1] for p in loop], color=INVARIANT_COLOR, lw=1.1, zorder=2.5)
+        if style != "shaded":
+            ax.plot([p[0] for p in loop], [p[1] for p in loop], color=INVARIANT_COLOR, lw=1.1, zorder=2.5)
         if label_nodes:
             for n, p in zip(inv["phases"], pts):
                 ax.scatter([p[0]], [p[1]], color=phase_color(n, colors), s=14, zorder=3, edgecolors="k",
@@ -867,8 +895,28 @@ def _plot_tielines(ax, res, kind, tielines, label_nodes, colors, mu_el):
         ax.set_xlim(lo - pad, hi + pad)
 
 
-def _plot_isopleth(ax, res, colors):
+def _shaded_line_labels(ax, res, kind, els, mu_el, phase_labels=None):
+    """Isopleth: each ZPF line named by its zero-fraction phase; T-MU: each line by its two-phase equilibrium."""
+    from .diagram_style import line_labels
+    from .phase_names import format_phase, region_label
     U = res["U"]
+    if kind == "isopleth":
+        items = [(format_phase(ln["zero_phase"], els, phase_labels), np.column_stack([ln["x"], ln["T"]]))
+                 for ln in res["lines"]]
+    else:
+        items = [(region_label(ln["phases"], els, phase_labels),
+                  np.array([(p["mu"][mu_el] / 1000.0, U.T(p["T"])) for p in ln["points"]])) for ln in res["lines"]]
+    line_labels(ax, items)
+
+
+def _plot_isopleth(ax, res, colors, style="color"):
+    U = res["U"]
+    if style == "shaded":       # black ZPF lines and invariant segments (see diagram_style)
+        from .diagram_style import draw_shaded
+        draw_shaded(ax, [[np.column_stack([ln["x"], ln["T"]])] for ln in res["lines"]],
+                    [np.array([[min(s), U.T(inv["T_K"])], [max(s), U.T(inv["T_K"])]])
+                     for inv, s in ((i, i["_seg_plot"]) for i in res["_invs_plot"]) if len(s) >= 2], "isopleth")
+        return
     for ln in res["lines"]:
         ax.plot(ln["x"], ln["T"], color=phase_color(ln["zero_phase"], colors), lw=1.3, solid_capstyle="butt")
     for inv in res["_invs_plot"]:
@@ -1654,6 +1702,8 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
               "description": "optional phase -> colour overrides; colours are otherwise fixed per phase name "
                              "(consistent across all plots)"}
 
+    STYLE = STYLE_SCHEMA
+
     def rel_files(files: Dict[str, str]) -> str:
         return "\n".join(f"  {k}: {tb.rel(p)}" for k, p in files.items())
 
@@ -1689,22 +1739,24 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
              "time_limit_s": {**N, "description": "stop mapping after this time (partial result), default 600"},
              "label_regions": {**B, "description": "write the phases of each region / tie-triangle (e.g. L+FCC, "
                                                    "BCC+σ, Fe₃Cr₄) and binary invariant temperatures on the plot, "
-                                                   "clear of data; binary or ternary isotherm"},
+                                                   "clear of data; binary or ternary isotherm; default on when "
+                                                   "shaded"},
              "label_invariants": {**B, "description": "with label_regions (default true)"},
              "phase_labels": {"type": "object", "additionalProperties": {"type": "string"},
                               "description": "label text overrides, e.g. {\"SIGMA\": \"σ-phase\"}"},
              "label_style": {"type": "object", "description": "fontsize, min_fontsize, color, background, "
                                                               "invariant_type (adds eutectic etc.), leader, rotate"},
              "formats": {**STRS, "description": "extra files svg/pdf/eps with editable text (default svg+pdf "
-                                                 "when labelling)"},
+                                                 "when shaded or labelling)"},
+             "style": STYLE,
              "output_prefix": {**S, "description": "file name stem for outputs"}},
             ["tdb", "elements"])
     def _map(tdb, elements, tmin=None, tmax=None, temperature=None, temperature_unit="K", vary=None, fixed=None,
              x_range=None, composition_step=None, temperature_step=10.0, composition_unit="mole_fraction",
              potential_axis=None, tielines=3, label_nodes=False, xlim=None, ylim=None, phases=None,
              exclude_phases=None, phase_colors=None, title=None, rename_disordered=True, pressure=101325.0,
-             time_limit_s=600.0, output_prefix=None, label_regions=False, label_invariants=True, phase_labels=None,
-             label_style=None, formats=None, right=None, corners=None):
+             time_limit_s=600.0, output_prefix=None, label_regions=None, label_invariants=True, phase_labels=None,
+             label_style=None, formats=None, right=None, corners=None, style=None):
         from .orientation import binary_order, ternary_order
         t = tb._find_tdb(tdb)
         els = [_el(e) for e in elements]
@@ -1729,7 +1781,7 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
                               rename_disordered=rename_disordered, pressure=pressure, time_limit_s=time_limit_s,
                               label_regions=label_regions, label_invariants=label_invariants,
                               phase_labels=phase_labels, label_style=label_style, formats=formats, right=right,
-                              corners=corners)
+                              corners=corners, style=style or tb.diagram_style)
         return r["text"] + "\nFiles:\n" + rel_files(r["files"]), [out]
 
     @tb.add("step_map",

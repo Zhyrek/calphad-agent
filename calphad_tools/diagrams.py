@@ -360,14 +360,28 @@ def _chunks(seq, n):
 # ---------------------------------------------------------------------------
 # Top-level feature functions
 # ---------------------------------------------------------------------------
+def _shaded_binary_task(tdb, a, b, out_png, tmin_c, tmax_c, x_step, t_step, exclude_phases, title, formats,
+                        timeout) -> Dict:
+    """map_phase_diagram (worker "map") arguments of one shaded overview binary (°C axis, phase-region labels; see
+    diagram_style)."""
+    return dict(tdb=str(tdb), elements=[a, b], right=b, out_png=out_png, tmin=tmin_c, tmax=tmax_c,
+                temperature_unit="C", composition_step=x_step, temperature_step=t_step, exclude_phases=exclude_phases,
+                tielines=0, style="shaded", title=title, formats=formats, time_limit_s=0.9 * timeout)
+
+
 def all_binaries(tdb: str, output_pptx: str = "binaries.pptx", tmin_c: float = 100.0,
                  tmax_c: float = 3000.0, out_dir: Optional[str] = None, n_workers: Optional[int] = None,
                  timeout: float = 900.0, per_slide: int = 6, x_step: float = 0.02, t_step: float = 10.0,
                  individual_slides: bool = False, exclude_phases=None, elements=None,
-                 progress: Optional[Callable[[str], None]] = None, element_order=None, orientation=None) -> Dict:
+                 progress: Optional[Callable[[str], None]] = None, element_order=None, orientation=None,
+                 style: str = "shaded", formats: Optional[Sequence[str]] = None) -> Dict:
     """element_order: earlier elements on the left of every binary; orientation: per-system overrides
-    {"CR-FE": ["FE", "CR"] | "CR" (right element)} (see orientation.subsystem_order); default alphabetical."""
+    {"CR-FE": ["FE", "CR"] | "CR" (right element)} (see orientation.subsystem_order); default alphabetical.
+    style: "shaded" (map_phase_diagram in the shaded style with phase-region labels, its CSV/JSON data and SVG+PDF
+    next to each PNG unless formats says otherwise) or "color" (pycalphad binplot, one colour per phase)."""
+    from .diagram_style import check_style
     from .orientation import check_overrides, subsystem_order
+    style = check_style(style)
     db = load_db(tdb)
     els = [e.upper() for e in (elements or db_elements(db))]
     pairs = list(itertools.combinations(sorted(els), 2))
@@ -376,10 +390,18 @@ def all_binaries(tdb: str, output_pptx: str = "binaries.pptx", tmin_c: float = 1
     stem = Path(tdb).stem
     out_dir = Path(out_dir or Path(output_pptx).with_suffix("").as_posix() + "_png")
     out_dir.mkdir(parents=True, exist_ok=True)
-    tasks = [{"name": f"{a}-{b}", "kind": "binary",
-              "kwargs": dict(tdb=str(tdb), elements=[a, b], out_png=str(out_dir / f"{stem}_{a}-{b}.png"),
-                             tmin_c=tmin_c, tmax_c=tmax_c, x_step=x_step, t_step=t_step,
-                             exclude_phases=exclude_phases, keep_order=True)} for a, b in pairs]
+    if style == "shaded":
+        tasks = [{"name": f"{a}-{b}", "kind": "map",
+                  "kwargs": _shaded_binary_task(tdb, a, b, str(out_dir / f"{stem}_{a}-{b}.png"), tmin_c, tmax_c,
+                                                x_step, t_step, exclude_phases,
+                                                f"{_label_el(a)}–{_label_el(b)}" + ("" if has_interaction(db, [a, b])
+                                                                                    else "  (no binary parameters in TDB)"),
+                                                formats, timeout)} for a, b in pairs]
+    else:
+        tasks = [{"name": f"{a}-{b}", "kind": "binary",
+                  "kwargs": dict(tdb=str(tdb), elements=[a, b], out_png=str(out_dir / f"{stem}_{a}-{b}.png"),
+                                 tmin_c=tmin_c, tmax_c=tmax_c, x_step=x_step, t_step=t_step,
+                                 exclude_phases=exclude_phases, keep_order=True)} for a, b in pairs]
     results = run_tasks(tasks, n_workers=n_workers, timeout=timeout, progress=progress)
     prs = pu.new_presentation()
     pu.add_title_slide(prs, f"Binary phase diagrams: {Path(tdb).name}",
@@ -404,10 +426,16 @@ def all_ternaries(tdb: str, temperatures_c: Sequence[float], output_pptx: str = 
                   out_dir: Optional[str] = None, n_workers: Optional[int] = None, timeout: float = 1800.0,
                   per_slide: int = 6, step: float = 0.02, individual_slides: bool = False,
                   exclude_phases=None, elements=None, units: str = "C",
-                  progress: Optional[Callable[[str], None]] = None, element_order=None, orientation=None) -> Dict:
+                  progress: Optional[Callable[[str], None]] = None, element_order=None, orientation=None,
+                  style: str = "shaded", formats: Optional[Sequence[str]] = None) -> Dict:
     """element_order: earlier elements go bottom-left, then bottom-right, then top; orientation: per-system
-    overrides {"CR-FE-NI": {"left": .., "right": .., "top": ..} | [bottom-left, bottom-right, top]}."""
+    overrides {"CR-FE-NI": {"left": .., "right": .., "top": ..} | [bottom-left, bottom-right, top]}.
+    style: "shaded" (map_phase_diagram: grey boundaries and tie-triangles, no tie-lines, phase-region labels
+    instead of a legend; SVG+PDF next to each PNG unless formats says otherwise) or "color" (pycalphad ternplot,
+    one colour per phase)."""
+    from .diagram_style import check_style
     from .orientation import check_overrides, subsystem_order
+    style = check_style(style)
     db = load_db(tdb)
     els = [e.upper() for e in (elements or db_elements(db))]
     if len(els) < 3:
@@ -423,10 +451,20 @@ def all_ternaries(tdb: str, temperatures_c: Sequence[float], output_pptx: str = 
     for T in temperatures_c:
         for tri in triples:
             name = f"{'-'.join(tri)} @ {T:g}{u}"
-            tasks.append({"name": name, "kind": "ternary", "T": T,
-                          "kwargs": dict(tdb=str(tdb), elements=list(tri), temperature=T, units=units,
-                                         out_png=str(out_dir / f"{stem}_{'-'.join(tri)}_{T:g}{units.upper()}.png"),
-                                         step=step, exclude_phases=exclude_phases, keep_order=True)})
+            png = str(out_dir / f"{stem}_{'-'.join(tri)}_{T:g}{units.upper()}.png")
+            if style == "shaded":
+                T_K = T + KELVIN if units.upper() == "C" else T
+                kw = dict(tdb=str(tdb), elements=list(tri), corners=dict(zip(("left", "right", "top"), tri)),
+                          temperature=T, temperature_unit="C" if units.upper() == "C" else "K", out_png=png,
+                          composition_step=step, exclude_phases=exclude_phases, tielines=0, style="shaded",
+                          formats=formats, time_limit_s=0.9 * timeout,
+                          title="–".join(_label_el(e) for e in tri) + f"   {T_K - KELVIN:.0f} °C ({T_K:.0f} K)")
+                tasks.append({"name": name, "kind": "map", "T": T, "kwargs": kw})
+            else:
+                tasks.append({"name": name, "kind": "ternary", "T": T,
+                              "kwargs": dict(tdb=str(tdb), elements=list(tri), temperature=T, units=units,
+                                             out_png=png, step=step, exclude_phases=exclude_phases,
+                                             keep_order=True)})
     results = run_tasks(tasks, n_workers=n_workers, timeout=timeout, progress=progress)
     prs = pu.new_presentation()
     pu.add_title_slide(prs, f"Ternary isothermal sections: {Path(tdb).name}",

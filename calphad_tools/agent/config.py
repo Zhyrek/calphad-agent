@@ -68,6 +68,8 @@ class AgentConfig:
     max_tool_output_chars: int = 8000     # longer replies: the rest goes to <output_dir>/.tool_outputs/
     auto_failure_reports: bool = True     # save a problem report when a turn ends in failure
     report_max_input_mb: float = 5.0      # copy input files up to this size into problem reports
+    diagram_style: str = "shaded"         # phase diagrams: shaded (black lines, filled two-phase fields, grey
+                                          # ternaries, no legend) | color (colour per phase + legend)
 
 
 @dataclass
@@ -172,4 +174,5 @@ python_tool = "ask"                       # may the model run arbitrary Python?
 #   auto        - run everything without review;  off - no Python tool at all
 # reviewer_model = ""                     # (under [llm]) optional different model for the review
 max_tool_rounds = 40
+diagram_style = "shaded"                  # phase diagrams: shaded (black lines, filled two-phase fields) | color
 '''

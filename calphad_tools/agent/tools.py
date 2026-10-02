@@ -116,7 +116,7 @@ UNIT = {"type": "string", "enum": ["K", "C"], "description": "Temperature unit o
 
 class ToolBox:
     def __init__(self, workdir: str, output_dir: str, ui: UI, python_tool: str = "ask",
-                 max_chars: int = 20000, llm_cfg=None, interactive: bool = True):
+                 max_chars: int = 20000, llm_cfg=None, interactive: bool = True, diagram_style: str = "shaded"):
         self.workdir = Path(workdir).resolve()
         self.out = (self.workdir / output_dir).resolve()
         self.out.mkdir(parents=True, exist_ok=True)
@@ -128,6 +128,8 @@ class ToolBox:
         self.py_history: List[str] = []           # code that has actually been executed
         self.llm_cfg = llm_cfg                    # needed for auto_verify reviews
         self.interactive = interactive            # is a human available to confirm?
+        from calphad_tools.diagram_style import check_style
+        self.diagram_style = check_style(diagram_style)   # phase-diagram style when a call gives none
         self.tools: Dict[str, Tool] = {}
         self.call_log: List[Dict[str, Any]] = []      # every tool call this session (provenance / export)
         self.call_listeners: List[Callable[[Dict[str, Any]], None]] = []
@@ -374,6 +376,7 @@ class ToolBox:
         ORDER = {**STRS, "description": "orientation preference, e.g. [\"FE\", \"CR\", \"NI\"]: earlier elements "
                                         "go left / bottom-left in every subsystem (default alphabetical)"}
         ORIENT = {"type": "object"}
+        from calphad_tools.mapping_tools import STYLE_SCHEMA as STYLE
 
         @self.add("plot_all_binaries", "Compute every binary phase diagram in a TDB (T range in °C, 1 atm), "
                   "in parallel, and write a PowerPoint (grid images, 6 per slide).",
@@ -382,15 +385,16 @@ class ToolBox:
                    "elements": {**STRS, "description": "optional subset of elements"},
                    "element_order": ORDER, "orientation": {**ORIENT, "description": "per-system override, e.g. "
                                                            "{\"CR-FE\": [\"FE\", \"CR\"]} ([left, right])"},
-                   "output_pptx": S, "individual_slides": B}, ["tdb"])
+                   "output_pptx": S, "individual_slides": B, "style": STYLE}, ["tdb"])
         def plot_all_binaries(tdb: str, tmin_c: float = 100, tmax_c: float = 3000, elements=None,
                               output_pptx: Optional[str] = None, individual_slides: bool = False,
-                              element_order=None, orientation=None):
+                              element_order=None, orientation=None, style=None):
             t = self._find_tdb(tdb)
             out = self.outp(output_pptx, f"binaries_{Path(t).stem}.pptx")
             r = diagrams.all_binaries(t, out, tmin_c=tmin_c, tmax_c=tmax_c, elements=elements,
                                       individual_slides=individual_slides, progress=self.ui.progress,
-                                      element_order=element_order, orientation=orientation)
+                                      element_order=element_order, orientation=orientation,
+                                      style=style or self.diagram_style)
             txt = f"PowerPoint: {self.rel(r['pptx'])}\n" + "\n".join(
                 f"  {s['name']}: {'ok' if s['ok'] else 'FAILED ' + s['error']} ({s['seconds']} s)" for s in r["systems"])
             return txt, r["grid_images"][:2]
@@ -401,14 +405,15 @@ class ToolBox:
                    "element_order": ORDER, "orientation": {**ORIENT, "description": "per-system override, e.g. "
                                                            "{\"CR-FE-NI\": {\"left\": \"NI\", \"right\": \"FE\", "
                                                            "\"top\": \"CR\"}}"},
-                   "individual_slides": B}, ["tdb", "temperatures_c"])
+                   "individual_slides": B, "style": STYLE}, ["tdb", "temperatures_c"])
         def plot_all_ternaries(tdb: str, temperatures_c, elements=None, output_pptx: Optional[str] = None,
-                               individual_slides: bool = False, element_order=None, orientation=None):
+                               individual_slides: bool = False, element_order=None, orientation=None, style=None):
             t = self._find_tdb(tdb)
             out = self.outp(output_pptx, f"ternaries_{Path(t).stem}.pptx")
             r = diagrams.all_ternaries(t, temperatures_c, out, elements=elements,
                                        individual_slides=individual_slides, progress=self.ui.progress,
-                                       element_order=element_order, orientation=orientation)
+                                       element_order=element_order, orientation=orientation,
+                                       style=style or self.diagram_style)
             txt = f"PowerPoint: {self.rel(r['pptx'])}\n" + "\n".join(
                 f"  {s['name']}: {'ok' if s['ok'] else 'FAILED ' + s['error']} ({s['seconds']} s)" for s in r["systems"])
             return txt, r["grid_images"][:2]

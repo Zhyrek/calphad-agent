@@ -409,12 +409,12 @@ def test_plot_all_binaries_and_ternaries(tb, tmp_path):
                                              "tmin_c": 800, "tmax_c": 1800})
     out, _, art = run(standalone(tb, imgs[0]), tmp_path)
     assert (out / Path(imgs[0]).name).exists()
-    # each subplot has the curves of the tool's individual diagram (drawn in K there, in °C here)
+    # each subplot has the curves of the tool's individual diagram (both in °C: shaded style, map_phase_diagram)
     single = sorted(Path(imgs[0]).parent.glob("CoCrFeNiV_Choi2019_*-*.png"))
     assert len(single) == 3 and len(art) == 4                     # 3 diagrams + 1 empty cell of the 2x2 grid
     for png, ga in zip(single, art):
         ta = tool_artists(png)[0]
-        tpts = np.array(line_points(ta)) - [0, KELVIN]
+        tpts = np.array(line_points(ta))
         points_near(line_points(ga), tpts, scale=(1, 1000), tol=0.02, mapping=True)
         points_near(tpts, line_points(ga), scale=(1, 1000), tol=0.02, mapping=True)
     _, imgs = call(tb, "plot_all_ternaries", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["CO", "CR", "NI"],

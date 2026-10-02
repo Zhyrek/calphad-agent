@@ -29,3 +29,4 @@ workdir = "."                             # relative paths in chat are resolved 
 output_dir = "calphad_outputs"            # plots, decks, datasets are written here
 python_tool = "ask"                       # ask | auto | off : may the model run arbitrary Python?
 max_tool_rounds = 40
+diagram_style = "shaded"                  # phase diagrams: shaded (black lines, filled two-phase fields) | color

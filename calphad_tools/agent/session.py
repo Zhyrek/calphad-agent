@@ -122,7 +122,8 @@ class Agent:
         self.on_tool_start = on_tool_start or (lambda call: None)
         self.on_tool_end = on_tool_end or (lambda call, text, images, is_error: None)
         self.toolbox = ToolBox(cfg.agent.workdir, cfg.agent.output_dir, ui, cfg.agent.python_tool,
-                               cfg.agent.max_tool_output_chars, llm_cfg=cfg.llm, interactive=interactive)
+                               cfg.agent.max_tool_output_chars, llm_cfg=cfg.llm, interactive=interactive,
+                               diagram_style=cfg.agent.diagram_style)
         self.turns: List = []
         self.session_start_turn = 0         # reports cover the turns since the last reset
         self.current_turn = None

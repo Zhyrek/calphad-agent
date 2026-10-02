@@ -406,7 +406,8 @@ def test_zpf_ternary_follows(tb, zpf_dirs, tmp_path):
     assert check_anchors(ax) >= 4
     # the same figure from show_code
     script, art, _ = run_script(tb, imgs[0], tmp_path, "tern_data")
-    assert "ternplot" in script and "v.X('FE')" in script and "'Ni'" in script
+    assert "TernaryStrategy" in script and "draw_shaded" in script            # shaded style (default)
+    assert "v.X('FE')" in script and "'Ni'" in script
     gpts = {(round(x[0], 6), round(y[0], 6)) for x, y, m, ls in art["lines"] if m not in ("None", "") and len(x) == 1}
     assert gpts == exp
     assert {"Ni", "Fe", "Cr"} <= set(art["texts"])

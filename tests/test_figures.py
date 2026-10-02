@@ -58,7 +58,8 @@ def test_kelvin_axis_shown_in_celsius_from_worker_process(tb, tmp_path):
 
 def test_ternary_edit_and_restyle_by_phase(tb):
     text, imgs = call(tb, "map_phase_diagram", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["CO", "CR", "NI"],
-                                                "temperature": 1000, "temperature_unit": "K"})
+                                                "temperature": 1000, "temperature_unit": "K",
+                                                "style": "color"})   # phase colours + legend (restyle by phase)
     png = imgs[0]
     info = json.loads(call(tb, "describe_figure", {"image": png})[0])
     assert info["axes"][0]["projection"] == "triangular" and "SIGMA" in info["axes"][0]["legend"]

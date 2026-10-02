@@ -60,6 +60,9 @@ def label_axes(ax, recipe: Dict, *, lines=None, invariants=None, invariant_types
     db = get_db(recipe["tdb"])
     comps = sorted(recipe["elements"]) + ["VA"]
     stored = getattr(ax, "_calphad_diagram", None) or {}
+    if stored.get("style") == "shaded":      # black invariant temperatures on a shaded (black and white) diagram
+        from .diagram_style import LABEL_COLOR
+        style = {"invariant_color": LABEL_COLOR, **style}
     with pcache.use():
         info = ordered_info(db, comps, recipe["phases"], pcache.cached_models(db, comps, recipe["phases"])) \
             if recipe.get("rename_disordered", True) else {}

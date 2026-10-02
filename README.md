@@ -277,9 +277,34 @@ columns, use the `transform_data` step `element_fractions`:
 
 `digitized_to_zpf` takes the same `right` / `corners` options for its data plot. The ZPF files it writes store compositions by element, so they are the same whichever way the plot is drawn.
 
+### Diagram style: shaded (default) or color
+
+Phase diagrams (`map_phase_diagram`, `plot_all_binaries`, `plot_all_ternaries`, `plot_diagram_with_data`) are drawn
+in the **shaded** style by default:
+
+* **Binary T–x:** black phase boundaries and invariant lines (1.25 pt), two-phase fields filled light blue
+  (`aliceblue`), no tie-lines, minor ticks on and all ticks pointing in on all four sides.
+* **Ternary isotherm:** grey (#999999) phase boundaries and tie-triangle edges, no tie-lines.
+* **No legend:** the phases are named by labels inside the figure. `label_regions` is on by default in this style
+  (pass `label_regions: false` to leave it out). Isopleths and T–μ diagrams can't have region labels, so each line is
+  named on the line instead. With experimental data, the legend lists the data references only, and it sits inside
+  the axes.
+* **Files:** PNG, plus SVG and PDF with editable text (`formats` changes that).
+
+Titles, axis labels and corner labels are the same in both styles. For the coloured look (one colour per phase,
+grey tie-lines, red invariants, a phase legend), pass `style: "color"` in a call, or make it the default:
+
+```toml
+[agent]
+diagram_style = "color"     # shaded (default) | color
+```
+
+On the command line: `calphad-tools binaries my.tdb --style color`. `show_code` reproduces the style the tool used.
+The drawing code is in `calphad_tools/diagram_style.py`; standalone scripts contain a copy of it.
+
 ### Phase labels on diagrams
 
-`map_phase_diagram` (binary T–x and ternary isotherms) and `plot_diagram_with_data` take `label_regions: true`.
+`map_phase_diagram` (binary T–x and ternary isotherms) and `plot_diagram_with_data` take `label_regions: true` (the default in the shaded style).
 The phases of each region are then written on the diagram, and on binaries the invariant temperatures too. To label
 a diagram you already made, use the `edit_figure` operation `label_phase_regions`. That works after data points were
 added, and the labels avoid those points.

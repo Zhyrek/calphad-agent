@@ -41,7 +41,7 @@ def cmd_binaries(a):
     from .diagrams import all_binaries
     r = all_binaries(a.tdb, a.output, tmin_c=a.tmin, tmax_c=a.tmax, n_workers=a.workers, timeout=a.timeout,
                      elements=a.elements, individual_slides=a.individual, x_step=a.x_step, t_step=a.t_step,
-                     exclude_phases=a.exclude, progress=_progress)
+                     exclude_phases=a.exclude, progress=_progress, style=a.style)
     _report_systems(r)
 
 
@@ -49,7 +49,7 @@ def cmd_ternaries(a):
     from .diagrams import all_ternaries
     r = all_ternaries(a.tdb, a.temps, a.output, n_workers=a.workers, timeout=a.timeout, elements=a.elements,
                       individual_slides=a.individual, step=a.step, exclude_phases=a.exclude,
-                      units="K" if a.kelvin else "C", progress=_progress)
+                      units="K" if a.kelvin else "C", progress=_progress, style=a.style)
     _report_systems(r)
 
 
@@ -187,6 +187,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.add_argument("--workers", type=int, help="parallel processes (default: cores-1)")
         p.add_argument("--timeout", type=float, default=1800.0, help="seconds per diagram")
         p.add_argument("--individual", action="store_true", help="also one slide per diagram")
+        p.add_argument("--style", choices=["shaded", "color"], default="shaded",
+                       help="shaded: black lines, filled two-phase fields, grey ternaries (default); color: per phase")
         if name == "binaries":
             p.add_argument("--tmin", type=float, default=100.0, help="°C")
             p.add_argument("--tmax", type=float, default=3000.0, help="°C")

@@ -1059,7 +1059,7 @@ def run_map(tdb: str, elements: Sequence[str], out_png: str, tmin=None, tmax=Non
     return map_phase_diagram(tdb, list(elements), out_png, tmin=tmin, tmax=tmax, temperature=temperature,
                              temperature_unit=temperature_unit, temperature_step=temperature_step,
                              composition_step=composition_step, phases=phases, time_limit_s=time_limit_s,
-                             tielines=0)
+                             tielines=0, label_regions=False, formats=[])   # data extraction: no labels/SVG
 
 
 def _read_rows(path: str) -> List[Dict]:
