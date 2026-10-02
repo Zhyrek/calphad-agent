@@ -185,3 +185,104 @@ def test_tool_and_standalone_code_build_the_same_tdbs(tmp_path):
     v1, v2 = ts.StageView(parse_tdb(str(tool_q)), "t"), ts.StageView(parse_tdb(str(code_q)), "c")
     assert not ts.diff_versions(v1, v2, ts.stage_subsystems(["FE", "MO", "W"])).changed
     assert list(tmp_path.glob("standalone_outputs/A1_Fe-Mo.png"))
+
+
+def test_magnetic_exception_in_staged_merge(tmp_path):
+    from test_compatibility import l12_A, l12_B
+    a, b = write(tmp_path, "A_FeMo.tdb", l12_A()), write(tmp_path, "B_FeW.tdb", l12_B())
+    r = staged_merge(a, b, str(tmp_path / "out"), policy="ask", plot=False)
+    assert r["written"] and r["A_eff"] != r["A"] and Path(r["A_eff"]).name.startswith("A0_")
+    text = summary_text(r)
+    assert "A rescaled to B (magnetic exception)" in text and "A0 " in text
+    q = parse_tdb(r["versions"]["Q"].path)
+    assert q.phases["L12"].site_ratios == [0.75, 0.25]                      # B's ratios in A's sublattice order
+    assert q.phases["L12"].constituents[0][:2] == ["FE", "MO"]               # A's order kept
+    # B's magnetic parameters reach Q unchanged (values; B was only reordered)
+    vb = ts.StageView(parse_tdb(r["B"]), "b")
+    vq = ts.StageView(q, "q")
+    for k, row in vb.rows.items():
+        if row.ptype in ("TC", "BMAGN"):
+            assert _equal(row.segs, vq.rows[k].segs), k
+    # A's own G of the phase in Q is A's value scaled to B's formula unit (x 1/4)
+    va = ts.StageView(parse_tdb(a), "a")
+    from calphad_tools.pwinline import scale
+    assert _equal(scale(va.rows["G(L12,FE:MO;0)"].segs, 0.25), vq.rows["G(L12,FE:MO;0)"].segs)
+    # A -> A1 (+ B's unaries) and A -> Q: the exact rescale alone is not a change in A's Fe-Mo
+    st = {s.title: s for s in r["steps"]}
+    fe_mo = st["A → A1"].diff.get(("FE", "MO"))
+    assert not fe_mo.changed and any("exact" in n for n in fe_mo.notes)
+    va2 = ts.StageView(parse_tdb(a), "A", elements=["FE", "MO"])
+    vq2 = ts.StageView(q, "Q", elements=["FE", "MO"])
+    assert not ts.diff_versions(va2, vq2, [("FE", "MO")]).changed
+
+
+def _fe_w_magnetic_c14():
+    from test_compatibility import tdb_text
+    return tdb_text(["FE", "W"], [
+        " PHASE LIQUID % 1 1 !", " CONSTITUENT LIQUID :FE,W: !", " PHASE BCC_A2 %B 2 1 3 !",
+        " CONSTITUENT BCC_A2 :FE,W:VA: !", " PHASE C14 %M 2 0.66667 0.33333 !", " CONSTITUENT C14 :FE,W:W: !"], [
+        " PARAMETER G(LIQUID,FE;0) 298.15 12040.17-6.55843*T+GHSERFE; 6000 N !",
+        " PARAMETER G(LIQUID,W;0) 298.15 52160.584-14.10999*T+GHSERWW; 6000 N !",
+        " PARAMETER G(BCC_A2,FE:VA;0) 298.15 GHSERFE; 6000 N !", " PARAMETER G(BCC_A2,W:VA;0) 298.15 GHSERWW; 6000 N !",
+        " PARAMETER TC(BCC_A2,FE:VA;0) 298.15 1043; 6000 N !", " PARAMETER BMAGN(BCC_A2,FE:VA;0) 298.15 2.22; 6000 N !",
+        " PARAMETER L(LIQUID,FE,W;0) 298.15 -15000; 6000 N !", " PARAMETER L(BCC_A2,FE,W:VA;0) 298.15 10000; 6000 N !",
+        " PARAMETER G(C14,FE:W;0) 298.15 0.66667*GHSERFE+0.33333*GHSERWW-7000; 6000 N !",
+        " PARAMETER G(C14,W:W;0) 298.15 GHSERWW+5000; 6000 N !",
+        " PARAMETER L(C14,FE,W:W;0) 298.15 -3000; 6000 N !",
+        " PARAMETER TC(C14,FE:W;0) 298.15 300; 6000 N !", " PARAMETER BMAGN(C14,FE:W;0) 298.15 0.6; 6000 N !"],
+        typedefs=[" TYPE_DEFINITION M GES A_P_D C14 MAGNETIC -3 0.28 !"])
+
+
+def test_force_replot_exact_rescale_fe_mo(tmp_path):
+    from pptx import Presentation
+    a, b = write(tmp_path, "A_FeMo.tdb", A_FeMo()), write(tmp_path, "B_FeW.tdb", _fe_w_magnetic_c14())
+    kw = dict(policy="ask", ternary_temperatures_c=[], tmin_c=800, tmax_c=2600, composition_step=0.05,
+              temperature_step=25, n_workers=3)
+    r = staged_merge(a, b, str(tmp_path / "out"), plot=True, force_replot=["mo-FE"], **kw)
+    assert r["A_eff"] != r["A"]                                         # the C14 magnetic exception applied
+    st = {s.title: s for s in r["steps"]}
+    a1 = st["A → A1"]
+    assert not a1.changed_items and [it.name for it in a1.forced_items] == ["Fe-Mo"]
+    assert a1.forced_kind["Fe-Mo"] == "exact rescale"
+    dT, dx, ok = a1.forced_shift("Fe-Mo")
+    assert ok and dT < 0.5 and dx < 1e-3 and a1.forced_inv["Fe-Mo"]       # really compared, invariants matched
+    assert "reused_from" not in r["plots"][("A1", "Fe-Mo")]               # recomputed, not reused
+    assert {("A1", "Fe-Mo"), ("A2", "Fe-Mo")} <= set(r["forced"])
+    assert not any(k[1] == "Fe-W" for k in r["forced"])                  # only the named subsystem
+    label = a1.forced_label(a1.forced_items[0])
+    assert label.startswith("Fe-Mo: exact rescale, replotted on request - max invariant ΔT 0.00 K")
+    text = summary_text(r)
+    assert "forced replots: Fe-Mo (exact rescale): max ΔT 0.00 K" in text and "FAILED" not in text
+    prs = Presentation(r["files"]["deck"])
+    assert len(prs.slides) == 1 + 2 * len(r["steps"])
+    titles = [[sh.text_frame.text for sh in sl.shapes if sh.has_text_frame and sh.text_frame.text.strip()][0]
+              for sl in prs.slides]
+    i = titles.index("A → A1: diagrams that changed + exact changes replotted on request")
+    assert Path(r["files"]["deck"]).exists() and i > 0
+    assert any("compare_A-A1" in p for p in r["images"])
+    # the forced replot is in the summary row
+    rows = [[c.text for c in row.cells] for sh in prs.slides[0].shapes if sh.has_table for row in sh.table.rows]
+    assert any("replotted on request: Fe-Mo" in c for row in rows for c in row)
+
+
+def test_force_replot_true_covers_all_exact_only_and_default_false(tmp_path):
+    a, b = write(tmp_path, "A_FeMo.tdb", A_FeMo()), write(tmp_path, "B_FeW.tdb", _fe_w_magnetic_c14())
+    r0 = staged_merge(a, b, str(tmp_path / "o0"), plot=False, ternary_temperatures_c=[])
+    assert r0["forced"] == [] and all(not s.forced_items for s in r0["steps"])
+    r1 = staged_merge(a, b, str(tmp_path / "o1"), plot=False, ternary_temperatures_c=[], force_replot=True)
+    exact_only = {(s.new, x.name) for s in r1["steps"] for x in s.diff.subsystems if not x.changed}
+    assert exact_only and set(r1["forced"]) == exact_only               # every unchanged subsystem of every step
+    assert ("B1", "Fe-W") in exact_only and ("A1", "Fe-Mo") in exact_only
+    r2 = staged_merge(a, b, str(tmp_path / "o2"), plot=False, ternary_temperatures_c=[], force_replot=["Cr-Ni"])
+    assert r2["forced"] == [] and "Cr-Ni" in summary_text(r2)
+
+
+def test_forced_replot_shift_is_flagged():
+    from calphad_tools.staged_merge import Item, Step
+    st = Step("A", "A1", ts.VersionDiff("A", "A1", [], []), [])
+    it = Item(("FE", "MO"))
+    st.forced_items, st.forced_kind = [it], {"Fe-Mo": "exact rescale"}
+    st.forced_inv["Fe-Mo"] = [{"invariant": "BCC_A2 + C14 + LIQUID", "type": "eutectic", "T_old_K": 1500.0,
+                               "T_new_K": 1501.2, "dT_K": 1.2, "dx": 0.0, "status": "same"}]
+    assert st.forced_shift("Fe-Mo")[2] is False
+    assert st.forced_label(it).endswith("SHIFTED: the exactness claim FAILED")

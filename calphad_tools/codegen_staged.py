@@ -5,7 +5,7 @@ symengine) so the TDB text handling is exactly the tool's:
 
 * evaluate_compatibility: also copies compatibility.py and runs the same six stages (text + Excel; the short
   PowerPoint is left out, and phase-name candidates from compare_system are only the normalisation ones).
-* staged_merge: normalises B, writes B1, B2, B3, Q (and A1, A2) with the same text substitutions / merge plans and
+* staged_merge: normalises B (and, for a magnetic B phase with ~1 atom/fu, rescales A's phase to it), writes B1, B2, B3, Q (and A1, A2) with the same text substitutions / merge plans and
   the decisions the tool used, prints the subsystem changes between consecutive versions, loads every version in
   pycalphad and draws the binaries / ternary isotherms that changed with pycalphad's binplot / ternplot (plain
   colour style; the tool's shaded diagrams, invariant extraction and the deck are not reproduced).
@@ -76,14 +76,24 @@ def plot_versions(labels, versions, items, tmin_c, tmax_c, x_step, t_step):
             plt.close(fig)
 
 
+def forced(els):
+    """force_replot as given to the tool: True, a list of subsystem names, or False."""
+    if FORCE_REPLOT is True:
+        return True
+    want = {tuple(sorted(e.upper() for e in str(n).replace(" ", "").split("-"))) for n in (FORCE_REPLOT or [])}
+    return tuple(sorted(e.upper() for e in els)) in want
+
+
 A, B = str(BASE), str(ADD)
-dbA, dbB = parse_tdb(A), parse_tdb(B)
-Bn, notes = normalize_to_base(dbA, dbB, PHASE_MAP, SUBLATTICE_MAP)
+A_ORIG = A
+dbA, Bn, notes = normalize_pair(parse_tdb(A), parse_tdb(B), PHASE_MAP, SUBLATTICE_MAP)
 for n in notes:
     print("normalisation:", n.text())
 if any(n.action in ("renamed", "reordered", "rescaled") for n in notes):
     B = write_tdb(Bn, str(OUT / f"B0_{Path(ADD).stem}_normalised.tdb"))
-Bn = parse_tdb(B)
+if any(n.action == A_RESCALED for n in notes):   # magnetic exception: A's phase takes B's site ratios (exact)
+    A = write_tdb(dbA, str(OUT / f"A0_{Path(BASE).stem}_rescaled.tdb"))
+dbA, Bn = parse_tdb(A), parse_tdb(B)
 shared = sorted(set(dbA.real_elements) & set(Bn.real_elements))
 VA, VB = StageView(dbA, "A"), StageView(Bn, "B")
 versions = {"B": B}
@@ -107,7 +117,7 @@ if BUILD_A12:
         plan, text = merged_text([A, part], alias_separate([A, part], DECISIONS), "first")
         versions[lab] = str(OUT / f"{lab}_{Path(BASE).stem}+{Path(ADD).stem}.tdb")
         Path(versions[lab]).write_text(text)
-    versions["A"] = A
+    versions["A"] = A_ORIG
 
 for chain, els in ((["B", "B1", "B2", "B3", "Q"], sorted(Bn.real_elements)),
                    (["A", "A1", "A2"] if BUILD_A12 else [], sorted(dbA.real_elements))):
@@ -118,8 +128,12 @@ for chain, els in ((["B", "B1", "B2", "B3", "Q"], sorted(Bn.real_elements)),
         print(f"\n{old} -> {new}: {len(d.params)} parameter change(s)")
         for s in d.subsystems:
             print(f"  {s.name}: {s.reasons(4)}")
-        changed = [(s.elements, None) for s in d.changed if len(s.elements) == 2] + \
-                  [(s.elements, T) for s in d.changed if len(s.elements) == 3 for T in TERNARY_T_C]
+        replot = [s for s in d.subsystems if s.changed or forced(s.elements)]
+        for s in replot:
+            if not s.changed:
+                print(f"  forced replot of {s.name} (change exact / nil): compare {old}_ and {new}_ figures")
+        changed = [(s.elements, None) for s in replot if len(s.elements) == 2] + \
+                  [(s.elements, T) for s in replot if len(s.elements) == 3 for T in TERNARY_T_C]
         if changed:
             plot_versions([old, new], versions, changed, TMIN_C, TMAX_C, X_STEP, T_STEP)
 print("\nwrote", ", ".join(str(p) for p in versions.values()))
@@ -133,8 +147,8 @@ def _gen_staged(args, ctx: Ctx) -> str:
     dec = {**(getattr(ctx.tb, "merge_decisions", {}) or {}).get(key, {}), **(args.get("decisions") or {})}
     from . import tdbstage as ts
     from .tdbparse import parse_tdb
-    A = parse_tdb(ctx.tb._find_tdb(args["base_tdb"]))
-    Bn, _ = ts.normalize_to_base(A, parse_tdb(ctx.tb._find_tdb(args["add_tdb"])), args.get("phase_map"),
+    A, Bn, _ = ts.normalize_pair(parse_tdb(ctx.tb._find_tdb(args["base_tdb"])),
+                                 parse_tdb(ctx.tb._find_tdb(args["add_tdb"])), args.get("phase_map"),
                                  args.get("sublattice_map"))
     VA, VB = ts.StageView(A, "A"), ts.StageView(Bn, "B")
     build_a12 = any(len(VB.row_elements(k)) <= 2 and k not in VA.rows for k in VB.rows)
@@ -147,15 +161,18 @@ def _gen_staged(args, ctx: Ctx) -> str:
              f"PHASE_MAP = {Ctx.py(args.get('phase_map') or {})}\n"
              f"SUBLATTICE_MAP = {Ctx.py(args.get('sublattice_map') or {})}\n"
              f"POLICY = {args.get('policy', 'ask')!r}\n"
+             f"FORCE_REPLOT = {Ctx.py(args.get('force_replot') or False)}   # replot exact-only subsystems too\n"
              f"BUILD_A12 = {build_a12!r}\n"
              f"TERNARY_T_C = {Ctx.py([1000.0] if temps is None else list(temps))}\n"
              f"TMIN_C, TMAX_C = {float(args.get('tmin_c', 300.0))!r}, {float(args.get('tmax_c', 3000.0))!r}\n"
              f"X_STEP, T_STEP = {float(args.get('composition_step', 0.02))!r}, "
              f"{float(args.get('temperature_step', 10.0))!r}\n"
              "_A, _B = str(BASE), str(ADD)\n"
-             "_Bn, _ = normalize_to_base(parse_tdb(_A), parse_tdb(_B), PHASE_MAP, SUBLATTICE_MAP)\n"
+             "_An, _Bn, _ = normalize_pair(parse_tdb(_A), parse_tdb(_B), PHASE_MAP, SUBLATTICE_MAP)\n"
              "if any(n.action in ('renamed', 'reordered', 'rescaled') for n in _):\n"
              "    _B = write_tdb(_Bn, str(OUT / '_normalised_for_decisions.tdb'))\n"
+             "if any(n.action == A_RESCALED for n in _):\n"
+             "    _A = write_tdb(_An, str(OUT / '_rescaled_for_decisions.tdb'))\n"
              "_shared = sorted(set(parse_tdb(_A).real_elements) & set(_Bn.real_elements))\n"
              "DECISIONS = alias_separate([_A, _B], " + Ctx.py(dec) + ")\n"
              "DECISIONS = {**auto_decisions(plan_merge([_A, _B], DECISIONS, 'ask'), _shared), **DECISIONS}\n"

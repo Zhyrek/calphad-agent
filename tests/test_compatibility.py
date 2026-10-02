@@ -363,3 +363,88 @@ def test_tool_registered_and_show_code(c14_pair, tmp_path):
                        timeout=600)
     assert r.returncode == 0, r.stderr[-2000:]
     assert "Stage 6 replot decision" in r.stdout and "FE:FE" in r.stdout
+
+
+# ------------------------------------------------------------------------------------------ magnetic exception
+MAG_L12 = " TYPE_DEFINITION M GES A_P_D L12 MAGNETIC -3 0.28 !"
+L12_A_PARAMS = [" PARAMETER G(L12,FE:MO;0) 298.15 3*GHSERFE+GHSERMO-20000+4*T; 6000 N !",
+                " PARAMETER G(L12,MO:MO;0) 298.15 4*GHSERMO+12000; 6000 N !",
+                " PARAMETER L(L12,FE,MO:MO;0) 298.15 -30000+6*T; 6000 N !",
+                " PARAMETER L(L12,FE,MO:MO;1) 298.15 4000; 6000 N !"]
+L12_B_PARAMS = [" PARAMETER G(L12,W:FE;0) 298.15 0.25*GHSERWW+0.75*GHSERFE-4000; 6000 N !",
+                " PARAMETER G(L12,W:W;0) 298.15 GHSERWW+3000; 6000 N !",
+                " PARAMETER L(L12,W:FE,W;0) 298.15 -2500+T; 6000 N !",
+                " PARAMETER TC(L12,W:FE;0) 298.15 600; 6000 N !",
+                " PARAMETER BMAGN(L12,W:FE;0) 298.15 1.2; 6000 N !",
+                " PARAMETER TC(L12,W:FE,W;0) 298.15 -200; 6000 N !"]
+
+
+def l12_A(ratios="3 1", magnetic=False):
+    p = list(L12_A_PARAMS) + ([" PARAMETER TC(L12,FE:MO;0) 298.15 300; 6000 N !",
+                               " PARAMETER BMAGN(L12,FE:MO;0) 298.15 0.5; 6000 N !"] if magnetic else [])
+    return tdb_text(["FE", "MO"], [f" PHASE L12 %{'M' if magnetic else ''} 2 {ratios} !",
+                                   " CONSTITUENT L12 :FE,MO:MO: !"], p, typedefs=[MAG_L12] if magnetic else [])
+
+
+def l12_B(ratios="0.25 0.75", magnetic=True):
+    p = [x for x in L12_B_PARAMS if magnetic or not (" TC(" in x or "BMAGN(" in x)]
+    return tdb_text(["FE", "W"], [f" PHASE L12 %{'M' if magnetic else ''} 2 {ratios} !",
+                                  " CONSTITUENT L12 :W:FE,W: !"], p, typedefs=[MAG_L12] if magnetic else [])
+
+
+def _pair(tmp_path, a_text, b_text):
+    a, b = write(tmp_path, "A.tdb", a_text), write(tmp_path, "B.tdb", b_text)
+    An, Bn, notes = ts.normalize_pair(parse_tdb(a), parse_tdb(b))
+    return a, b, ts.write_tdb(An, str(tmp_path / "An.tdb")), ts.write_tdb(Bn, str(tmp_path / "Bn.tdb")), notes
+
+
+def test_magnetic_exception_rescales_A_to_B(tmp_path):
+    a, b, an, bn, notes = _pair(tmp_path, l12_A(), l12_B())
+    acts = [n.action for n in notes]
+    assert ts.A_RESCALED in acts and "reordered" in acts and "rescaled" not in acts
+    note = next(n for n in notes if n.action == ts.A_RESCALED)
+    assert "x0.25" in note.detail and "exact" in note.detail
+    assert parse_tdb(an).phases["L12"].site_ratios == [0.75, 0.25]          # B's ratios, A's order
+    assert parse_tdb(bn).phases["L12"].site_ratios == [0.75, 0.25]          # B only reordered, not rescaled
+    # A's GM per mole of atoms unchanged (non-magnetic, G/L x 1/k exact)
+    assert _check_gm(a, "L12", an, "L12", [0, 1], [["FE", "MO"], ["MO"]]) < 1e-9
+    # B (magnetic) unchanged apart from the permutation
+    assert _check_gm(b, "L12", bn, "L12", [1, 0], [["W"], ["FE", "W"]]) < 1e-9
+    mag = lambda path: sorted((p.key.ptype, p.expr.canonical()) for p in parse_tdb(path).parameters  # noqa: E731
+                              if p.key.ptype in ("TC", "BMAGN"))
+    assert mag(bn) == mag(b) and len(mag(b)) == 3
+    assert {p.raw_name for p in parse_tdb(bn).parameters if p.key.ptype == "TC"} == {"TC(L12,FE:W;0)",
+                                                                                     "TC(L12,FE,W:W;0)"}
+
+
+@pytest.mark.parametrize("a_text,b_text,reason", [
+    (l12_A(magnetic=True), l12_B(), "both phases have magnetic parameters"),
+    (l12_A(ratios="4 2"), l12_B(ratios="1 2"), "3 atoms per formula unit"),
+], ids=["A-magnetic-too", "B-not-1-atom-per-fu"])
+def test_magnetic_exception_not_triggered(tmp_path, a_text, b_text, reason):
+    a, b, an, bn, notes = _pair(tmp_path, a_text, b_text)
+    assert ts.A_RESCALED not in [n.action for n in notes]
+    nr = [n for n in notes if n.action == "not_rescaled"]
+    assert nr and reason in nr[0].detail
+    assert parse_tdb(an).phases["L12"].site_ratios == parse_tdb(a).phases["L12"].site_ratios    # A untouched
+
+
+def test_non_magnetic_B_near_one_atom_rescaled_to_A_as_before(tmp_path):
+    a, b, an, bn, notes = _pair(tmp_path, l12_A(), l12_B(magnetic=False))
+    acts = [n.action for n in notes]
+    assert "rescaled" in acts and ts.A_RESCALED not in acts
+    assert parse_tdb(bn).phases["L12"].site_ratios == [3.0, 1.0]
+    assert parse_tdb(an).phases["L12"].site_ratios == [3.0, 1.0]
+    assert _check_gm(b, "L12", bn, "L12", [1, 0], [["W"], ["FE", "W"]]) < 1e-9
+
+
+def test_exact_rescale_is_not_a_replot_reason(tmp_path):
+    a, b = write(tmp_path, "A.tdb", l12_A()), write(tmp_path, "B.tdb", l12_B())
+    ev = evaluate_pair(a, b, unary50="off", workdir=str(tmp_path / "w"))
+    fe_mo = next(s for s in ev.replot["A"] if s.name == "Fe-Mo")
+    assert not fe_mo.changed and "exact" in fe_mo.reasons()
+    s6 = ev.stages[5]
+    assert next(r for r in s6.rows if r["database"] == "A" and r["subsystem"] == "Fe-Mo")["replot"] == "no"
+    assert "L12: A rescaled to B's site ratios (B magnetic, 1 atom/fu): exact" in s6.line
+    assert "A rescaled to B (magnetic exception)" in summary_text(ev)
+    assert ev.rescaled_a and parse_tdb(ev.rescaled_a).phases["L12"].site_ratios == [0.75, 0.25]

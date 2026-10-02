@@ -111,6 +111,7 @@ class Evaluation:
     normalised_b: str = ""
     predicted_merge: str = ""
     files: Dict[str, str] = field(default_factory=dict)
+    rescaled_a: str = ""
 
     @property
     def overall(self) -> str:
@@ -500,7 +501,8 @@ def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol) -> Tuple[Stage
     return Stage(5, "phase models", verdict, line, rows), []
 
 
-def _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir) -> Tuple[Stage, Dict[str, List[ts.SubsystemDiff]], str]:
+def _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir,
+            a_rescaled=()) -> Tuple[Stage, Dict[str, List[ts.SubsystemDiff]], str]:
     dec = ts.alias_separate([a_path, bn_path])
     plan, text = ts.merged_text([a_path, bn_path], dec, "first")
     mpath = str(Path(workdir) / f"predicted_merge_{Path(a_path).stem}+{Path(bn_path).stem}.tdb")
@@ -530,6 +532,11 @@ def _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir) -> Tuple[Stage, Dict
             parts.append(f"{side} unchanged: {_examples(unchanged, 4)}")
     verdict = "CHANGES" if da.changed or db.changed else "OK"
     line = "(A's values win conflicts) " + " | ".join(parts) if parts else "no binaries/ternaries"
+    for n in a_rescaled:
+        line += f" | {n.phase}: A rescaled to B's site ratios (B magnetic, 1 atom/fu): exact, not a change"
+    exact = sorted({s.name for d in (da, db) for s in d.subsystems if s.notes and not s.changed})
+    if exact:
+        line += (f" | exact-only: {', '.join(exact)} (staged_merge force_replot={exact!r} maps them anyway)")
     return Stage(6, "replot decision", verdict, line, rows), {"A": da.subsystems, "B": db.subsystems}, mpath
 
 
@@ -539,8 +546,16 @@ def evaluate_pair(a_path: str, b_path: str, *, phase_map: Optional[Dict[str, str
     A, B = parse_tdb(a_path), parse_tdb(b_path)
     workdir = Path(workdir or tempfile.mkdtemp(prefix="compat_"))
     workdir.mkdir(parents=True, exist_ok=True)
-    Bn, notes = ts.normalize_to_base(A, B, phase_map, sublattice_map)
+    An, Bn, notes = ts.normalize_pair(A, B, phase_map, sublattice_map)
     changed = [n for n in notes if n.action in ("renamed", "reordered", "rescaled")]
+    a_rescaled = [n for n in notes if n.action == ts.A_RESCALED]
+    an_path = a_path
+    if a_rescaled:
+        an_path = str(workdir / f"{Path(a_path).stem}_rescaled.tdb")
+        ts.write_tdb(An, an_path, [f"{Path(a_path).name} with phases rescaled to "
+                                   f"{Path(b_path).name}'s site ratios (magnetic exception):"]
+                     + [n.text() for n in a_rescaled])
+        An = parse_tdb(an_path)
     bn_path = b_path
     if changed:
         bn_path = str(workdir / f"{Path(b_path).stem}_normalised.tdb")
@@ -548,7 +563,7 @@ def evaluate_pair(a_path: str, b_path: str, *, phase_map: Optional[Dict[str, str
                      + [n.text() for n in changed])
         Bn = parse_tdb(bn_path)
     shared = sorted(set(A.real_elements) & set(Bn.real_elements))
-    VA = ts.StageView(A, "A")
+    VA = ts.StageView(An, "A")
     VB = ts.StageView(Bn, "B")
     s1, unote, V50 = _stage1(VA, VB, shared, unary50, allow_download, rtol)
     ser_keys = set()
@@ -568,17 +583,20 @@ def evaluate_pair(a_path: str, b_path: str, *, phase_map: Optional[Dict[str, str
     s4 = _param_stage(4, "ternary+", VA, VB, shared, tuple(range(3, 12)), rtol)
     s5, _ = _stage5(VA, VB, notes, rtol)
     stages = [s1, s2, s3, s4, s5]
-    s6, replot, mpath = _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir)
+    VA0 = ts.StageView(A, "A") if a_rescaled else VA
+    s6, replot, mpath = _stage6(an_path, bn_path, VA0, VB, rtol, stages, workdir, a_rescaled)
     stages.append(s6)
-    return Evaluation(str(a_path), str(b_path), shared, stages, notes, replot, unote,
-                      bn_path if bn_path != b_path else "", mpath)
+    ev = Evaluation(str(a_path), str(b_path), shared, stages, notes, replot, unote,
+                    bn_path if bn_path != b_path else "", mpath)
+    ev.rescaled_a = an_path if an_path != a_path else ""
+    return ev
 
 
 # =============================================================================================== output
 def summary_text(ev: Evaluation, rel=lambda p: p) -> str:
     L = [f"evaluate_compatibility: A = {Path(ev.a_path).name} (base), B = {Path(ev.b_path).name}; shared elements "
          f"{', '.join(map(_cap, ev.shared)) or 'none'}"]
-    done = [n.text() for n in ev.norm_notes if n.action in ("renamed", "reordered", "rescaled")]
+    done = [n.text() for n in ev.norm_notes if n.action in ts.NORM_CHANGES]
     kept = [n.text() for n in ev.norm_notes if n.action in ("not_rescaled", "incompatible", "kept")]
     if done or kept:
         L.append("Normalised B to A's conventions: " + (_examples(done, 4) if done else "nothing")
@@ -732,6 +750,8 @@ def run(a_path: str, b_path: str, out_prefix: str, **kw) -> Evaluation:
     ev.files["pptx"] = write_pptx(ev, out_prefix + ".pptx")
     if ev.normalised_b:
         ev.files["normalised B"] = ev.normalised_b
+    if ev.rescaled_a:
+        ev.files["rescaled A"] = ev.rescaled_a
     return ev
 
 
@@ -741,7 +761,8 @@ def register(tb) -> None:
 
     @tb.add("evaluate_compatibility",
             "Staged check: can TDB add_tdb (B) be merged into base_tdb (A)? B is first normalised to "
-            "A's phase names / sublattice order / formula units, then 1 SGTE unaries (vs SGTE unary50 if they "
+            "A's phase names / sublattice order / formula units (a magnetic 1-atom/fu B phase instead keeps its "
+            "ratios and A's non-magnetic one is rescaled), then 1 SGTE unaries (vs SGTE unary50 if they "
             "differ), 2 other unaries, 3 binaries, 4 ternary+, 5 phase models (merged model, new end-members, "
             "magnetic/ordering), 6 which binaries/ternaries change and need replotting. Short verdicts; details "
             "-> Excel + PPTX. Then staged_merge.",
