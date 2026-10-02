@@ -10,8 +10,10 @@
   *candidates* with structural evidence; they are merged only through an explicit ``phase_map``.
 * Derived expressions (``"G(SIGMA,FE:CR:CR) - 10*GHSERFE - 20*GHSERCR"``) and formation energies of end-members
   relative to each database's own element reference functions.
-* Output: one PowerPoint (summary, phase matrix, one table per phase, expressions), an Excel workbook with the full
-  expanded expressions, and a long-form CSV.
+* Output: one PowerPoint (summary, phase matrix, differences, rows numerically equal but written differently, all
+  parameters, one table per database, expressions), an Excel workbook with the full expanded expressions, and a
+  long-form CSV.  Every parameter carries its reference key as written (``6000 N 91Din !``) and, when the TDB's
+  reference list has that key, the citation (short form on the slides, full text in Excel/CSV).
 """
 from __future__ import annotations
 
@@ -29,10 +31,10 @@ import numpy as np
 import symengine as se
 
 from . import pwinline as pwi
-from .tdbparse import TDB, ExpressionError, Piecewise, parse_param_name, parse_tdb, tokenize
-from .tdbtables import (ExprRow, ParamRow, PhaseView, Subsystem, database_functions, database_table, differences,
-                        expression_table, key_constituents, make_key, make_label, phase_order, row_sort_key,
-                        tdb_to_se)
+from .tdbparse import TDB, ExpressionError, Piecewise, parse_param_name, parse_tdb, short_citation, tokenize
+from .tdbtables import (ExprRow, ParamRow, PhaseView, Subsystem, database_functions, database_keys,  # noqa: F401
+                        database_table, differences, equal_rows, expression_table, key_constituents, make_key,
+                        make_label, phase_order, row_sort_key, tdb_to_se)
 
 DEFAULT_TEMPS = [298.15, 1000.0, 1500.0]
 DB_EXTS = (".tdb", ".dat")
@@ -578,6 +580,10 @@ class SystemComparison:
     def written_differences(self) -> List[ExprRow]:
         return differences(self.written)
 
+    def written_equal(self) -> List[ExprRow]:
+        """Rows written differently but numerically equal within the tolerance (not differences)."""
+        return equal_rows(self.written)
+
     @property
     def labels(self) -> List[str]:
         return [v.label for v in self.views]
@@ -766,7 +772,9 @@ def summary_text(cmp: SystemComparison, files: Dict[str, str], rel=lambda p: p, 
              f"written ({n_all} in all; equal = within rtol {cmp.rtol:g} over {cmp.grid[0]:g}-{cmp.grid[1]:g} K). "
              "Cells as written with VV#### replaced by values"
              + (f"; in {n_exp} differing rows the functions are expanded (inlined polynomial in T) because the "
-                "databases do not share them" if n_exp else "") + ".")
+                "databases do not share them" if n_exp else "") + "."
+             + (f" The {n_eq} equal-but-written-differently rows are in their own 'Numerically equal' slides/sheet "
+                "(not listed here)." if n_eq else ""))
     pick = [r for r in diffs if r.kind == "value"] + [r for r in diffs if r.kind == "absent"]
     for r in pick[:max_examples]:
         groups: Dict[str, List[str]] = {}
@@ -778,10 +786,15 @@ def summary_text(cmp: SystemComparison, files: Dict[str, str], rel=lambda p: p, 
         L.append(f"  {r.label}: {cells}" + (f"  [{r.note}]" if r.note else ""))
     if len(pick) > max_examples:
         L.append(f"  ... {len(pick) - max_examples} more in the Differences slides / sheet")
-    eq = [r for r in cmp.written if r.status == "equal"]
-    if eq:
-        L.append("Written differently but numerically equal: " + ", ".join(r.label for r in eq[:12])
-                 + (" ..." if len(eq) > 12 else ""))
+    refs = []
+    for lab in cmp.labels:
+        v = cmp.view(lab)
+        n_ref = sum(1 for r in v.rows.values() if r.reference)
+        n_cit = sum(1 for k in v.rows if v.citation(k))
+        refs.append(f"{idx[lab]} {n_ref}/{len(v.rows)}"
+                    + (f" ({n_cit} resolved by its reference list)" if n_cit else ""))
+    L.append("Parameter references (key after the last T range; shown under each cell, full citations in Excel): "
+             + ", ".join(refs) + ".")
     applied = {lab: m for lab, m in cmp.phase_map.items() if m}
     if applied:
         L.append("phase_map applied: " + "; ".join(f"{lab}: " + ", ".join(f"{a}->{b}" for a, b in m.items())
@@ -859,7 +872,8 @@ def write_csv(cmp: SystemComparison, path: str) -> str:
         w.writerow(["kind", "phase", "key", "item", "database", "path", "status_vs_ref", "max_abs_diff_vs_ref",
                     "T_range"] + _tcols(cmp.temps) + ["extrapolated_at", "expanded", "raw_tdb_or_detail",
                                                       "written", "written_status", "written_note",
-                                                      "as_written"])
+                                                      "as_written", "reference", "reference_short",
+                                                      "reference_citation"])
         wr = {r.key: r for r in cmp.written}
         for tr in cmp.all_rows() + cmp.expr_rows:
             for v in cmp.views:
@@ -886,8 +900,17 @@ def write_csv(cmp: SystemComparison, path: str) -> str:
                            + ([((wr[tr.key].shown.get(lab) or "").replace("\n", " | ") if tr.key in wr else ""),
                                wr[tr.key].status if tr.key in wr else "", wr[tr.key].note if tr.key in wr else "",
                                v.written(tr.key).text.replace("\n", " | ") if r else ""]
-                              if not tr.is_expression else ["", "", "", ""]))
+                              if not tr.is_expression else ["", "", "", ""])
+                           + _ref_cols(v, tr.key, r))
     return path
+
+
+def _ref_cols(v: Subsystem, key: str, r: Optional[ParamRow]) -> List[str]:
+    """[reference as written, short citation, full citation] of one database's parameter (blank when none)."""
+    if r is None or not r.reference:
+        return ["", "", ""]
+    cit = v.citation(key)
+    return [r.reference, short_citation(cit) if cit else "", cit]
 
 
 FILLS = {"differs": "FFEBEE", "same": "E8F5E9", "absent": "F3F4F6", "no ref": "FFF8E1", "error": "FDE68A",
@@ -969,11 +992,15 @@ def write_xlsx(cmp: SystemComparison, path: str) -> str:
     def written_sheet(name, rows_in):
         ws = wb.create_sheet(_sheet_name(name, taken))
         header(ws, ["phase", "parameter"] + cmp.labels + ["status", "note"]
-               + [f"{lab} (as written)" for lab in cmp.labels])
+               + [f"{lab} (as written)" for lab in cmp.labels] + ["max |Δ|"]
+               + [f"{lab} reference" for lab in cmp.labels] + [f"{lab} citation" for lab in cmp.labels])
         for er in rows_in:
             ws.append([er.phase, er.label] + [(er.shown[lab] if er.shown.get(lab) is not None else "—")
                                               for lab in cmp.labels] + [er.status, er.note]
-                      + [(er.cells[lab].text if er.cells.get(lab) else "—") for lab in cmp.labels])
+                      + [(er.cells[lab].text if er.cells.get(lab) else "—") for lab in cmp.labels]
+                      + [er.max_diff if math.isfinite(er.max_diff) else None]
+                      + [er.refs.get(lab, "") for lab in cmp.labels]
+                      + [er.citations.get(lab, "") for lab in cmp.labels])
             for j, lab in enumerate(cmp.labels):
                 c = ws.cell(row=ws.max_row, column=3 + j)
                 c.alignment = wrap
@@ -983,16 +1010,20 @@ def write_xlsx(cmp: SystemComparison, path: str) -> str:
                     fill(c, "differs")
                 elif er.status == "equal":
                     fill(c, "same")
-        _widths(ws, [14, 30] + [48] * len(cmp.labels) + [10, 50] + [40] * len(cmp.labels))
+        _widths(ws, [14, 30] + [48] * len(cmp.labels) + [10, 50] + [40] * len(cmp.labels) + [12]
+                + [14] * len(cmp.labels) + [60] * len(cmp.labels))
 
     written_sheet("Differences", cmp.written_differences())
+    written_sheet("Numerically equal", cmp.written_equal())
     written_sheet("All parameters", cmp.written)
     for v in cmp.views:
         ws = wb.create_sheet(_sheet_name(f"DB {v.label}", taken))
-        header(ws, ["phase", "parameter", "expression as written", "T range", "written as"])
-        for ph, lab, w in database_table(v, cmp.phases):
-            r = next(x for x in v.rows.values() if x.label == lab)
-            ws.append([ph, lab, w.text, f"{r.raw_pw.tmin:g}-{r.raw_pw.tmax:g}", r.raw_name])
+        header(ws, ["phase", "parameter", "expression as written", "T range", "written as", "reference",
+                    "citation"])
+        for k in database_keys(v, cmp.phases):
+            r = v.rows[k]
+            ws.append([r.phase, r.label, v.written(k).text, f"{r.raw_pw.tmin:g}-{r.raw_pw.tmax:g}", r.raw_name,
+                       r.reference, v.citation(k)])
             ws.cell(row=ws.max_row, column=3).alignment = wrap
         fns = database_functions(v, cmp.phases)
         if fns:
@@ -1004,7 +1035,7 @@ def write_xlsx(cmp: SystemComparison, path: str) -> str:
                 f = v.tdb.functions[n].expr
                 ws.append(["", n, w.text, f"{f.tmin:g}-{f.tmax:g}"])
                 ws.cell(row=ws.max_row, column=3).alignment = wrap
-        _widths(ws, [14, 30, 90, 14, 30])
+        _widths(ws, [14, 30, 90, 14, 30, 14, 80])
 
     ws = wb.create_sheet(_sheet_name("Values", taken))
     header(ws, ["phase", "parameter", "database", "status vs ref", "max |Δ| vs ref", "T range"] + tcols
@@ -1106,7 +1137,8 @@ def write_pptx(cmp: SystemComparison, path: str, diagram_png: Optional[str] = No
                        "\n".join(f"D{i}  {v.label}" for i, v in enumerate(cmp.views, 1))[:600],
                        note=(f"Parameters inside the {'-'.join(cmp.elements)} subsystem, shown as written in each "
                              "TDB (ESPEI VV#### handles replaced by their values; other functions keep their names). "
-                             "'Differences' lists every parameter that is not identical in all databases."))
+                             "'Differences' lists the parameters whose values differ or that are missing "
+                             "somewhere; rows written differently but numerically equal follow in their own table."))
     info: Dict[str, Any] = {"slides": []}
     # ---- databases
     rows = []
@@ -1155,31 +1187,49 @@ def write_pptx(cmp: SystemComparison, path: str, diagram_png: Optional[str] = No
                               subtitle="Phases are matched by exact name only; re-run with phase_map to merge")
     # ---- the parameter tables
     diffs = cmp.written_differences()
+    eq = cmp.written_equal()
     n_all = len(cmp.written)
-    foot = ("As written (VV#### replaced by values) unless the row says the functions were expanded; — = absent; "
-            "red = value differs from the first database that has it; green = written differently, numerically equal")
-    n_eq = sum(1 for r in cmp.written if r.status == "equal")
+    foot = ("As written (VV#### replaced by values) unless functions were expanded; — = absent; red = differs from "
+            "the first database that has it; green = written differently, numerically equal; grey = reference "
+            "(key · author year)")
     _written_slides(prs, cmp, "Differences", diffs, info,
-                    f"{len(diffs)} of {n_all} parameters differ in value or are absent somewhere "
-                    f"(numerically equal rows, {n_eq} written differently, are only in 'All parameters')", foot)
+                    f"{len(diffs)} of {n_all} parameters differ in value or are absent somewhere"
+                    + (f"; {len(eq)} written differently but numerically equal are listed next" if eq else
+                       "; none is written differently but numerically equal"), foot)
+    if eq:
+        _written_slides(prs, cmp, EQUAL_TITLE, eq, info,
+                        f"{len(eq)} parameters: values agree within the tolerance (rtol {cmp.rtol:g}; 1e-3 J/mol, "
+                        f"1e-6 for TC/BMAGN) over {cmp.grid[0]:g}–{cmp.grid[1]:g} K; not differences", foot,
+                        equal=True)
     _written_slides(prs, cmp, "All parameters", cmp.written, info,
                     f"{n_all} parameters, sorted by phase, then G, L0, L1, …, ternary, TC, BMAGN", foot)
     shown = set(cmp.phases)
     for v in cmp.views:
         rows = []
         band = None
-        for ph, lab, w in database_table(v, cmp.phases):
-            if ph != band:
-                rows.append(("band", ph))
-                band = ph
-            er = next((r for r in cmp.written if r.phase == ph and r.cells.get(v.label) is w), None)
+        by_key = {r.key: r for r in cmp.written}
+        for key in database_keys(v, cmp.phases):
+            pr, w = v.rows[key], v.written(key)
+            if pr.phase != band:
+                rows.append(("band", pr.phase))
+                band = pr.phase
+            er = by_key.get(key)
             note = "" if er is None else {"equal": "numerically equal (written differently)"}.get(er.status, "")
             if er is not None and er.kind == "value":
                 note = "value differs between databases"
-            rows.append([GridCell(lab, mono=True, size=8, sub=note), GridCell(w.text, mono=True)])
-        k = add_flow_table_slides(prs, f"{v.label}: parameters", ["parameter", "expression as written"], rows,
-                                  [3.0, 9.5], font_size=8, subtitle=f"{v.rel} · {len(v.rows)} parameters in "
-                                                                    f"{'-'.join(cmp.elements)}")
+            cit = v.citation(key)
+            rows.append([GridCell(pr.label, mono=True, size=8, sub=note), GridCell(w.text, mono=True),
+                         GridCell(pr.reference, size=8, sub=short_citation(cit, 24) if cit else "")])
+        has_refs = any(r.reference for r in v.rows.values())
+        if not has_refs:                                   # e.g. ESPEI output: no reference column
+            rows = [r if isinstance(r, tuple) else r[:2] for r in rows]
+        k = add_flow_table_slides(prs, f"{v.label}: parameters",
+                                  ["parameter", "expression as written"] + (["reference"] if has_refs else []),
+                                  rows, [3.0, 7.7, 1.8] if has_refs else [3.0, 9.5], font_size=8,
+                                  subtitle=f"{v.rel} · {len(v.rows)} parameters in {'-'.join(cmp.elements)}"
+                                           + (" · reference: key as written, first author + year below"
+                                              if any(v.citation(k) for k in v.rows) else
+                                              "" if has_refs else " · no parameter references"))
         info["slides"].append({"title": f"{v.label}: parameters", "slides": k})
         fns = database_functions(v, cmp.phases if shown != set(v.phases) else None)
         if fns:
@@ -1241,7 +1291,19 @@ def _grp_suffix(cmp: SystemComparison, grp: List[str]) -> str:
     return f" [D{i0}–D{i1}]"
 
 
-def _written_slides(prs, cmp: SystemComparison, title: str, rows_in: List[ExprRow], info, subtitle, foot):
+EQUAL_TITLE = "Numerically equal within tolerance (written differently)"
+
+
+def equal_note(er: ExprRow) -> str:
+    """Note of a row in the numerically-equal table: the largest difference instead of 'numerically equal'."""
+    parts = [p for p in er.note.split("; ") if p and not p.startswith("numerically equal")]
+    if math.isfinite(er.max_diff):
+        parts.append(f"max |Δ| {er.max_diff:.3g}" + {"G": " J/mol", "TC": " K"}.get(er.ptype, ""))
+    return "; ".join(parts)
+
+
+def _written_slides(prs, cmp: SystemComparison, title: str, rows_in: List[ExprRow], info, subtitle, foot,
+                    equal: bool = False):
     from .pptx_utils import GridCell, add_flow_table_slides
     for grp in _db_groups(cmp, 4):
         nw = (12.5 - 2.7) / len(grp)
@@ -1251,14 +1313,15 @@ def _written_slides(prs, cmp: SystemComparison, title: str, rows_in: List[ExprRo
             if er.phase != band:
                 rows.append(("band", er.phase))
                 band = er.phase
-            r = [GridCell(er.label, mono=True, size=8, sub=er.note, bold=True)]
+            r = [GridCell(er.label, mono=True, size=8, sub=equal_note(er) if equal else er.note, bold=True)]
             for lab in grp:
                 txt = er.shown_short.get(lab)
                 if txt is None:
                     r.append(GridCell("—", fill="absent", muted=True))
                     continue
                 fill = "differs" if er.cell_differs.get(lab) else ("same" if er.status == "equal" else None)
-                r.append(GridCell(txt, mono=True, fill=fill, size=8 if er.expanded else None))
+                r.append(GridCell(txt, mono=True, fill=fill, size=8 if er.expanded else None,
+                                  sub=er.ref_text(lab, 24 if len(grp) > 2 else 30)))
             rows.append(r)
         t = title + _grp_suffix(cmp, grp)
         k = add_flow_table_slides(prs, t, ["parameter"] + grp, rows, [2.7] + [nw] * len(grp),
@@ -1367,7 +1430,8 @@ def register(tb) -> None:
         return text, []
 
     @tb.add("compare_system", "N-way comparison of databases within one element subsystem: every parameter as "
-            "written in each TDB (ESPEI VV#### replaced by values), a differences-only table, per-TDB tables, "
+            "written in each TDB (ESPEI VV#### replaced by values) with its reference, a differences-only table, "
+            "a table of rows equal within tolerance but written differently, per-TDB tables, "
             "derived/formation expressions -> PPTX + Excel + CSV. Phases match by exact name; similar ones are "
             "listed as candidates: decide (ask_user if unsure), then re-call with phase_map.",
             {"tdbs": {**STRS, "description": "exact files; or give folder (+pattern)"}, "folder": S, "pattern": S,

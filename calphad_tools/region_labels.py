@@ -19,8 +19,11 @@ import numpy as np
 from .figures import OpContext, register_op
 
 GRID_N = {"binary": (80, 60), "ternary": (40, 40)}
-STYLE_KEYS = {"fontsize", "min_fontsize", "color", "background", "background_alpha", "rotate", "leader",
-              "invariant_fontsize", "invariant_color", "invariant_type", "fontweight"}
+STYLE_KEYS = {"fontsize", "min_fontsize", "color", "background", "background_alpha", "rotate", "margin",
+              "invariant_fontsize", "invariant_color", "fontweight"}
+# accepted and ignored: reaction types (eutectic ...) are never written; leader lines are drawn only for
+# ternary-only single phases (no option)
+IGNORED_KEYS = {"invariant_type", "leader"}
 
 
 def _db_elements(db) -> List[str]:
@@ -37,22 +40,24 @@ def liquids_of(db, phases) -> List[str]:
 
 
 def check_style(style: Optional[Dict]) -> Dict:
+    """The label style without the ignored keys; unknown keys are an error."""
     style = dict(style or {})
-    bad = [k for k in style if k not in STYLE_KEYS]
+    bad = [k for k in style if k not in STYLE_KEYS | IGNORED_KEYS]
     if bad:
         raise ValueError(f"label_style keys {bad} unknown; allowed: {sorted(STYLE_KEYS)}")
-    return style
+    return {k: v for k, v in style.items() if k not in IGNORED_KEYS}
 
 
-def label_axes(ax, recipe: Dict, *, lines=None, invariants=None, invariant_types: Optional[Dict] = None,
-               label_invariants: bool = True, phase_labels: Optional[Dict[str, str]] = None,
-               style: Optional[Dict] = None, reuse: bool = True) -> Dict:
+def label_axes(ax, recipe: Dict, *, lines=None, invariants=None, label_invariants: bool = True,
+               phase_labels: Optional[Dict[str, str]] = None, style: Optional[Dict] = None,
+               reuse: bool = True) -> Dict:
     """Label the phase regions of a binary / ternary diagram axes.  Returns the placement report + "text"."""
     from . import pcache
     from .calc import get_db
     from .label_place import label_diagram
     from .phase_regions import (equilibrium_grid, key_at, map_lines, ordered_info, regions_from_lines)
     t0 = time.time()
+    ignored = sorted(k for k in (style or {}) if k in IGNORED_KEYS)
     style = check_style(style)
     kind = recipe["kind"]
     if kind not in ("binary", "ternary"):
@@ -71,13 +76,7 @@ def label_axes(ax, recipe: Dict, *, lines=None, invariants=None, invariant_types
             if lines is None:
                 lines, invariants = map_lines(db, recipe, info, recipe.get("composition_step", 0.02),
                                               recipe.get("temperature_step", 10.0))
-            regions = regions_from_lines(lines, invariants or [], recipe)
-        invariant_types = invariant_types or stored.get("invariant_types")
-        for inv in regions.get("invariants", []):
-            if invariant_types:
-                typ = next((t for T, t in invariant_types.items() if abs(float(T) - inv["T_K"]) < 0.5), None)
-                if typ:
-                    inv["type"] = typ
+            regions = regions_from_lines(lines, invariants or [], recipe, db)
         xlim, ylim = ax.get_xlim(), ax.get_ylim()
         grid = stored.get("grid") if reuse and stored.get("grid_lim") == [list(xlim), list(ylim)] else None
         if grid is None:
@@ -95,22 +94,38 @@ def label_axes(ax, recipe: Dict, *, lines=None, invariants=None, invariant_types
                             invariants=label_invariants, T_unit=recipe.get("T_unit", "K"), style=style)
     rep["seconds"] = round(time.time() - t0, 1)
     rep["equilibrium_checks"] = n_checks[0]
-    rep["text"] = report_text(rep)
+    rep["text"] = report_text(rep, ignored)
     return rep
 
 
-def report_text(rep: Dict) -> str:
+def report_text(rep: Dict, ignored=()) -> str:
+    """Short summary for the tool result: one line per kind, omitted labels as one line (count + names)."""
     labs = rep["labels"]
-    reg = [lab["text"] + (" (leader)" if lab["leader"] else "") for lab in labs if lab["kind"] != "invariant"]
+    reg = [lab["text"] for lab in labs if lab["kind"] == "region" and not lab.get("outside")]
+    out_ = [lab["text"] for lab in labs if lab["kind"] == "compound"]
+    moved = [lab["text"] for lab in labs if lab["kind"] == "region" and lab.get("outside")]
+    lead = [lab["text"] for lab in labs if lab.get("leader")]
     inv = [lab["text"] for lab in labs if lab["kind"] == "invariant"]
     out = [f"phase labels ({len(reg)}): " + ", ".join(reg)]
+    if out_:
+        out.append("stoichiometric phases named outside the plot: " + ", ".join(out_))
+    if moved:
+        out.append("too small inside, named at the edge instead: " + ", ".join(moved))
+    if lead:
+        out.append("inside the triangle, named with a leader line: " + ", ".join(lead))
     if inv:
         out.append("invariant temperatures: " + ", ".join(inv))
     unconf = [lab["text"] for lab in labs if lab["verified"] is None and lab["kind"] != "invariant"]
     if unconf:
         out.append("not checked by equilibrium: " + ", ".join(unconf))
-    if rep["skipped"]:
-        out.append("not labelled: " + "; ".join(f"{s['label']} ({s['reason']})" for s in rep["skipped"]))
+    reasons: Dict[str, List[str]] = {}
+    for s in rep["skipped"]:
+        reasons.setdefault(s["reason"], []).append(s["label"])
+    for why, names in reasons.items():
+        out.append(f"omitted {len(names)} ({why}): " + ", ".join(names))
+    if ignored:
+        out.append(f"label_style {', '.join(ignored)} ignored (no reaction types; leader lines only for "
+                   "ternary-only phases)")
     out.append("labels are separate text objects (SVG ids phase_label:<PHASES> / invariant_label:<T>); move, "
                "delete or reword them with edit_figure move_label / delete_label / relabel")
     return "\n".join(out)
@@ -120,17 +135,19 @@ def report_text(rep: Dict) -> str:
 # figure operations
 # ---------------------------------------------------------------------------------------------------------
 @register_op("label_phase_regions",
-             "label_phase_regions {invariants: true, phase_labels: {NAME: text}, fontsize, min_fontsize, color, "
-             "background, invariant_type, leader, rotate}: phase names in each region / tie-triangle and invariant "
-             "temperatures, placed clear of data points (diagrams from map_phase_diagram or "
-             "plot_diagram_with_data); replaces earlier labels", group="annotate")
+             "label_phase_regions {invariants: true, phase_labels: {NAME: text}, fontsize, min_fontsize (8: smaller "
+             "labels are left out), margin (2.5 pt), color, background, rotate}: phase names inside each region / "
+             "tie-triangle, stoichiometric and too-small single phases at the edge (ternary-only ones with a leader "
+             "line), invariant temperatures next to their line; clear of "
+             "data points (diagrams from map_phase_diagram or plot_diagram_with_data); replaces earlier labels",
+             group="annotate")
 def _op_label(ctx: OpContext):
     ax, op = ctx.ax, ctx.op
     d = getattr(ax, "_calphad_diagram", None)
     if not d or "recipe" not in d:
         raise ValueError("this axes has no phase-diagram recipe: make the diagram with map_phase_diagram "
                          "(binary or ternary isotherm) or plot_diagram_with_data first")
-    style = {k: op[k] for k in STYLE_KEYS if k in op}
+    style = {k: op[k] for k in STYLE_KEYS | IGNORED_KEYS if k in op}
     rep = label_axes(ax, d["recipe"], label_invariants=op.get("invariants", True),
                      phase_labels=op.get("phase_labels"), style=style)
     ctx.note(rep["text"].replace("\n", "; "))
@@ -162,9 +179,10 @@ def _op_move(ctx: OpContext):
 @register_op("delete_label", "delete_label {id | text}: remove a phase/invariant label (id 'invariant_label' = all "
              "temperature labels)", group="annotate")
 def _op_delete(ctx: OpContext):
+    from .label_place import remove_label
     hits = _targets(ctx)
     for t in hits:
-        t.remove()
+        remove_label(t)
     ctx.note(f"removed {len(hits)} label(s)")
 
 

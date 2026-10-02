@@ -113,8 +113,34 @@ def labels_of(ax, prefix=("phase_label:", "invariant_label:")):
     return [t for t in ax.texts if (t.get_gid() or "").startswith(prefix)]
 
 
+MIN_FS = 8.0                                    # default label_style.min_fontsize
+REACTIONS = re.compile(r"eutect|peritect|monotect|syntect|congruent|metatect|catatect", re.I)
+
+
+def is_outside(t):
+    return bool((getattr(t, "_calphad_label", None) or {}).get("outside"))
+
+
+def is_leader(t):
+    return bool((getattr(t, "_calphad_label", None) or {}).get("leader"))
+
+
+def in_region(t):
+    """A label written inside its own region (not outside the plot, no leader line)."""
+    return not is_outside(t) and not is_leader(t)
+
+
+def label_anchor(t):
+    """Where a label claims its phases are: its position, or the point it was checked at for a name outside the
+    plot or a leader label."""
+    lab = t._calphad_label
+    return tuple(lab["at"]) if (lab.get("outside") or lab.get("leader")) else tuple(t.get_position())
+
+
 def check_anchors(ax):
-    """Every phase label (or the end of its leader line) lies in a region with exactly its phase set."""
+    """Every phase label lies in a region with exactly its phase set (a name outside the plot or with a leader line:
+    the phase is stable there).  Labels in their region are plain texts (no leader lines)."""
+    from matplotlib.text import Annotation
     from calphad_tools.calc import get_db
     from calphad_tools.phase_regions import key_at, ordered_info
     rec = ax._calphad_diagram["recipe"]
@@ -123,11 +149,12 @@ def check_anchors(ax):
     n = 0
     for t in labels_of(ax, ("phase_label:",)):
         lab = t._calphad_label
-        x, y = t.xy if hasattr(t, "xy") and lab.get("leader") else t.get_position()
+        assert not in_region(t) or not isinstance(t, Annotation), t.get_text()
+        x, y = label_anchor(t)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             got = key_at(db, rec, info, x, y)
-        if lab["kind"] == "compound":
+        if lab["kind"] == "compound" or not in_region(t):
             assert got and lab["key"][0] in got, (t.get_text(), got)
         else:
             assert got == tuple(lab["key"]), (t.get_text(), (x, y), got)
@@ -136,7 +163,8 @@ def check_anchors(ax):
 
 
 def text_rect(t, r):
-    """Corners (display px) of a label's (rotated) text rectangle."""
+    """Corners (display px) of a label's rotated glyph box, for any ha/va (rotation_mode 'anchor': turned about
+    the alignment point)."""
     from matplotlib.text import Text
     if hasattr(t, "update_positions"):
         t.update_positions(r)
@@ -146,9 +174,9 @@ def text_rect(t, r):
     t.set_rotation(rot)
     cx, cy = t.get_transform().transform(t.get_unitless_position())
     a = np.radians(rot)
-    hw, hh = e.width / 2, e.height / 2
-    return np.array([(cx + u * np.cos(a) - v * np.sin(a), cy + u * np.sin(a) + v * np.cos(a))
-                     for u, v in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))])
+    c, s_ = np.cos(a), np.sin(a)
+    return np.array([(cx + (u - cx) * c - (v - cy) * s_, cy + (u - cx) * s_ + (v - cy) * c)
+                     for u, v in ((e.x0, e.y0), (e.x1, e.y0), (e.x1, e.y1), (e.x0, e.y1))])
 
 
 def rects_overlap(p, q):
@@ -171,19 +199,174 @@ def point_in_rect(p, u, v, pad=0.0):
         abs(d @ ey) / np.linalg.norm(ey) <= np.linalg.norm(ey) / 2 + pad
 
 
-def check_layout(fig, ax):
-    """Labels do not overlap each other and stay inside the axes box.  Returns [(text, corners)]."""
+def grow(q, d):
+    """A rectangle (4 corners) grown by d px on every side."""
+    c = q.mean(axis=0)
+    u, v = (q[1] - q[0]) / np.linalg.norm(q[1] - q[0]), (q[3] - q[0]) / np.linalg.norm(q[3] - q[0])
+    return np.array([c + ((p - c) @ u + np.sign((p - c) @ u) * d) * u + ((p - c) @ v + np.sign((p - c) @ v) * d) * v
+                     for p in q])
+
+
+def ternary(ax):
+    return ax._calphad_diagram["recipe"]["kind"] == "ternary"
+
+
+def in_plot(ax, pts, tol=0.5):
+    """Display points inside the plot area (axes box / triangle), tol in pt."""
+    f = ax.figure.dpi / 72
+    if not ternary(ax):
+        b = ax.bbox
+        return (pts[:, 0] >= b.x0 - tol * f) & (pts[:, 0] <= b.x1 + tol * f) & \
+            (pts[:, 1] >= b.y0 - tol * f) & (pts[:, 1] <= b.y1 + tol * f)
+    d = ax.transData.inverted().transform(pts)
+    eps = tol * f / ax.bbox.width
+    return (d[:, 0] >= -eps) & (d[:, 1] >= -eps) & (d.sum(axis=1) <= 1 + eps)
+
+
+def check_layout(fig, ax, min_fs=MIN_FS):
+    """Labels do not overlap; region / invariant labels lie inside the plot, names outside it lie outside; no label
+    is smaller than min_fs; no reaction type is written anywhere; leader lines only for single phases / compounds
+    of a ternary.  Returns [(text, corners)]."""
+    from matplotlib.text import Annotation
     fig.canvas.draw()
     r = fig.canvas.get_renderer()
-    rects = [(t.get_text(), text_rect(t, r)) for t in labels_of(ax)]
-    axb = ax.bbox
-    for s, p in rects:
-        assert p[:, 0].min() >= axb.x0 - 1 and p[:, 0].max() <= axb.x1 + 1, s
-        assert p[:, 1].min() >= axb.y0 - 1 and p[:, 1].max() <= axb.y1 + 1, s
+    rects = [(t.get_text(), text_rect(t, r), t) for t in labels_of(ax)]
+    for s, p, t in rects:
+        assert t.get_fontsize() >= min_fs - 1e-9, (s, t.get_fontsize())
+        if is_outside(t):
+            assert not in_plot(ax, p, tol=-0.5).any(), s
+        elif is_leader(t):
+            assert ternary(ax) and len(t._calphad_label["key"]) == 1 and t.arrow_patch is not None, s
+        else:
+            assert in_plot(ax, p).all(), s
+            assert not isinstance(t, Annotation), s                     # no leader lines
     for i in range(len(rects)):
         for j in range(i + 1, len(rects)):
             assert not rects_overlap(rects[i][1], rects[j][1]), (rects[i][0], rects[j][0])
-    return rects
+    assert not any(REACTIONS.search(t.get_text()) for t in ax.texts), [t.get_text() for t in ax.texts]
+    for t in labels_of(ax, ("invariant_label:",)):
+        assert re.fullmatch(r"-?\d+ (°C|K)", t.get_text()), t.get_text()
+    return [(s, p) for s, p, _ in rects]
+
+
+def check_inside(fig, ax):
+    """The rotated box of every region label lies inside its region: inside a polygon of its own phases (two-phase
+    fields, tie-triangles), and inside no polygon of other phases.  Returns the number of labels checked."""
+    from matplotlib.path import Path as MPath
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    polys = [(tuple(p["key"]), MPath(ax.transData.transform(np.asarray(p["xy"], float))))
+             for p in ax._calphad_diagram["regions"]["polygons"]]
+    n = 0
+    for t in labels_of(ax, ("phase_label:",)):
+        if t._calphad_label["kind"] != "region" or not in_region(t):
+            continue
+        q = text_rect(t, r)
+        pts = np.vstack([q, q.mean(axis=0), (q + np.roll(q, 1, axis=0)) / 2])
+        key = tuple(t._calphad_label["key"])
+        own = [P for k, P in polys if k == key]
+        for pt in pts:
+            if own:
+                assert any(P.contains_point(pt) for P in own), (t.get_text(), pt)
+            assert not any(P.contains_point(pt) for k, P in polys if k != key), (t.get_text(), pt)
+        n += 1
+    return n
+
+
+def check_clearance(fig, ax, margin=2.5):
+    """Every phase label in its region keeps >= margin - 0.5 pt from every drawn phase boundary (the polygon edges
+    of two-phase fields and tie-triangles).  (Invariant temperatures hug their own line: check_invariants.)
+    Returns the smallest clearance found (pt)."""
+    from scipy.spatial import cKDTree
+    from matplotlib.path import Path as MPath
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    f = fig.dpi / 72
+    segs = []
+    for p in ax._calphad_diagram["regions"]["polygons"]:
+        q = ax.transData.transform(np.asarray(p["xy"], float))
+        q = np.vstack([q, q[:1]])
+        for a, b in zip(q[:-1], q[1:]):
+            n = max(2, int(np.hypot(*(b - a)) / (0.25 * f)) + 1)
+            segs.append(a + (b - a) * np.linspace(0, 1, n)[:, None])
+    pts = np.vstack(segs)
+    pts = pts[np.isfinite(pts).all(axis=1)]
+    tree = cKDTree(pts)
+    worst = np.inf
+    for t in labels_of(ax, ("phase_label:",)):
+        if not in_region(t):
+            continue
+        q = text_rect(t, r)
+        ring = np.vstack([a + (b - a) * np.linspace(0, 1, 60)[:, None] for a, b in zip(q, np.roll(q, -1, axis=0))])
+        assert not MPath(q).contains_points(pts).any(), t.get_text()
+        d = tree.query(ring)[0].min() / f
+        assert d >= margin - 0.5, (t.get_text(), d)
+        worst = min(worst, d)
+    return worst
+
+
+def check_invariants(fig, ax, min_fs=MIN_FS):
+    """Invariant temperatures sit right above or right below their own line, over it, at >= min_fs; no invariant
+    line has more than one temperature (also when the mapping reported it twice)."""
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    f = fig.dpi / 72
+    invs = ax._calphad_diagram["regions"]["invariants"]
+    labs = labels_of(ax, ("invariant_label:",))
+    lines_of = []
+    for t in labs:                    # the reported invariants (within 0.5 K) whose line runs under this label
+        x = t.get_position()[0]
+        lines_of.append({i for i, inv in enumerate(invs) if abs(inv["T_K"] - t._calphad_label["T_K"]) < 0.5
+                         and min(inv["x0"], inv["x1"]) - 1e-9 <= x <= max(inv["x0"], inv["x1"]) + 1e-9})
+        assert lines_of[-1], t.get_text()
+    for a in range(len(labs)):
+        for b in range(a + 1, len(labs)):
+            assert not lines_of[a] & lines_of[b], ("one invariant line, two temperatures", labs[a].get_text())
+    out = []
+    for t in labs:
+        inv = min(invs, key=lambda i: abs(i["T_K"] - t._calphad_label["T_K"]))
+        assert abs(inv["T_K"] - t._calphad_label["T_K"]) < 1e-6
+        q = text_rect(t, r)
+        (xa, y), (xb, _) = ax.transData.transform([(inv["x0"], inv["y"]), (inv["x1"], inv["y"])])
+        assert min(xa, xb) - f <= q[:, 0].min() and q[:, 0].max() <= max(xa, xb) + f, t.get_text()
+        above, below = q[:, 1].min() - y, y - q[:, 1].max()
+        assert max(above, below) > 0, t.get_text()                    # not across the line
+        assert 0 < max(above, below) <= 4.0 * f, (t.get_text(), above / f, below / f)   # right next to it
+        assert t.get_fontsize() >= min_fs
+        out.append((t.get_text(), "above" if above > 0 else "below"))
+    return out
+
+
+def tick_state(ax, which="x"):
+    """(visible tick texts, hidden tick texts) as drawn; hidden ones must touch a name outside the plot, visible
+    ones must not."""
+    fig = ax.figure
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    outs = [text_rect(t, r) for t in labels_of(ax, ("phase_label:",)) if is_outside(t)]
+    axis = getattr(ax, which + "axis")
+    locs = axis.get_majorticklocs()
+    lo, hi = sorted(axis.get_view_interval())
+    shown, hidden = [], []
+    for tick, loc in zip(axis.get_major_ticks(len(locs)), locs):
+        lab = tick.label1
+        if not (lo - 1e-9 <= loc <= hi + 1e-9) or not lab.get_text():
+            continue
+        if lab.get_visible():
+            assert not any(rects_overlap(text_rect(lab, r), q) for q in outs), lab.get_text()
+            shown.append(lab.get_text())
+        else:
+            lab.set_visible(True)                                     # only colliding ones (1 pt margin)
+            assert any(rects_overlap(grow(text_rect(lab, r), 1.5 * fig.dpi / 72), q) for q in outs), lab.get_text()
+            lab.set_visible(False)
+            hidden.append(lab.get_text())
+    return shown, hidden
+
+
+def omitted_line(text):
+    """The one-line report of labels left out for lack of room: (count, names)."""
+    m = re.search(r"^omitted (\d+) \(no room for [\d.]+ pt\): (.+)$", text.replace("; ", "\n"), re.M)
+    return (int(m.group(1)), [s.strip() for s in m.group(2).split(", ")]) if m else (0, [])
 
 
 def test_binary_crni(tb):
@@ -196,15 +379,18 @@ def test_binary_crni(tb):
     assert "phase labels" in text
     fig, ax = stored(images[0])
     texts = {t.get_text() for t in labels_of(ax)}
-    assert {"L", "BCC", "FCC", "L+BCC", "L+FCC", "BCC+FCC"} <= texts, texts
-    # eutectic temperature, in °C, as in the invariants CSV
+    assert {"L", "BCC", "FCC", "L+BCC", "BCC+FCC"} <= texts, texts
+    # the thin L+FCC field has no room for an 8 pt label: left out, and said so in one line
+    n, names = omitted_line(text)
+    assert "L+FCC" not in texts and "L+FCC" in names and n == len(names)
+    # eutectic temperature, in °C, as in the invariants CSV; no reaction type
     with open(f["invariants_csv"], newline="") as fh:
         T_C = float(next(r for r in csv.DictReader(fh) if r["type"] == "eutectic")["T_C"])
     inv = [t for t in labels_of(ax, ("invariant_label:",))]
     assert [t.get_text() for t in inv] == [f"{T_C:.0f} °C"] and inv[0].get_gid() == f"invariant_label:{T_C:.0f}C"
-    x, y = inv[0].get_position()
-    assert abs(y - T_C) < 60                                          # next to the eutectic line
-    assert check_anchors(ax) >= 6
+    assert check_invariants(fig, ax)
+    assert check_anchors(ax) >= 5
+    assert check_inside(fig, ax) >= 5
     check_layout(fig, ax)
     pickle.dumps(fig)                                                 # figures stay picklable
     # vector output keeps the text as text
@@ -214,6 +400,15 @@ def test_binary_crni(tb):
     assert 'id="phase_label:BCC_A2.FCC_A1"' in svg and "DejaVu Sans" in svg
     assert b"/FontFile2" in f["pdf"].read_bytes()                     # TrueType (Type 42) font embedded
     assert "BCC+FCC" in _pdf_text(f["pdf"]) and f"{T_C:.0f}" in _pdf_text(f["pdf"])
+    # a larger minimum size leaves out more labels, and every label drawn respects it
+    text2, images2 = call(tb, "edit_figure", {"image": images[0], "operations": [
+        {"op": "label_phase_regions", "min_fontsize": 9.5, "fontsize": 9.5, "invariant_fontsize": 9.5}],
+        "output": "crni_big.png"})
+    fig2, ax2 = stored(images2[0])
+    check_layout(fig2, ax2, min_fs=9.5)
+    n2, names2 = omitted_line(text2)
+    assert n2 >= n and set(names) <= set(names2) and "9.5 pt" in text2
+    assert not ({t.get_text() for t in labels_of(ax2)} & set(names2))
 
 
 def _pdf_text(path):
@@ -225,53 +420,274 @@ def _pdf_text(path):
 
 
 def test_binary_fecr_sigma_and_gap(tb):
+    # invariant_type is accepted but ignored: reaction types are never written
     text, images = call(tb, "map_phase_diagram", {"tdb": "CrFe-82Her.tdb", "elements": ["FE", "CR"], "tmin": 300,
                                                   "tmax": 1000, "temperature_unit": "C", "label_regions": True,
                                                   "label_style": {"invariant_type": True},
                                                   "output_prefix": "fecr_labels"})
+    assert "invariant_type ignored" in text
     fig, ax = stored(images[0])
     texts = [t.get_text() for t in labels_of(ax)]
     assert "σ" in texts and "BCC+BCC" in texts and "FCC" in texts and "BCC" in texts
     assert texts.count("BCC+σ") == 2                                  # both sides of the σ field
-    assert any(re.fullmatch(r"431 °C \(eutectoid\)", s) for s in texts), texts
+    assert "431 °C" in texts and not any("eutectoid" in s for s in texts), texts
     assert not any("#" in s or "₁" in s for s in texts)               # gap is BCC+BCC, never BCC#1 / BCC₁
+    assert check_invariants(fig, ax)
     assert check_anchors(ax) >= 6
+    assert check_inside(fig, ax) >= 6
     check_layout(fig, ax)
     svg = files_from(text)["svg"].read_text()
-    assert re.search(r"<text[^>]*>σ</text>", svg)
+    assert re.search(r"<text[^>]*>σ</text>", svg) and "eutectoid" not in svg
     assert "σ" in _pdf_text(files_from(text)["pdf"])
 
 
-def test_ternary_tie_triangles(tb):
-    text, images = call(tb, "map_phase_diagram", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["NI", "CO", "CR"],
-                                                  "temperature": 900, "temperature_unit": "C",
-                                                  "label_regions": True, "output_prefix": "nicocr_labels"})
+def test_binary_alni_compounds_outside(tb, tmp_path):
+    """Line compounds Al₃Ni and Al₃Ni₅: named below the x axis at their composition (60°), never inside; the tick
+    labels they cover are hidden, the others kept; show_code draws the same."""
+    text, images = call(tb, "map_phase_diagram", {"tdb": "AlCoCrNi_Liu2016.tdb", "elements": ["AL", "NI"],
+                                                  "tmin": 400, "tmax": 1800, "temperature_unit": "C",
+                                                  "output_prefix": "alni_labels"})
+    assert "stoichiometric phases named outside the plot: " in text
+    fig, ax = stored(images[0])
+    comps = {c["key"][0]: c for c in ax._calphad_diagram["regions"]["compounds"]}
+    assert {"AL3NI1", "AL3NI5"} <= set(comps), comps
+    outs = {t.get_text(): t for t in labels_of(ax, ("phase_label:",)) if is_outside(t)}
+    assert {s_ for s_, t in outs.items() if t._calphad_label["kind"] == "compound"} == {"Al₃Ni", "Al₃Ni₅"}, outs
+    inside = [t.get_text() for t in labels_of(ax) if not is_outside(t)]
+    assert "Al₃Ni" not in inside and "Al₃Ni₅" not in inside          # never in the figure
+    # Al3Ni2 has a range (a region): inside if it fits, else below the axis at its mid composition
+    assert ("Al₃Ni₂" in inside) != ("Al₃Ni₂" in outs)
+    if "Al₃Ni₂" in outs:
+        t = outs["Al₃Ni₂"]
+        assert t._calphad_label["kind"] == "region" and t.get_rotation() == 60 and 0.35 < t.xy[0] < 0.42
+        assert "too small inside, named at the edge instead: Al₃Ni₂" in text
+    # never a terminal phase (the end-member solid solutions, the liquid) outside a binary
+    assert not {tuple(t._calphad_label["key"]) for t in outs.values()} & {("FCC_A1",), ("LIQUID",)}
+    assert check_clearance(fig, ax) >= 2.0
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    f = fig.dpi / 72
+    for name, key in (("Al₃Ni", "AL3NI1"), ("Al₃Ni₅", "AL3NI5")):
+        t = outs[name]
+        assert t.get_rotation() == 60 and t.get_ha() == "right"
+        assert abs(t.xy[0] - comps[key]["x"]) < 1e-9 and t.xycoords == ("data", "axes fraction") and t.xy[1] == 0
+        assert t.arrow_patch is None                                  # right at its composition: no guide
+        q = text_rect(t, r)
+        assert q[:, 1].max() < ax.bbox.y0                             # below the x axis
+        xc = ax.transData.transform((comps[key]["x"], 0))[0]
+        top = q[np.argmax(q[:, 1])]
+        assert abs(top[0] - xc) < 10 * f and ax.bbox.y0 - top[1] < 6 * f  # its upper end at the compound
+    shown, hidden = tick_state(ax, "x")
+    assert hidden and len(shown) >= 3, (shown, hidden)
+    assert check_anchors(ax) >= 10
+    assert check_inside(fig, ax) >= 10
+    assert check_invariants(fig, ax)
+    rects = check_layout(fig, ax)
+    xl = text_rect(ax.xaxis.label, r)                                 # the axis title moved clear of the names
+    assert not any(rects_overlap(xl, p) for s, p in rects if s in outs)
+    svg = files_from(text)["svg"].read_text()
+    assert re.search(r"<text[^>]*>Al₃Ni₅</text>", svg) and 'id="phase_label:AL3NI5"' in svg
+    for h in hidden:
+        assert not re.search(r"<text[^>]*>" + re.escape(h) + "</text>", svg), h
+    # show_code: the same labels at the same places, the same tick labels hidden
+    from calphad_tools import codegen
+    cells, ctx = codegen.build_cells(tb, images[0])
+    script = codegen.to_script(tb, cells, ctx)
+    assert "calphad_tools" not in script and "TickLabelHider" in script
+    d = tmp_path / "alni_code"
+    d.mkdir()
+    dump = '''
+import json as _json
+fig.canvas.draw()
+_ax = fig.axes[0]
+_json.dump({"ticks": [t.get_text() for t in _ax.get_xticklabels() if t.get_visible() and t.get_text()],
+            "labels": {t.get_gid(): [t.get_text(), t.get_rotation()] for t in _ax.texts
+                       if (t.get_gid() or "").startswith(("phase_label:", "invariant_label:"))}}, open("art.json", "w"))
+'''
+    (d / "gen.py").write_text(script + dump)
+    run = subprocess.run([sys.executable, "-W", "ignore", "gen.py"], cwd=d, capture_output=True, text=True,
+                         timeout=900, env={**os.environ, "MPLBACKEND": "Agg"})
+    assert run.returncode == 0, run.stderr[-3000:]
+    import json
+    art = json.loads((d / "art.json").read_text())
+    want = {t.get_gid(): [t.get_text(), t.get_rotation()] for t in labels_of(ax)}
+    assert art["labels"] == want, (art["labels"], want)
+    assert art["ticks"] == shown
+    got = {}
+    for line in run.stdout.splitlines():
+        m = re.match(r"label: (.+) at \(([-\d.e]+), ([-\d.e]+)\) gid (\S+)", line)
+        if m:
+            got[m.group(4)] = (float(m.group(2)), float(m.group(3)))
+    for t in labels_of(ax):
+        x, y = label_anchor(t)
+        assert abs(got[t.get_gid()][0] - x) < 0.03 and abs(got[t.get_gid()][1] - y) < 40, (t.get_gid(), got, x, y)
+    # orientation: Al on the right -> the names follow their compositions to the mirrored side
+    _, imgs_m = call(tb, "map_phase_diagram", {"tdb": "AlCoCrNi_Liu2016.tdb", "elements": ["AL", "NI"], "right": "AL",
+                                               "tmin": 400, "tmax": 1800, "temperature_unit": "C", "formats": [],
+                                               "output_prefix": "nial_labels"})
+    figm, axm = stored(imgs_m[0])
+    outm = {t.get_text(): t for t in labels_of(axm, ("phase_label:",)) if is_outside(t)}
+    assert set(outm) == set(outs)
+    assert abs(outm["Al₃Ni"].xy[0] - 0.75) < 1e-6 and abs(outm["Al₃Ni₅"].xy[0] - 0.375) < 1e-6
+    assert outm["Al₃Ni"].get_rotation() == 60
+    check_layout(figm, axm)
+    assert tick_state(axm, "x")[1]
+
+
+LABEL_DUMP = '''
+import json as _json
+fig.canvas.draw()
+_ax = fig.axes[0]
+_json.dump({"labels": {t.get_gid(): [t.get_text(), t._calphad_label.get("outside"), bool(t._calphad_label.get("leader"))]
+                       for t in _ax.texts if (t.get_gid() or "").startswith(("phase_label:", "invariant_label:"))},
+            "ticks": [t.get_text() for t in _ax.get_xticklabels() if t.get_visible() and t.get_text()]},
+           open("art.json", "w"))
+'''
+
+
+def test_ternary_tie_triangles_and_compounds(tb, tmp_path):
+    """Cr-Al-Ni at 750 °C: tie-triangles labelled inside (turned along skinny ones), those too small for 8 pt left
+    out and reported in one line; the Al-Cr compounds named below the bottom edge (60°, spread apart where they
+    crowd), Al₃Ni beyond the Al-Ni edge (30°); a near-pure BCC corner is not taken for a compound."""
+    text, images = call(tb, "map_phase_diagram", {"tdb": "AlCoCrNi_Liu2016.tdb", "elements": ["CR", "AL", "NI"],
+                                                  "temperature": 750, "temperature_unit": "C",
+                                                  "output_prefix": "cralni_labels"})
     fig, ax = stored(images[0])
     import json
     summary = json.loads(files_from(text)["json"].read_text())
     tris = summary["invariants"]
-    assert len(tris) >= 2
+    assert len(tris) >= 5
     from calphad_tools.phase_names import region_label, region_key
     labs = labels_of(ax, ("phase_label:",))
-    for inv in tris:
-        key = region_key(inv["phases"])
+    n_omitted, omitted = omitted_line(text)
+    assert n_omitted == len(omitted) >= 3 and len(text.split("omitted")[1].splitlines()[0]) < 2000
+    n_in = 0
+    for key in {region_key(inv["phases"]) for inv in tris}:
+        name = region_label(key, ["AL", "CR", "NI"])
         hit = [t for t in labs if tuple(t._calphad_label["key"]) == key]
-        assert hit, (inv["phases"], [t.get_text() for t in labs])
-        t = hit[0]
-        assert t.get_text() == region_label(inv["phases"]) and t.get_text().count("+") == 2
-        # anchor (or leader end) inside the triangle
-        x, y = t.xy if t._calphad_label.get("leader") else t.get_position()
-        P = np.array([[inv["compositions"][n][e] for e in ("CO", "CR")] for n in inv["phases"]])
-        lam = np.linalg.solve(np.vstack([P.T, np.ones(3)]), np.array([x, y, 1.0]))
-        assert (lam > -1e-6).all(), (t.get_text(), lam)
-    assert check_anchors(ax) >= 8
+        if not hit:                                                   # too small for 8 pt: left out and reported
+            assert name in omitted, (key, text)
+            continue
+        assert len(hit) == 1 and hit[0].get_text() == name and name.count("+") == 2
+        x, y = hit[0].get_position()                                  # inside a triangle of these phases
+        lams = []
+        for inv in tris:
+            if region_key(inv["phases"]) == key:
+                P = np.array([[inv["compositions"][n][e] for e in ("AL", "NI")] for n in inv["phases"]])
+                lams.append(np.linalg.solve(np.vstack([P.T, np.ones(3)]), np.array([x, y, 1.0])))
+        assert any((lam > -1e-6).all() for lam in lams), (name, lams)
+        n_in += 1
+    assert n_in >= 2
+    assert any(abs(t.get_rotation()) > 1 for t in labs if not is_outside(t))     # turned in a skinny triangle
+    outs = {t.get_text(): t for t in labs if is_outside(t)}
+    bottom = {s_ for s_, t in outs.items() if t._calphad_label["outside"] == "bottom"}
+    assert {"AlCr₂", "Al₈Cr₅-LT", "Al₉Cr₄-LT", "Al₄Cr", "Al₁₁Cr₂", "Al₁₃Cr₂"} <= bottom, outs
+    assert all(outs[s_].get_rotation() == 60 for s_ in bottom)
+    assert outs["Al₃Ni"]._calphad_label["outside"] == "right" and outs["Al₃Ni"].get_rotation() == 30
+    # Al3Ni2 (a range, its field a sliver along the Al-Ni edge): named beyond that edge, as a region
+    assert outs["Al₃Ni₂"]._calphad_label == {**outs["Al₃Ni₂"]._calphad_label, "kind": "region", "outside": "right"}
+    assert outs["Al₃Ni₂"].get_rotation() == 30 and "Al₃Ni₂" not in omitted
+    assert "named at the edge instead: " in text and "Al₃Ni₂" in text.split("named at the edge instead: ")[1]
+    # the near-pure BCC at the Cr corner is not a compound (if named outside, then as a region)
+    assert all(t._calphad_label["kind"] == "region" for s_, t in outs.items() if s_ == "BCC")
+    assert not any(s_.startswith("Al") for s_ in (t.get_text() for t in labs if in_region(t) and "+" not in t.get_text()))
+    assert not omitted or all("+" in s_ for s_ in omitted)           # only multi-phase fields got nowhere
+    assert check_anchors(ax) >= 12
+    assert check_inside(fig, ax) >= 5
+    assert check_clearance(fig, ax) >= 2.0
+    check_layout(fig, ax)                                             # spread apart: no two names overlap
+    shown, hidden = tick_state(ax, "x")
+    assert hidden and len(shown) >= 3 and "0.0" in shown and "1.0" in shown, (shown, hidden)
+    # show_code: the same labels, at the same edges
+    from calphad_tools import codegen
+    cells, ctx = codegen.build_cells(tb, images[0])
+    script = codegen.to_script(tb, cells, ctx)
+    assert "calphad_tools" not in script
+    d = tmp_path / "cralni_code"
+    d.mkdir()
+    (d / "gen.py").write_text(script + LABEL_DUMP)
+    run = subprocess.run([sys.executable, "-W", "ignore", "gen.py"], cwd=d, capture_output=True, text=True,
+                         timeout=1200, env={**os.environ, "MPLBACKEND": "Agg"})
+    assert run.returncode == 0, run.stderr[-3000:]
+    import json as _j
+    art = _j.loads((d / "art.json").read_text())
+    want = {t.get_gid(): [t.get_text(), t._calphad_label.get("outside"), bool(t._calphad_label.get("leader"))]
+            for t in labels_of(ax)}
+    assert art["labels"] == want, (art["labels"], want)
+
+
+@pytest.fixture(scope="module")
+def ternary_compounds(tb):
+    out = {}
+    for name, els in (("conv", ["CO", "NI", "V"]), ("cvn", ["CO", "V", "NI"])):
+        out[name] = call(tb, "map_phase_diagram", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": els,
+                                                   "temperature": 900, "temperature_unit": "C", "formats": [],
+                                                   "output_prefix": f"{name}_labels"})
+    return out
+
+
+def _edge_of(ax, xy, tol=1e-6):
+    x, y = xy
+    return "bottom" if abs(y) < tol else "left" if abs(x) < tol else "right" if abs(x + y - 1) < tol else None
+
+
+EDGE_ROT = {"bottom": 60.0, "left": -30.0, "right": 30.0}
+
+
+@pytest.mark.parametrize("case,want", [("conv", {"M₃V": ("right",), "CoV₃": ("left",)}),
+                                       ("cvn", {"M₃V": ("bottom", "right"), "CoV₃": ("bottom",)})])
+def test_ternary_compounds_outside(ternary_compounds, case, want):
+    """Line compound M₃V and point compound CoV₃ (Co-Ni-V, 900 °C): named just outside the nearest triangle edge
+    (bottom 60°, slanted edges ±30°, square to the edge), never inside; covered tick labels hidden.  M₃V runs
+    from edge to edge in the Co-V-Ni orientation: either end will do."""
+    text, images = ternary_compounds[case]
+    fig, ax = stored(images[0])
+    outs = {t.get_text(): t for t in labels_of(ax, ("phase_label:",)) if is_outside(t)}
+    assert {s_ for s_, t in outs.items() if t._calphad_label["kind"] == "compound"} == set(want), (set(outs), text)
+    assert not set(want) & {t.get_text() for t in labels_of(ax) if not is_outside(t)}
+    # others outside are single-phase fields too small inside that reach the edge (BCC at the V corner)
+    assert all(len(t._calphad_label["key"]) == 1 for t in outs.values())
+    if case == "conv":
+        # each region on its own: the thin FCC strip on the Ni-V edge is named, although the big FCC field is too
+        fcc = [t for t in labels_of(ax, ("phase_label:",)) if t.get_text() == "FCC"]
+        strip = [t for t in fcc if is_outside(t)]
+        assert len(strip) == 1 and len(fcc) >= 2 and strip[0]._calphad_label["kind"] == "region", fcc
+        assert strip[0]._calphad_label["outside"] == "right" and strip[0].get_rotation() == 30
+        assert 0.26 < strip[0].xy[1] < 0.36 and abs(sum(strip[0].xy) - 1) < 1e-9, strip[0].xy   # X(V) of the strip
+        assert "named at the edge instead: " in text and "FCC" in text.split("named at the edge instead: ")[1]
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    f = fig.dpi / 72
+    for name, edges in want.items():
+        t = outs[name]
+        edge = t._calphad_label["outside"]
+        assert edge in edges and t.get_rotation() % 360 == EDGE_ROT[edge] % 360, (name, edge, t.get_rotation())
+        assert _edge_of(ax, t.xy) == edge, (name, t.xy)               # anchored on that edge
+        q = text_rect(t, r)
+        d = ax.transData.inverted().transform(q)
+        side = {"bottom": d[:, 1], "left": d[:, 0], "right": 1 - d.sum(axis=1)}[edge]
+        assert (side < 0).all(), (name, d)                            # entirely beyond that edge
+        near = np.hypot(*(q - ax.transData.transform(t.xy)).T).min() / f    # and right next to it (pt)
+        assert near < 12, (name, near)
+    if case == "cvn":                                                 # bottom edge: along the line of constant x
+        comps = {c["key"][0]: c for c in ax._calphad_diagram["regions"]["compounds"]}
+        assert abs(outs["CoV₃"].xy[0] - comps["COV3"]["x"]) < 1e-6
+    assert check_anchors(ax) >= 5
+    assert check_inside(fig, ax) >= 4
     check_layout(fig, ax)
+    hidden = []
+    for which in ("x", "y"):
+        shown, h = tick_state(ax, which)
+        assert len(shown) >= 8
+        hidden += h
+    assert hidden, "a name outside the triangle covers at least one tick label"
 
 
 def test_obstacles_edit_ops_and_show_code(tb):
     # a diagram without labels, then data points where the L+BCC label would go, then labels on the stored figure
     _, images = call(tb, "map_phase_diagram", {"tdb": "CrNi-06Hal.tdb", "elements": ["CR", "NI"], "tmin": 800,
-                                               "tmax": 2200, "temperature_unit": "C", "output_prefix": "crni_plain"})
+                                               "tmax": 2200, "temperature_unit": "C", "output_prefix": "crni_plain",
+                                               "label_regions": False})
     ref, imgs_ref = call(tb, "edit_figure", {"image": images[0], "operations": [{"op": "label_phase_regions"}],
                                              "output": "crni_ref.png"})
     assert Path(imgs_ref[0]).with_suffix(".svg").exists() and Path(imgs_ref[0]).with_suffix(".pdf").exists()
@@ -285,8 +701,6 @@ def test_obstacles_edit_ops_and_show_code(tb):
     text, imgs = call(tb, "edit_figure", {"image": images[0], "operations": ops, "output": "crni_data.png"})
     assert "phase labels" in text
     fig, ax = stored(imgs[0])
-    lb = next(t for t in labels_of(ax) if t.get_text() == "L+BCC")
-    assert np.hypot(*(np.subtract(lb.get_position(), (x0, y0)) / [1.0, 1400.0])) > 0.01      # moved
     rects = check_layout(fig, ax)
     sc = [c for c in ax.collections if c.get_label() == "measured"][0]
     px = sc.get_offset_transform().transform(sc.get_offsets())
@@ -294,6 +708,11 @@ def test_obstacles_edit_ops_and_show_code(tb):
     for s, p in rects:
         for (u, v) in px:
             assert not point_in_rect(p, u, v, rad), (s, u, v)
+    lb = [t for t in labels_of(ax) if t.get_text() == "L+BCC"]
+    if lb:
+        assert np.hypot(*(np.subtract(lb[0].get_position(), (x0, y0)) / [1.0, 1400.0])) > 0.01   # moved
+    else:
+        assert "L+BCC" in omitted_line(text)[1]                       # or left out (no room at 8 pt)
     check_anchors(ax)
     # edit labels by id / text
     lab = next(t for t in labels_of(ax) if t.get_gid() == "phase_label:LIQUID")
@@ -349,7 +768,7 @@ def test_plot_diagram_with_data_labels(tb, tmp_path):
     assert "phase labels" in text and Path(imgs[0]).with_suffix(".svg").exists()
     fig, ax = stored(imgs[0])
     texts = {t.get_text() for t in labels_of(ax)}
-    assert {"Liquid", "Liquid+BCC", "BCC+FCC", "1345 °C"} <= texts, texts
+    assert {"Liquid", "Liquid+BCC", "BCC+FCC"} <= texts, texts
     rects = check_layout(fig, ax)
     n = 0
     for ln in ax.get_lines():                          # no label covers a data marker
@@ -363,6 +782,7 @@ def test_plot_diagram_with_data_labels(tb, tmp_path):
                 n += 1
     assert n > 0
     check_anchors(ax)
+    check_invariants(fig, ax)
 
 
 def test_label_errors(tb):
@@ -376,36 +796,119 @@ def test_label_errors(tb):
 
 
 def test_label_diagram_synthetic(tmp_path):
-    """Placement on a hand-made diagram: a two-phase box, a line compound, an invariant line and data points."""
+    """Placement on a hand-made diagram: a two-phase box, a line compound, an invariant line, data points and a
+    sliver too thin for any label."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from calphad_tools.label_place import label_diagram, save_vector
+    from calphad_tools.label_place import label_diagram, save_vector, find_labels, move_label, clear_labels
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1000)
+    ax.set_xlabel("Mole fraction Cr")
     ax.plot([0.1, 0.5, 0.5, 0.1, 0.1], [100, 100, 500, 500, 100], color="C0")
-    ax.plot([0.7, 0.7], [0, 800], color="C1")
+    ax.plot([0.6, 0.6], [0, 800], color="C1")
     ax.plot([0.1, 0.9], [600, 600], color="red")
     ax.scatter([0.3, 0.28, 0.32], [300, 280, 320], s=30, color="k")      # data right where the label would go
-    regions = {"polygons": [{"key": ("FE3CR4", "LIQUID"), "xy": [[0.1, 100], [0.5, 100], [0.5, 500], [0.1, 500]]}],
-               "compounds": [{"key": ("FE3CR4",), "x": 0.7, "y0": 0.0, "y1": 800.0}],
+    regions = {"polygons": [{"key": ("FE3CR4", "LIQUID"), "xy": [[0.1, 100], [0.5, 100], [0.5, 500], [0.1, 500]]},
+                            {"key": ("BCC_A2", "SIGMA"), "xy": [[0.85, 100], [0.86, 100], [0.86, 500], [0.85, 500]]}],
+               "compounds": [{"key": ("FE3CR4",), "x": 0.6, "y0": 0.0, "y1": 800.0},
+                             {"key": ("FECR",), "x": 0.62, "y0": 0.0, "y1": 500.0}],
                "invariants": [{"key": ("A", "B", "C"), "T_K": 873.15, "y": 600.0, "x0": 0.1, "x1": 0.9,
+                               "type": "eutectic"},           # the same line reported twice by a mapping:
+                              {"key": ("A", "B", "C"), "T_K": 873.16, "y": 600.01, "x0": 0.9, "x1": 0.2,
                                "type": "eutectic"}]}
     rep = label_diagram(ax, regions, None, None, kind="binary", elements=["FE", "CR"], T_unit="C",
-                        style={"invariant_type": True})
+                        style={"invariant_type": True, "leader": True})
+    assert [lab["text"] for lab in rep["labels"] if lab["kind"] == "invariant"] == ["600 °C"]   # once per line
     texts = {lab["text"]: lab for lab in rep["labels"]}
-    assert {"L+Fe₃Cr₄", "Fe₃Cr₄", "600 °C (eutectic)"} <= set(texts), texts
+    assert {"L+Fe₃Cr₄", "Fe₃Cr₄", "FeCr", "600 °C"} <= set(texts), texts
+    assert not any("eutectic" in s for s in texts)
+    assert [s["label"] for s in rep["skipped"]] == ["BCC+σ"] and "8 pt" in rep["skipped"][0]["reason"]
     x, y = texts["L+Fe₃Cr₄"]["x"], texts["L+Fe₃Cr₄"]["y"]
     assert 0.1 < x < 0.5 and 100 < y < 500 and np.hypot((x - 0.3) / 0.4, (y - 300) / 400) > 0.1
-    assert texts["Fe₃Cr₄"]["rotation"] in (0.0, 90.0) and abs(texts["Fe₃Cr₄"]["x"] - 0.7) < 0.1
-    assert abs(texts["600 °C (eutectic)"]["y"] - 600) < 60
+    assert abs(texts["600 °C"]["y"] - 600) < 60
+    # line compounds: below the x axis at 60°, two close ones spread apart (with a guide), the axis title moved clear
+    a, b = (next(t for t in ax.texts if t.get_text() == s) for s in ("Fe₃Cr₄", "FeCr"))
+    assert a.get_rotation() == b.get_rotation() == 60 and a.xy == (0.6, 0.0) and b.xy == (0.62, 0.0)
+    assert texts["Fe₃Cr₄"]["outside"] == "bottom" and (texts["Fe₃Cr₄"]["guide"] or texts["FeCr"]["guide"])
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    qa, qb = text_rect(a, r), text_rect(b, r)
+    assert not rects_overlap(qa, qb) and max(qa[:, 1].max(), qb[:, 1].max()) < ax.bbox.y0
+    assert not any(rects_overlap(text_rect(ax.xaxis.label, r), q) for q in (qa, qb))
+    shown, hidden = tick_state(ax, "x")
+    assert hidden == ["0.6"], (shown, hidden)
+    assert "0.0" in shown and "1.0" in shown
+    # moving / deleting a name outside the plot gives the tick label back
+    move_label(a, dx_pt=60)
+    move_label(b, dx_pt=60)
+    shown2, hidden2 = tick_state(ax, "x")
+    assert set(hidden) - set(hidden2) and set(hidden2) != set(hidden)
     pickle.dumps(fig)
     save_vector(fig, tmp_path / "s.svg")
     save_vector(fig, tmp_path / "s.pdf")
     svg = (tmp_path / "s.svg").read_text()
-    for s in ("L+Fe₃Cr₄", "Fe₃Cr₄", "600 °C (eutectic)"):
+    for s in ("L+Fe₃Cr₄", "Fe₃Cr₄", "600 °C"):
         assert re.search(r"<text[^>]*>" + re.escape(s) + "</text>", svg), s
     assert 'id="phase_label:FE3CR4.LIQUID"' in svg and 'id="invariant_label:600C"' in svg
     assert "Fe₃Cr₄" in _pdf_text(tmp_path / "s.pdf")
+    # labelling again starts from the original axis title position
+    pad = ax.xaxis.labelpad
+    clear_labels(ax)
+    assert ax.xaxis.labelpad < pad and not find_labels(ax) and not ax.artists
+    plt.close(fig)
+
+
+def test_label_ternary_compounds_and_leaders_synthetic():
+    """Ternary (no equilibrium needed): compounds on an edge are named beyond it; an interior ternary compound and a
+    thin interior ternary solution field get a leader label (a dot at the point compound) and are never left out;
+    moving a leader label keeps the line on its target, deleting it removes its dot."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from pycalphad.plot import triangular  # noqa: F401
+    from calphad_tools.label_place import label_diagram, find_labels, move_label, remove_label, DOT_PREFIX
+    fig = plt.figure(figsize=(7, 6))
+    ax = fig.add_subplot(projection="triangular")
+    sliver = [[0.40, 0.30], [0.46, 0.30], [0.46, 0.306], [0.40, 0.306]]
+    polys = [{"key": ("FCC_A1", "TAU"), "xy": [[0.2, 0.2], [0.4, 0.3], [0.4, 0.306], [0.2, 0.25]]},
+             {"key": ("ETA", "FCC_A1"), "xy": [[0.46, 0.30], [0.6, 0.2], [0.6, 0.25], [0.46, 0.306]]}]
+    for pl in polys + [{"xy": sliver}]:
+        q = np.array(pl["xy"] + pl["xy"][:1])
+        ax.plot(q[:, 0], q[:, 1], color="0.6", lw=1)
+    regions = {"polygons": polys, "invariants": [], "phase_points": {"ETA": sliver},
+               "compounds": [{"key": ("SIGMA",), "x": 0.5, "y": 0.0}, {"key": ("MU",), "x": 0.0, "y": 0.45},
+                             {"key": ("KAPPA",), "x": 0.3, "y": 0.7}, {"key": ("TAU",), "x": 0.25, "y": 0.45}]}
+    rep = label_diagram(ax, regions, None, None, kind="ternary", elements=["A", "B", "C"])
+    got = {lab["text"]: lab for lab in rep["labels"]}
+    assert {k: (v.get("outside"), v["rotation"]) for k, v in got.items() if v.get("outside")} == \
+        {"σ": ("bottom", 60.0), "μ": ("left", -30.0), "κ": ("right", 30.0)}, got
+    assert got["τ"]["leader"] and got["τ"]["kind"] == "compound" and got["η"]["leader"] and got["η"]["kind"] == "region"
+    assert not {"τ", "η"} & {sk["label"] for sk in rep["skipped"]}
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    t = next(t for t in ax.texts if t.get_text() == "σ")
+    assert np.allclose(t.xy, (0.5, 0.0))                              # along the line of constant x
+    for t in ax.texts:
+        if is_outside(t):
+            d = ax.transData.inverted().transform(text_rect(t, r))
+            assert ((d[:, 0] < 0) | (d[:, 1] < 0) | (d.sum(axis=1) > 1)).all(), t.get_text()
+    tau = find_labels(ax, "TAU")[0]
+    assert tau.arrow_patch is not None and np.allclose(tau.xy, (0.25, 0.45))
+    dots = [ln for ln in ax.get_lines() if ln.get_gid() == DOT_PREFIX + tau.get_gid()]
+    assert len(dots) == 1 and np.allclose(dots[0].get_xydata(), [(0.25, 0.45)])
+    eta = find_labels(ax, "ETA")[0]
+    assert eta.arrow_patch is not None and not any(ln.get_gid() == DOT_PREFIX + eta.get_gid() for ln in ax.get_lines())
+    rects = [text_rect(t, r) for t in ax.texts if (t.get_gid() or "").startswith("phase_label:")]
+    for i in range(len(rects)):                                       # no label covers another
+        for j in range(i + 1, len(rects)):
+            assert not rects_overlap(rects[i], rects[j])
+    p0 = ax.transData.transform(tau.get_position())
+    move_label(tau, 15, 10)
+    assert np.allclose((ax.transData.transform(tau.get_position()) - p0) * 72 / fig.dpi, (15, 10), atol=0.05)
+    assert np.allclose(tau.xy, (0.25, 0.45))                          # the line still ends at the compound
+    remove_label(tau)
+    assert not find_labels(ax, "TAU") and not any(ln.get_gid() == DOT_PREFIX + "phase_label:TAU"
+                                                  for ln in ax.get_lines())
     plt.close(fig)

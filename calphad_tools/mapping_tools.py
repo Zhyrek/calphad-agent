@@ -391,7 +391,7 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
     diagram (see region_labels); None = on in the shaded style (binary T-x and ternary isotherms; isopleth and
     T-MU lines are named on the line instead), off in the color style.  formats: extra outputs next to the PNG
     (default svg + pdf in the shaded style or when labelling).  style: "shaded" (black boundaries, aliceblue
-    two-phase fields, grey ternaries, no legend; see diagram_style) or "color" (one colour per phase, tie-lines,
+    two-phase fields, grey ternary lines, no legend; see diagram_style) or "color" (one colour per phase, tie-lines,
     phase legend).
     Orientation (see orientation.py): right = element on the right of a binary (x axis = its fraction; isopleth:
     the varying element); corners = {left, right, top} of a ternary; otherwise the element order decides
@@ -578,7 +578,7 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
     if recipe is not None:      # what edit_figure label_phase_regions / composition_points need later
         from .phase_regions import regions_from_lines
         ax._calphad_diagram = {"recipe": recipe, "regions": regions_from_lines(res["lines"], res["invariants"],
-                                                                               recipe),
+                                                                               recipe, db),
                                "invariant_types": {inv["T_K"]: inv.get("type", "") for inv in res["invariants"]},
                                "style": style}
     if label_regions:
@@ -857,7 +857,7 @@ def _plot_tielines(ax, res, kind, tielines, label_nodes, colors, mu_el, style="c
         return
     allxy = np.array(allxy)
     rng = np.ptp(allxy, axis=0) * 1e-3
-    if style == "shaded":       # black boundaries + aliceblue two-phase fields (binary), grey (ternary); diagram_style
+    if style == "shaded":       # aliceblue two-phase fields; black (binary) / grey (ternary) lines; diagram_style
         from .diagram_style import draw_shaded
         bounds = [[np.array([xy(p["phases"][k][1], p["T"], p["mu"]) for p in ln["points"]])
                    for k in range(len(ln["phases"]))] for ln in res["lines"]]
@@ -1738,14 +1738,14 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
              "pressure": {**N, "description": "Pa, default 101325"},
              "time_limit_s": {**N, "description": "stop mapping after this time (partial result), default 600"},
              "label_regions": {**B, "description": "write the phases of each region / tie-triangle (e.g. L+FCC, "
-                                                   "BCC+σ, Fe₃Cr₄) and binary invariant temperatures on the plot, "
-                                                   "clear of data; binary or ternary isotherm; default on when "
-                                                   "shaded"},
+                                                   "BCC+σ) inside it, stoichiometric phases (Al₃Ni) outside the "
+                                                   "axes and binary invariant temperatures by their line, clear of "
+                                                   "data; binary or ternary isotherm; default on when shaded"},
              "label_invariants": {**B, "description": "with label_regions (default true)"},
              "phase_labels": {"type": "object", "additionalProperties": {"type": "string"},
                               "description": "label text overrides, e.g. {\"SIGMA\": \"σ-phase\"}"},
-             "label_style": {"type": "object", "description": "fontsize, min_fontsize, color, background, "
-                                                              "invariant_type (adds eutectic etc.), leader, rotate"},
+             "label_style": {"type": "object", "description": "fontsize, min_fontsize (default 8; labels that "
+                                                              "do not fit are left out), color, background, rotate"},
              "formats": {**STRS, "description": "extra files svg/pdf/eps with editable text (default svg+pdf "
                                                  "when shaded or labelling)"},
              "style": STYLE,

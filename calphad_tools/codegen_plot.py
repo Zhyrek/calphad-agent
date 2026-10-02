@@ -3799,13 +3799,11 @@ class OpWriter:
                 rec["comp"] = {**rec.get("comp", {}), "scale": float(rec.get("comp", {}).get("scale", 1.0)) * fx.scale}
         self._label_helpers()
         self.ctx.need("from pycalphad import Database")
-        types = {round(float(T), 3): t for T, t in (d.get("invariant_types") or {}).items() if t}
         style = {k: op[k] for k in STYLE_KEYS if k in op}
         self.emit(f"db_labels = Database(str({self.ctx.tdb(rec['tdb'])}))")
         self.emit(label_code(self.ctx, rec, get_db(rec["tdb"]), None, mapped=False,
                              invariants=op.get("invariants", True), phase_labels=op.get("phase_labels"),
-                             style=style, db_expr="db_labels",
-                             invariant_types=types if style.get("invariant_type") else None).rstrip("\n"))
+                             style=style, db_expr="db_labels").rstrip("\n"))
 
     def _find_label(self, o: OpX) -> str:
         op = o.op
@@ -3825,7 +3823,7 @@ class OpWriter:
                       f"{lit(float(op.get('dy', 0.0)))})   # points")
 
     def op_delete_label(self, o: OpX):
-        self.emit(f"for t in {self._find_label(o)}:\n    t.remove()")
+        self.emit(f"for t in {self._find_label(o)}:\n    remove_label(t)")
 
     def op_relabel(self, o: OpX):
         op = o.op

@@ -441,6 +441,13 @@ class Parameter:
     sign: float              # multiply raw expression by this to get normalised value
     order_map: Optional[Dict[int, int]]  # ternary order remapping (raw->normalised), if any
     expr: Piecewise
+    # reference key as written after the last range ("... 6000 N 91Din !" -> "91Din"); when the command has none,
+    # a short comment right after its "!" ("... N ! $1967Kau") is used.  "" if there is neither.
+    reference: str = ""
+
+    def __post_init__(self):
+        if not self.reference:
+            self.reference = " ".join(str(self.expr.reference or "").split())
 
     def to_tdb(self) -> str:
         return f" PARAMETER {self.raw_name:<30s} {self.expr.to_tdb()} !"
@@ -502,11 +509,23 @@ class TDB:
     header_comments: List[str] = field(default_factory=list)
     temp_limits: Tuple[float, float] = (298.15, 6000.0)
     warnings: List[str] = field(default_factory=list)
+    # reference key (upper case) -> full citation, from LIST_OF_REFERENCES / ADD_REFERENCES or a $-comment list
+    reference_list: Dict[str, str] = field(default_factory=dict)
 
     # -- convenience -------------------------------------------------------
     @property
     def name(self) -> str:
         return Path(self.path).name
+
+    def citation(self, ref: str) -> str:
+        """Full citation of a parameter's reference key ("" if the database's reference list does not have it)."""
+        ref = " ".join((ref or "").split())
+        if not ref:
+            return ""
+        hit = self.reference_list.get(ref.upper())
+        if hit is None and " " in ref:
+            hit = self.reference_list.get(ref.split()[0].upper())
+        return hit or ""
 
     @property
     def real_elements(self) -> List[str]:
@@ -563,24 +582,166 @@ def _key_tuple(k: ParamKey) -> Tuple:
 # ---------------------------------------------------------------------------
 def _split_commands(text: str) -> Tuple[List[str], List[str]]:
     """Strip $-comments and split the file into '!'-terminated commands."""
+    cmds, header, _, _ = _split_commands_ex(text)
+    return cmds, header
+
+
+def _split_commands_ex(text: str) -> Tuple[List[str], List[str], List[str], List[str]]:
+    """(commands, header comments, comment right after each command's '!' on the same line, comment lines).
+
+    In the comment lines, "$" (an empty comment) marks where commands interrupted a run of comment lines."""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    kept, header, seen_command = [], [], False
+    kept, header, comments, seen_command = [], [], [], False
+    trailing: Dict[int, str] = {}         # number of '!' up to the comment -> comment text
+    n_bang = 0
     for ln in lines:
         stripped = ln.strip()
         if stripped.startswith("$"):
+            comments.append(stripped)
             if not seen_command:
                 header.append(stripped)
             continue
         if "$" in ln:
             # inline comment - but only outside quotes (references/db info)
             if ln.count("'") % 2 == 0 and "'" not in ln.split("$", 1)[0]:
-                ln = ln.split("$", 1)[0]
+                code, com = ln.split("$", 1)
+                if "!" in code and not code.rsplit("!", 1)[1].strip():
+                    trailing[n_bang + code.count("!")] = com.strip()
+                ln = code
         if stripped:
             seen_command = True
+            if comments and comments[-1] != "$":
+                comments.append("$")
+        n_bang += ln.count("!")
         kept.append(ln)
     body = "\n".join(kept)
-    cmds = [c.strip() for c in body.split("!")]
-    return [c for c in cmds if c], header
+    cmds, trail = [], []
+    for i, c in enumerate(body.split("!")):
+        c = c.strip()
+        if c:
+            cmds.append(c)
+            trail.append(trailing.get(i + 1, ""))
+    return cmds, header, trail, comments
+
+
+# ---------------------------------------------------------------------------
+# References
+# ---------------------------------------------------------------------------
+_REF_ENTRY_RE = re.compile(r"([^\s']+)((?:[ \t]+[^\s']+)*?)\s*'([^']*)'?", re.S)
+
+
+def parse_reference_command(cmd: str) -> Dict[str, str]:
+    """``LIST_OF_REFERENCES`` / ``ADD_REFERENCES`` body -> {KEY: citation}.
+
+    Thermo-Calc style: an optional ``NUMBER SOURCE`` heading, then ``KEY 'citation'`` (the quoted text may run over
+    several lines; ``KEY ALIAS 'citation'`` defines both).  Without quotes, each line is ``KEY citation``."""
+    parts = cmd.split(None, 1)
+    body = parts[1] if len(parts) > 1 else ""
+    body = re.sub(r"^\s*NUMBER\s+SOURCE\b", "", body, flags=re.I)
+    out: Dict[str, str] = {}
+    if "'" in body:
+        for m in _REF_ENTRY_RE.finditer(body):
+            text = " ".join(m.group(3).split())
+            for k in [m.group(1)] + m.group(2).split():
+                out[k.upper()] = text
+    else:
+        for ln in body.split("\n"):
+            w = ln.split(None, 1)
+            if len(w) == 2:
+                out[w[0].upper()] = " ".join(w[1].split())
+    return out
+
+
+def comment_references(comments: Sequence[str], keys: Iterable[str]) -> Dict[str, str]:
+    """Citations for ``keys`` found in $-comment lines: ``$ [KEY] citation`` or ``$ KEY: citation`` /
+    ``$ KEY citation`` (the unbracketed forms only for keys with a digit, e.g. REF283, 91Din).  The citation may
+    continue on the following comment lines until a blank line, a separator or the next key."""
+    want = {k.upper(): k for k in keys if k and len(k) <= 30}
+    if not want:
+        return {}
+    lines = [c.lstrip("$").strip() for c in comments]
+
+    def key_at(ln: str) -> Optional[Tuple[str, str]]:
+        m = re.match(r"^\[([^\]]+)\]\s*[:=\-]?\s*(.*)$", ln)
+        if m and m.group(1).strip().upper() in want:
+            return m.group(1).strip().upper(), m.group(2)
+        m = re.match(r"^(\S+?)\s*(?:[:=]\s*|\s+-\s+|\s+)(.+)$", ln)
+        if m and m.group(1).upper() in want and re.search(r"\d", m.group(1)):
+            return m.group(1).upper(), m.group(2)
+        return None
+
+    out: Dict[str, str] = {}
+    i = 0
+    while i < len(lines):
+        hit = key_at(lines[i])
+        i += 1
+        if hit is None:
+            continue
+        key, text = hit
+        parts = [text.strip()] if text.strip() else []
+        while i < len(lines) and len(parts) < 6:
+            nxt = lines[i]
+            if not nxt or set(nxt) <= set("-=*_#~ ") or nxt.startswith("[") or key_at(nxt) is not None:
+                break
+            parts.append(nxt)
+            i += 1
+        if parts and key not in out:
+            out[key] = " ".join(" ".join(parts).split())
+    return out
+
+
+_YEAR_RE = re.compile(r"(?<![\dA-Za-z\-])(1[89]\d\d|20\d\d)(?!\d|\s*-\s*\d)")   # not page ranges
+_INIT = r"(?:[A-Z][a-z]?\.(?:\s*-?\s*[A-Z]\.)*\s*)"
+_SURNAME = r"[A-Z][a-zA-Z'’\-]*[a-z][a-zA-Z'’\-]*"
+_AUTHOR_FULL = re.compile(rf"^{_INIT}+\s*({_SURNAME}(?:\s+{_SURNAME})?)$")       # A.T. Dinsdale, A. Fernandez G.
+_AUTHOR_PREFIX = re.compile(rf"^{_INIT}+\s*({_SURNAME})(?![\w.])")                # B. Sundman Thermodynamic ...
+_AUTHOR_NAMES = re.compile(rf"^[A-Z][a-z]+(?:-[A-Z]?[a-z]+)?\s+(?:{_INIT}\s*)?({_SURNAME})$")   # Alan Dinsdale
+
+
+_NOT_NAMES = {"DATA", "DATABASE", "REPORT", "THESIS", "UNARY", "ELEMENTS", "PHASE", "PHASES", "SYSTEM", "SYSTEMS",
+              "ASSESSMENT", "WORK", "SOURCE", "UNPUBLISHED", "LABORATORY", "UNIVERSITY", "INSTITUTE", "VALUES",
+              "PRESENT", "THIS", "ESTIMATED", "ESTIMATE"}
+
+
+def _author(chunk: str) -> Optional[str]:
+    c = chunk.strip()
+    for rx in (_AUTHOR_FULL, _AUTHOR_NAMES, _AUTHOR_PREFIX):
+        m = rx.match(c)
+        if m and not any(w.upper() in _NOT_NAMES for w in m.group(0).split()):
+            return m.group(1)
+    return None
+
+
+def short_citation(text: str, width: int = 30) -> str:
+    """First author + year of a citation ("S. Hertzman, B. Sundman, Calphad, 6, 67-80(1982)" -> "Hertzman &
+    Sundman 1982"; three or more authors -> "Dupin et al. 2001").  Text that does not start with author names is
+    cut to ``width`` characters (plus the year when it is not already in the cut text)."""
+    t = " ".join((text or "").split())
+    if not t:
+        return ""
+    years = _YEAR_RE.findall(t)
+    year = years[0] if years else ""
+    authors = []
+    chunks = re.split(r",|;|\band\b|&|(?<=[a-z])\.\s+(?=[A-Z]\.)", t)     # "C.P.Chin. S.Hertzman" = 2 authors
+    for chunk in chunks:
+        a = _author(chunk)
+        if a is None:
+            break
+        authors.append(a)
+        if not _AUTHOR_FULL.match(chunk.strip()) and not _AUTHOR_NAMES.match(chunk.strip()):
+            break                                   # "B. Sundman Thermodynamic ...": the title starts here
+    if not authors:                                 # "Title, L. Kaufman, eds. ...": an author after the title
+        for chunk in chunks[1:3]:
+            if _AUTHOR_FULL.match(chunk.strip()) and _author(chunk):
+                authors.append(_author(chunk))
+                break
+    if authors:
+        who = (authors[0] if len(authors) == 1 else f"{authors[0]} & {authors[1]}" if len(authors) == 2
+               else f"{authors[0]} et al.")
+        return f"{who} {year}".strip()
+    first = re.split(r"[,;]", t)[0].strip().rstrip(".")
+    s = first if len(first) <= width else first[: width - 1].rstrip() + "…"
+    return s + (f" {year}" if year and year not in s else "")
 
 
 def parse_tdb(path_or_text: str, *, is_text: bool = False, name: str = "") -> TDB:
@@ -594,7 +755,7 @@ def parse_tdb(path_or_text: str, *, is_text: bool = False, name: str = "") -> TD
                              "Convert it first with convert_database (calculation tools accept .dat directly).")
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     db = TDB(path=path)
-    commands, db.header_comments = _split_commands(text)
+    commands, db.header_comments, trailing, comments = _split_commands_ex(text)
     # first pass: temperature limits (needed for ,, defaults)
     for cmd in commands:
         words = cmd.split()
@@ -605,7 +766,7 @@ def parse_tdb(path_or_text: str, *, is_text: bool = False, name: str = "") -> TD
                 pass
     tlo, thi = db.temp_limits
     pending_constituents: Dict[str, str] = {}
-    for cmd in commands:
+    for cmd, trail in zip(commands, trailing):
         words = cmd.split()
         kw = resolve_keyword(words[0])
         try:
@@ -641,16 +802,23 @@ def parse_tdb(path_or_text: str, *, is_text: bool = False, name: str = "") -> TD
                 raw_name = re.sub(r"\s+", "", body[: close + 1])
                 rest = body[close + 1:]
                 key, sign, omap = parse_param_name(raw_name)
-                db.parameters.append(Parameter(raw_name, key, sign, omap,
-                                               parse_piecewise(rest, tlo, thi)))
+                p = Parameter(raw_name, key, sign, omap, parse_piecewise(rest, tlo, thi))
+                if not p.reference and trail and len(trail) <= 40:
+                    p.reference = " ".join(trail.split())          # "... 6000 N ! $1967Kau"
+                db.parameters.append(p)
             elif kw in ("LIST_OF_REFERENCES", "ADD_REFERENCES"):
                 db.references.append(cmd)
+                db.reference_list.update(parse_reference_command(cmd))
             elif kw is None:
                 db.warnings.append(f"unrecognised command: {cmd[:60]!r}")
             else:
                 db.other_commands.append(re.sub(r"\s+", " ", cmd))
         except (ValueError, IndexError, ExpressionError) as e:
             db.warnings.append(f"could not parse {cmd[:60]!r}: {e}")
+    used = {p.reference for p in db.parameters if p.reference}
+    missing = [r for r in used if r.upper() not in db.reference_list]
+    for k, v in comment_references(comments, missing).items():
+        db.reference_list.setdefault(k, v)
     for nm, rest in pending_constituents.items():
         ph = db.phases.get(nm)
         if ph is None:

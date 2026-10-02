@@ -284,7 +284,9 @@ in the **shaded** style by default:
 
 * **Binary T–x:** black phase boundaries and invariant lines (1.25 pt), two-phase fields filled light blue
   (`aliceblue`), no tie-lines, minor ticks on and all ticks pointing in on all four sides.
-* **Ternary isotherm:** grey (#999999) phase boundaries and tie-triangle edges, no tie-lines.
+* **Ternary isotherm:** grey (#999999) phase boundaries and tie-triangle edges, two-phase fields filled light blue
+  (three-phase triangles stay white), no tie-lines.
+* **Labels:** black text with no background box, so the fill shows through.
 * **No legend:** the phases are named by labels inside the figure. `label_regions` is on by default in this style
   (pass `label_regions: false` to leave it out). Isopleths and T–μ diagrams can't have region labels, so each line is
   named on the line instead. With experimental data, the legend lists the data references only, and it sits inside
@@ -317,12 +319,28 @@ added, and the labels avoid those points.
   diagram is named from a coarse equilibrium grid. Before a label is drawn, an equilibrium calculation at its
   position must give exactly the phases it names. Any region that can't be confirmed is left out, and the result
   text says so.
-* **Placement.** Each label goes in the thickest part of its region, away from lines, data points, the legend and
-  other labels. In a skinny region it is turned along the region, or made smaller. If it still doesn't fit, it goes
-  outside with a thin leader line. Binary invariants get the temperature next to the line, e.g. "1345 °C";
-  `label_style: {invariant_type: true}` adds the reaction type, e.g. "1345 °C (eutectic)".
+* **Placement.** Each label goes inside its region, in the thickest part, away from lines, data points, the
+  legend and other labels, with a `label_style.margin` (default 2.5 pt) all round. In a skinny region it is turned
+  (along the region, or in 15° steps) or made smaller, down to `label_style.min_fontsize` (default 8 pt).
+  Two- and three-phase fields that still don't fit are left out; the result text lists them on one line.
+* **Single-phase fields that don't fit inside** are named at the edge, like stoichiometric phases (below). In a
+  ternary, that is any phase whose field touches an edge (it exists in that binary): at the middle of its contact
+  with the edge, or of the longer contact if it touches two. In a binary, only intermediate phases are named this
+  way, below the x axis at their mid composition. The liquid and the end-member solid solutions never are.
+* **Ternary-only phases** are fields that touch no edge, and ternary compounds inside the triangle. When they don't
+  fit inside, the label goes in the nearest free space (inside the triangle on a free area, else just outside it).
+  A thin leader line runs from the label to the field, with a dot at a point compound. These are never left out,
+  and this is the only use of leader lines.
+* **Stoichiometric phases** (binary line compounds, ternary point or line compounds on an edge) are never named
+  inside the plot. Their name goes outside, right at their composition: below the x axis of a binary (text at
+  60°), or beyond the nearest edge of a ternary (60° at the bottom edge, ±30° — square to the edge — at the slanted
+  edges). A tick label that such a name covers is hidden; the others stay.
+* **Invariant temperatures** (binary, `label_invariants`) go right above or right below the invariant line, inside
+  the adjacent region, e.g. "1345 °C", sized to fit and kept `margin` away from other lines. Each line gets at most
+  one temperature. Below the minimum size they are left out. Reaction types (eutectic …) are not written.
 * **Editing.** Each label is a single text object with an id like `phase_label:LIQUID.FCC_A1` or
-  `invariant_label:1345C`. The `edit_figure` operations `move_label`, `delete_label` and `relabel` change one label.
+  `invariant_label:1345C`. The `edit_figure` operations `move_label`, `delete_label` and `relabel` change one label
+  (a moved leader label keeps its line on the field; a deleted one takes its line and dot with it).
   In Inkscape, the SVG ids are the same.
 * **Files.** Labelled diagrams are saved as PNG, SVG and PDF, and the text stays text. Fonts: DejaVu Sans (it comes
   with matplotlib and has the Greek letters and subscripts), then Helvetica and Arial. The PDF embeds the font. The
@@ -652,13 +670,21 @@ for one subsystem, for example "compare the Fe-Cr part of these three files".
   files (checked numerically over 298–3000 K with all functions substituted, relative tolerance 1e-4 of the largest
   value plus 1e-3 J/mol, or 1e-6 for TC/BMAGN), and every parameter missing from some file. Parameters written
   differently but numerically equal (`-311.50` and `-311.5`, terms in another order, `GHSERFE + 5000` and the same
-  polynomial typed out) are not differences; they stay in "All parameters" marked "numerically equal (written
-  differently)". When the files of a row do not use the same functions (one writes `GHSERFE + 5000`, another the
+  polynomial typed out) are not differences, and neither are rows that differ only in their reference. The rows
+  written differently get their own table right after "Differences" ("Numerically equal within tolerance (written
+  differently)", with the largest difference); "All parameters" still lists everything. When the files of a row do not use the same functions (one writes `GHSERFE + 5000`, another the
   polynomial or `GBCCFE`), or a shared function such as GHSERFE is defined differently, that row shows every cell
   with the functions substituted (one polynomial in T per range, terms collected) so the cells compare term by term;
   the grey note on the left says "functions expanded for comparison: GHSERFE, GBCCFE". The Excel sheets keep the
   as-written text in extra columns. Then each file gets its own table of parameters (as written) and of the
   functions they use. With more than four files the columns are split across slides.
+* **References.** Each parameter's reference is the key after its last temperature range (`... 6000 N 91Din !`,
+  `N REF283 !`; a comment right after the `!`, as in `N ! $1967Kau`, is used when there is none). If the file has a
+  reference list (`LIST_OF_REFERENCES` / `ADD_REFERENCES`, or a `$`-comment list such as `$ [1967Kau] ...` or
+  `$ REF7: ...`), the key is looked up there. On the slides each cell has a small grey line with the key and, when it
+  was found, the first author and year (`82Her · Hertzman & Sundman 1982`); the per-file tables have a reference
+  column. The Excel sheets have the key and the full citation for every database, and the long CSV has `reference`,
+  `reference_short` and `reference_citation` for every parameter.
 * **Numbers.** The Excel file also has the values at the chosen temperatures, each parameter with all its functions
   substituted (terms added up: constant, T, T·ln T, T², 1/T, T⁷, T⁻⁹ ...), and a term-by-term sheet. The tool also
   notes when a database uses element references that are not SER (for example Kaufman lattice stabilities with
@@ -675,7 +701,7 @@ for one subsystem, for example "compare the Fe-Cr part of these three files".
   reference phase, whatever the function is called), and says which references it used. If no phase is given, as
   in `G(FE,CR)`, the tool lists the matching end-members in each database instead of guessing.
 * **Output.** One PowerPoint (title, databases, which phases each has, possible phase correspondences,
-  differences, all parameters, one table per file, derived expressions), an Excel workbook with the same tables plus
+  differences, numerically equal rows, all parameters, one table per file, derived expressions), an Excel workbook with the same tables plus
   the values and substituted expressions, and a long CSV. `plot_diagrams: true` adds one slide with the binary
   diagrams of all databases drawn on top of each other (slower). `show_code` gives a standalone script that rebuilds
   the tables, CSVs, Excel file and a plain PowerPoint.
@@ -696,6 +722,46 @@ Everything else becomes a conflict with a stable ID for you to decide:
 * `REJECT_PHASE` defaults that would disable a phase another file uses
 
 The merged file is validated by loading it in pycalphad and building every phase model.
+
+**Can two TDBs be merged? (`evaluate_compatibility`, then `staged_merge`).** A is the base, B the database to add.
+
+First, B adopts A's conventions; this is reported:
+
+* **Phase names.** Clear aliases are renamed with their parameters, type definitions and DIS_PART references: `C15_LAVES`/`LAVES_C15`/`C15`, `SIGMA`/`SIGMA_D8B`, `A2_BCC`/`BCC_A2`. Weaker matches are only listed; apply them with `phase_map`. Two phases of B are never merged.
+* **Sublattice order.** B's sublattices are matched to A's by size. Equal sizes are decided by shared elements: Fe on the 2-site sublattice of both a Fe₂Mo and a W:Fe 1:2 C14. If that is undecidable, the tool stops and asks for `sublattice_map {'C14': [1, 0]}`. This happens with no shared element (Na:Cl vs K:Br), with overlap pointing both ways, or with a different number of sublattices.
+* **Formula unit.** B's site ratios are rescaled to A's when proportional (4:2 → 2:1), with G and L × k. A phase with TC/BMAGN parameters is never rescaled. pycalphad's magnetic term R·T·ln(β+1)·f(τ) is per formula unit and not linear in BMAGN, so no exact rescaling exists. The tests check that GM per mole of atoms is unchanged (< 1e-9) after every normalisation.
+
+`evaluate_compatibility` then checks in stages, with one short verdict each:
+
+1. **SGTE unaries.** The SER Gibbs energies are compared over 298.15–6000 K. If they differ, each is compared with SGTE's unary database 5.0, which says which file matches it.
+2. **Other unary terms.**
+3. **Shared binaries.**
+4. **Ternary and higher terms.** Stages 2–4 are compared numerically over 298.15–3000 K, with functions inlined.
+5. **Phase models.** For each shared phase: the merged (union) model, and the new end-members it creates in each database's subsystems. For example, A's C14 (Fe)₂(Mo)₁ plus B's (Fe,W)₂(Fe,W)₁ puts Fe:Fe into A's Fe-Mo. The stage also says which file supplies their G, or that none does (pycalphad would use 0). It also reports magnetic/ordering differences and phases that newly appear in the other database's space.
+6. **Replot decision.** The A-priority merge is built, and every binary and ternary of A and of B is compared with it. A subsystem is provably unchanged when all its parameters are numerically equal and its phase models are identical (site ratios, constituents, magnetic and order-disorder settings). Otherwise it is listed with its reasons.
+
+Details go to an Excel file and a 4-slide PowerPoint.
+
+`staged_merge` writes the intermediate databases to the output folder:
+
+* **B1:** B with A's SER functions.
+* **B2:** + A's other unaries of the shared phases.
+* **B3:** + A's description of the shared binaries.
+* **Q:** the full merge. A wins what the stages settle. Ternary conflicts, incompatible models and type definitions are asked as in `merge_tdbs`.
+* **A1, A2:** if B has unary or binary terms A lacks, A + B's unary terms, then A + B's unary and binary terms.
+
+Each version is checked in pycalphad. For B…Q, every binary and ternary isotherm of B's system is mapped in the shaded style. A subsystem that is provably unchanged from the previous version is reused, not recomputed. For A→A1→A2, only A's subsystems that change are mapped.
+
+Only consecutive versions are compared: parameters, phase models, and invariant reactions that moved (ΔT, Δx). Ternary isotherms compare tie-triangles. The deck has one summary slide, then two slides per step: a differences-only table and the changed diagrams of both versions.
+
+For example, A1 of a stoichiometric Fe₂Mo C14 plus a Fe-W C14 with Fe:Fe turns the Fe₂Mo line compound into a wide C14 field: the Fe-Mo eutectic moves +105 K. Merging CrFe-82Her into Choi's Cr-Fe-Ni (B2) swaps the fcc-Cr lattice stability (82Her vs SGTE). That moves the Cr-Ni eutectic by −85 K.
+
+`unary50.tdb` is downloaded once from SGTE (<https://www.sgte.net/en/free-pure-elements-database>) to `~/.calphad_agent/sgte/`, only when needed and never into the repository. You can also give `unary50='path'`, or set `$CALPHAD_UNARY50` on offline clusters. SGTE's terms: "This database can only be used for extracting data for assessment work or to tabulate or plot data for the pure elements". Cite A.T. Dinsdale, Calphad 15 (1991) 317–425.
+
+`show_code` gives standalone scripts:
+
+* **`evaluate_compatibility`:** the same stages and Excel file.
+* **`staged_merge`:** the same TDBs, the version differences, and pycalphad binplot/ternplot figures of the changed subsystems.
 
 **Experimental data.**
 

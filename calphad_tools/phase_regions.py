@@ -11,6 +11,7 @@ Region identity is a *key*: the sorted phase names with composition-set markers 
 after its disordered phase (B2_BCC -> BCC_A2), as in the phase-boundary data.
 
 * :func:`regions_from_lines` - exact two-phase polygons (the two phase-boundary traces of each ZPF line),
+  the boundary points of every phase (``phase_points``),
   tie-triangles, line compounds and binary invariant lines from mapped ZPF data;
 * :func:`map_lines` - that ZPF data from a pycalphad mapping strategy;
 * :func:`equilibrium_grid` - stable phase set on a coarse grid (finds regions the mapping did not trace);
@@ -149,11 +150,27 @@ def xy_of(recipe: Dict, X: Dict[str, float], T: float) -> Tuple[float, float]:
 # ---------------------------------------------------------------------------------------------------------
 # regions from mapped ZPF data
 # ---------------------------------------------------------------------------------------------------------
-def regions_from_lines(lines, invariants, recipe: Dict) -> Dict:
+def composition_dof(db, phase: str, elements: Sequence[str]) -> Optional[int]:
+    """Independent composition variables of a phase in a system (0: a stoichiometric phase, a point; 1: a line
+    compound of a ternary, e.g. (Co,Ni)3V), from its sublattice model; None if the database does not have it."""
+    ph = db.phases.get(base_name(phase)) if db is not None else None
+    if ph is None:
+        return None
+    comps = {str(e).upper() for e in elements} | {"VA"}
+    n = 0
+    for sub in ph.constituents:
+        k = sum(1 for sp in sub if {str(c).upper() for c in getattr(sp, "constituents", {str(sp): 1})} <= comps)
+        n += max(0, k - 1)
+    return n
+
+
+def regions_from_lines(lines, invariants, recipe: Dict, db=None) -> Dict:
     """Polygons / compounds / invariant lines (plotted coordinates) from ZPF lines and three-phase nodes.
 
     lines: [{"phases": [n1, n2], "points": [{"T": K, "phases": [(n1, X1), (n2, X2)]}, ...]}, ...]
-    invariants: [{"T_K": K, "phases": [...], "compositions": {name: {el: x}}, "type": optional}, ...]"""
+    invariants: [{"T_K": K, "phases": [...], "compositions": {name: {el: x}}, "type": optional}, ...]
+    db: when given, a phase is a compound (named outside the plot) only if its model has no composition freedom
+    in this system (a ternary line: one) - a solution phase whose boundary hardly moves is not one."""
     kind = recipe["kind"]
     polys, traces = [], {}
     for ln in lines:
@@ -212,22 +229,37 @@ def regions_from_lines(lines, invariants, recipe: Dict) -> Dict:
                     compounds.append({"key": (n,), "x": xc, "y0": y0, "y1": y1})
             else:
                 xc, yc = float(np.mean(xs[:, 0])), float(np.mean(xs[:, 1]))
-                if min(X.mean(axis=0)) < 2e-3:
-                    continue
+                if max(X.mean(axis=0)) > 1 - 2e-3:
+                    continue                     # a pure element (corner); compounds on an edge are kept
                 if not any(c["key"] == (n,) and abs(c["x"] - xc) < 2e-3 and abs(c["y"] - yc) < 2e-3
                            for c in compounds):
                     compounds.append({"key": (n,), "x": xc, "y": yc})
+    if db is not None:
+        def is_compound(c):
+            dof = composition_dof(db, c["key"][0], recipe["elements"])
+            return dof is None or dof <= (1 if "line" in c else 0)
+        compounds = [c for c in compounds if is_compound(c)]
     tris, inv_lines = [], []
+    edge_pts: Dict[str, list] = {n: [p for _, path in trs for p in path] for n, trs in traces.items()}
     for inv in invariants or []:
         names = list(inv["phases"])
         pts = [xy_of(recipe, inv["compositions"][n], inv["T_K"]) for n in names]
+        for n, p in zip(names, pts):
+            edge_pts.setdefault(base_name(n), []).append(p)
         if kind == "ternary":
             tris.append({"key": key_of(names), "xy": [list(map(float, p)) for p in pts], "tri": True})
         else:
             xs = [p[0] for p in pts]
             inv_lines.append({"key": key_of(names), "T_K": float(inv["T_K"]), "y": float(pts[0][1]),
                               "x0": float(min(xs)), "x1": float(max(xs)), "type": inv.get("type", "")})
-    return {"polygons": tris + polys, "compounds": compounds, "invariants": inv_lines}
+    phase_points = {}                    # boundary points of each phase's own field (where it is named if its
+    for n, pts in edge_pts.items():      # field is too thin to be a region of the plot)
+        arr = np.asarray(pts, float).reshape(-1, 2)
+        arr = arr[np.isfinite(arr).all(axis=1)]
+        if len(arr):
+            idx = np.unique(np.linspace(0, len(arr) - 1, min(len(arr), 300)).astype(int))
+            phase_points[n] = [list(map(float, q)) for q in arr[idx]]
+    return {"polygons": tris + polys, "compounds": compounds, "invariants": inv_lines, "phase_points": phase_points}
 
 
 def mapping_conditions(recipe: Dict, step: float = 0.02, T_step: float = 10.0) -> Dict:

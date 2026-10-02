@@ -329,6 +329,7 @@ def test_pptx_and_excel(tb):
             if sh.has_table:
                 assert sum(c.width for c in sh.table.columns) <= W - Emu(914400 * 0.4)
                 assert sum(r.height for r in sh.table.rows) <= Emu(914400 * 5.6)
+    assert not any(t.startswith("Numerically equal") for t in base)     # no such rows: no slide
     diff_slides = [s for s, t in zip(prs.slides, base) if t == "Differences"]
     cells = []
     for s in diff_slides:
@@ -337,26 +338,44 @@ def test_pptx_and_excel(tb):
                                                             "CoCrFeNiV_Choi2019"]
         cells += [[tbl.cell(i, j).text for j in range(4)] for i in range(1, len(tbl.rows))]
     row = next(c for c in cells if c[0].startswith("L(BCC_A2,CR,FE:VA;0)"))
-    assert row[1:] == ["22000 - 11.375*T", "22000 - 11.375*T", "20500 - 9.68*T"]
+    # expression, then the reference as a grey sub-line (shorthand · first author + year when the list resolves it)
+    assert row[1:] == ["22000 - 11.375*T\nPresent work", "22000 - 11.375*T\n82Her · Hertzman & Sundman 1982",
+                       "20500 - 9.68*T\nREF103"]
+    row = next(c for c in cells if c[0].startswith("G(LIQUID,CR;0)"))
+    assert row[1].endswith("\n1967Kau · Kaufman 1967") and row[2].endswith("\n91Din · Dinsdale 1991")
     assert not any(c[0].startswith("TC(BCC_A2,FE:VA;0)") for c in cells)    # identical everywhere
     assert any(c[0] == "SIGMA" for c in cells)                               # phase band rows
 
     wb = load_workbook(Path(tb.out) / "fecr.xlsx")
     names = wb.sheetnames
-    assert names[:3] == ["Summary", "Differences", "All parameters"]
+    assert names[:4] == ["Summary", "Differences", "Numerically equal", "All parameters"]
+    assert wb["Numerically equal"].max_row == 1
     assert {"DB Cr-Fe_her", "DB CrFe-82Her", "DB CoCrFeNiV_Choi2019", "Values", "Expressions", "Terms",
             "Functions inlined"} <= set(names)
     assert wb["Differences"].max_row == 1 + 31 and wb["All parameters"].max_row == 1 + 37
     head = [c.value for c in wb["All parameters"][1]]
-    assert head == ["phase", "parameter", "Cr-Fe_her", "CrFe-82Her", "CoCrFeNiV_Choi2019", "status", "note",
-                    "Cr-Fe_her (as written)", "CrFe-82Her (as written)", "CoCrFeNiV_Choi2019 (as written)"]
+    labs = ["Cr-Fe_her", "CrFe-82Her", "CoCrFeNiV_Choi2019"]
+    assert head == (["phase", "parameter"] + labs + ["status", "note"] + [f"{x} (as written)" for x in labs]
+                    + ["max |Δ|"] + [f"{x} reference" for x in labs] + [f"{x} citation" for x in labs])
+    assert [c.value for c in wb["Differences"][1]] == head == [c.value for c in wb["Numerically equal"][1]]
     liq = next(r for r in wb["All parameters"].iter_rows(values_only=True) if r[1] == "G(LIQUID,CR;0)")
     assert liq[2] == "16933 -7.95*T" and liq[7:9] == ("GLIQCR", "GLIQCR")
+    assert liq[11:14] == ("1967Kau", "91Din", "REF279")
+    assert liq[14].startswith("Phase stability in metals and alloys, L.Kaufman")      # from the $-comment list
+    assert liq[15] == "A.T. Dinsdale, Calphad, 15, 317-425(1991)." and liq[16] is None   # REF279: no list
     db = [[c.value for c in r] for r in wb["DB CrFe-82Her"].iter_rows()]
-    assert ["FUNCTION", "name", "expression as written", "T range", None] in db
+    assert db[0] == ["phase", "parameter", "expression as written", "T range", "written as", "reference", "citation"]
+    assert ["SIGMA", "G(SIGMA,FE:CR:CR;0)", "10*GFCCFE + 20*GHSERCR + 109990.5 - 142.725*T", "298.15-6000",
+            "G(SIGMA_D8B,FE:CR:CR)", "82Her", "S. Hertzman, B. Sundman, Calphad, 6, 67-80(1982); Cr-Fe"] in db
+    assert ["FUNCTION", "name", "expression as written", "T range", None, None, None] in db
     assert any(r[1] == "GHSERFE" and r[2].startswith("298.15–1811: 1225.7 + 124.134*T") for r in db)
     rows = list(csv.DictReader(open(Path(tb.out) / "fecr_long.csv")))
-    assert {"key", "database", "value_298.15K", "value_1000K", "written", "written_status"} <= set(rows[0])
+    assert {"key", "database", "value_298.15K", "value_1000K", "written", "written_status", "reference",
+            "reference_short", "reference_citation"} <= set(rows[0])
+    r = next(r for r in rows if r["key"] == "G(SIGMA,FE:CR:CR;0)" and r["database"] == "CrFe-82Her")
+    assert (r["reference"], r["reference_short"]) == ("82Her", "Hertzman & Sundman 1982")
+    assert r["reference_citation"].startswith("S. Hertzman, B. Sundman")
+    assert "Parameter references (" in text and "D2 27/27 (27 resolved by its reference list)" in text
     assert "Files:" in text and "fecr.xlsx" in text
 
 
@@ -510,6 +529,174 @@ def test_shared_function_defined_differently(tmp_path):
     assert rows["G(BCC_A2,FE;0)"].status == "differs"          # GHSERFE itself
 
 
+# ------------------------------------------------------------------------------------------ references
+REF_TDB = """
+$ Test database
+$ [Smi24] J. Smith, A. Jones, B. Brown,
+$         Calphad, 80 (2024) 102345; Cr-Fe
+$
+$ REF7: K. Frisk, Metall. Trans. A, 21A, 2477-88(1990)
+ELEMENT CR BCC_A2 51.996 4050.0 23.56 !
+ELEMENT FE BCC_A2 55.847 4489.0 27.28 !
+ELEMENT VA VACUUM 0.0 0.0 0.0 !
+FUNCTION GHSERCR 298.15 -8856.94+157.48*T; 6000 N 91Din !
+PHASE LIQUID % 1 1.0 !
+CONSTITUENT LIQUID :CR,FE: !
+PHASE BCC_A2 % 2 1 3 !
+CONSTITUENT BCC_A2 :CR,FE:VA: !
+PARAMETER G(LIQUID,CR;0) 298.15 +GHSERCR+24339.955-11.420225*T; 6000 N 91Din !
+PARAMETER G(LIQUID,FE;0) 298.15 +12040.17-6.55843*T; 6000 N !
+PARAMETER L(LIQUID,CR,FE;0) 298.15 -14190+2.29997*T; 6000 N
+   REF283 !
+PARAMETER L(LIQUID,CR,FE;1) 298.15 -3.5*T;,,N Smi24 !
+PARAMETER G(BCC_A2,CR:VA;0) 298.15 +GHSERCR; 6000 N ! $1967Kau
+PARAMETER G(BCC_A2,FE:VA;0) 298.15 +1225.7; 6000 N 5 !
+PARAMETER L(BCC_A2,CR,FE:VA;0) 298.15 +20500-9.68*T; 6000 N ref7 !
+PARAMETER L(BCC_A2,CR,FE:VA;1) 298.15 +1000; 6000 N 90DIN !
+LIST_OF_REFERENCES
+ NUMBER  SOURCE
+  91Din  'A.T. Dinsdale, Calphad, 15, 317-425(1991).'
+  REF283 'N. Dupin, I. Ansara, B. Sundman, Calphad, 25,
+          279-98(2001); Al-Cr-Ni'
+  90DIN  90Din 'Alan Dinsdale, SGTE Data for Pure Elements, NPL Report
+          DMA(A)195, Rev. August 1990'
+!
+ADD_REFERENCES
+  5  'SGTE unary database V.4.1, 1999.'
+!
+"""
+
+
+def test_reference_parsing(tmp_path):
+    from calphad_tools.tdbparse import parse_reference_command, parse_tdb, short_citation
+    db = parse_tdb(REF_TDB, is_text=True, name="refs.tdb")
+    assert not db.warnings
+    refs = {p.raw_name: p.reference for p in db.parameters}
+    assert refs == {"G(LIQUID,CR;0)": "91Din", "G(LIQUID,FE;0)": "", "L(LIQUID,CR,FE;0)": "REF283",
+                    "L(LIQUID,CR,FE;1)": "Smi24", "G(BCC_A2,CR:VA;0)": "1967Kau", "G(BCC_A2,FE:VA;0)": "5",
+                    "L(BCC_A2,CR,FE:VA;0)": "ref7", "L(BCC_A2,CR,FE:VA;1)": "90DIN"}
+    cite = {n: db.citation(r) for n, r in refs.items()}
+    assert cite["G(LIQUID,CR;0)"] == "A.T. Dinsdale, Calphad, 15, 317-425(1991)."
+    assert cite["L(LIQUID,CR,FE;0)"] == "N. Dupin, I. Ansara, B. Sundman, Calphad, 25, 279-98(2001); Al-Cr-Ni"
+    assert cite["L(BCC_A2,CR,FE:VA;1)"].startswith("Alan Dinsdale, SGTE Data")          # alias line
+    assert db.citation("90din") == cite["L(BCC_A2,CR,FE:VA;1)"]                        # keys case-insensitive
+    assert cite["G(BCC_A2,FE:VA;0)"] == "SGTE unary database V.4.1, 1999."            # ADD_REFERENCES, number
+    assert cite["L(LIQUID,CR,FE;1)"] == "J. Smith, A. Jones, B. Brown, Calphad, 80 (2024) 102345; Cr-Fe"  # $ [key]
+    assert cite["L(BCC_A2,CR,FE:VA;0)"] == "K. Frisk, Metall. Trans. A, 21A, 2477-88(1990)"         # $ KEY: text
+    assert cite["G(BCC_A2,CR:VA;0)"] == "" and cite["G(LIQUID,FE;0)"] == ""            # not in any list / none
+    assert db.functions["GHSERCR"].expr.reference == "91Din"
+    # write-back keeps the reference after the last range (a $-comment reference is not written into the command)
+    p = next(p for p in db.parameters if p.raw_name == "L(LIQUID,CR,FE;0)")
+    assert p.to_tdb().rstrip(" !").endswith("N REF283")
+    assert parse_tdb(REF_TDB.replace("REF283 !", "!"), is_text=True).parameters[2].reference == ""
+    # short citations: first author + year, "&" for two authors, "et al." for more
+    assert [short_citation(cite[n]) for n in ("G(LIQUID,CR;0)", "L(LIQUID,CR,FE;0)", "L(LIQUID,CR,FE;1)",
+                                               "L(BCC_A2,CR,FE:VA;1)", "G(BCC_A2,FE:VA;0)")] == \
+        ["Dinsdale 1991", "Dupin et al. 2001", "Smith et al. 2024", "Dinsdale 1990", "SGTE unary database V.4.1 1999"]
+    assert short_citation("S. Hertzman, B. Sundman, Calphad, 6, 67-80(1982); Cr-Fe") == "Hertzman & Sundman 1982"
+    assert short_citation("C.P.Chin. S.Hertzman, B.Sundman, Internal Report KTH, Sweden.") == "Chin et al."
+    assert short_citation("Phase stability in metals and alloys, L.Kaufman, eds. P.S.Rudman, 1967.") == \
+        "Kaufman 1967"
+    assert short_citation("J.Agren, Met. Trans., 10A (1979) 1847-1852.") == "Agren 1979"     # not the pages
+    assert parse_reference_command("LIST_OF_REFERENCES\n R1 first source\n R2 second, 2001") == \
+        {"R1": "first source", "R2": "second, 2001"}
+    # the example databases: Thermo-Calc LIST-OF-REFERENCE and $-comment lists
+    her82 = parse_tdb(str(TDBS / HER82))
+    assert her82.citation("82Her") == "S. Hertzman, B. Sundman, Calphad, 6, 67-80(1982); Cr-Fe"
+    her = parse_tdb(str(TDBS / HER))
+    assert {p.reference for p in her.parameters} == {"1967Kau", "1979Agr", "Present work", "Chin"}
+    assert her.citation("1967Kau").startswith("Phase stability in metals and alloys, L.Kaufman")
+    assert her.citation("1979Agr") == ""                       # the file's list says [1978Agr]: not guessed
+
+
+ESPEI_REFS = ESPEI_TDB.replace("$ written by ESPEI (pycalphad to_file style)",
+                               "$ ESPEI fit, references added by hand\n$ [Smi24] J. Smith, A. Jones, B. Brown, "
+                               "Calphad, 80 (2024) 102345") + """
+LIST_OF_REFERENCES
+ NUMBER  SOURCE
+  REF1  'B. Sundman, ESPEI re-fit of the Cr-Fe liquid, unpublished (2025)'
+  REF2  'A.T. Dinsdale, Calphad, 15, 317-425(1991).'
+!
+"""
+
+
+def _espei_pair(tmp_path):
+    """a: ESPEI output without references; b: the same fit with references, some VV values typed out."""
+    (tmp_path / "a.tdb").write_text(ESPEI_TDB)
+    b = (ESPEI_REFS
+         .replace("L(BCC_A2,CR,FE:VA;0) 1 VV0002+T*VV0003; 10000 N !",
+                  "L(BCC_A2,CR,FE:VA;0) 1 22780.002-14.6*T; 10000 N REF1 !")          # equal within tolerance
+         .replace("TC(BCC_A2,FE:VA;0) 1 1043; 10000 N !", "TC(BCC_A2,FE:VA;0) 1 1043.00001; 10000 N REF2 !")
+         .replace("G(LIQUID,CR;0) 1 1.0*GHSERCR+24339.955-11.420225*T; 10000 N !",
+                  "G(LIQUID,CR;0) 1 1.0*GHSERCR+24339.955-11.420225*T; 10000 N REF2 !")  # only the reference
+         .replace("L(LIQUID,CR,FE;0) 1 VV0014+T*VV0013; 10000 N !",
+                  "L(LIQUID,CR,FE;0) 1 -14000+2.29997*T; 10000 N Smi24 !"))            # a real difference
+    (tmp_path / "b.tdb").write_text(b)
+    return [str(tmp_path / "a.tdb"), str(tmp_path / "b.tdb")]
+
+
+def test_reference_columns_and_equal_table(tmp_path):
+    from openpyxl import load_workbook
+    from pptx import Presentation
+    from calphad_tools.compare_system import EQUAL_TITLE, run, summary_text
+    r = run(_espei_pair(tmp_path), ["CR", "FE"], str(tmp_path / "espei.pptx"), tmp_path)
+    cmp = r["comparison"]
+    rows = {x.key: x for x in cmp.written}
+    l0, tc, gl, ll = (rows[k] for k in ("G(BCC_A2,CR,FE;0)", "TC(BCC_A2,FE;0)", "G(LIQUID,CR;0)", "G(LIQUID,CR,FE;0)"))
+    assert (l0.status, tc.status, gl.status, ll.status) == ("equal", "equal", "same", "differs")
+    assert l0.refs == {"a": "", "b": "REF1"} and l0.citations["b"].startswith("B. Sundman, ESPEI re-fit")
+    assert l0.ref_text("a") == "" and l0.ref_text("b") == "REF1 · Sundman 2025"
+    assert gl.ref_text("b") == "REF2 · Dinsdale 1991" and ll.ref_text("b") == "Smi24 · Smith et al. 2024"
+    assert l0.max_diff == pytest.approx(0.002, rel=1e-6) and tc.max_diff == pytest.approx(1e-5, rel=1e-3)
+    # the Differences table: never a row equal within tolerance (also not when only the reference differs)
+    assert [x.key for x in cmp.written_differences()] == ["G(LIQUID,CR,FE;0)"]
+    assert [x.key for x in cmp.written_equal()] == ["G(BCC_A2,CR,FE;0)", "TC(BCC_A2,FE;0)"]
+    text = summary_text(cmp, r["files"])
+    assert "1 parameters differ numerically; 2 written differently but equal" in text
+    assert "TC(BCC_A2,FE:VA;0)" not in text and "L(BCC_A2,CR,FE:VA;0)" not in text      # counted, not listed
+    assert "D1 0/11, D2 4/11 (4 resolved by its reference list)" in text
+    # Excel: the equal table follows Differences, with max |Δ| and per-database reference / citation columns
+    wb = load_workbook(r["files"]["xlsx"])
+    assert wb.sheetnames[:4] == ["Summary", "Differences", "Numerically equal", "All parameters"]
+    head = [c.value for c in wb["Numerically equal"][1]]
+    assert head[-5:] == ["max |Δ|", "a reference", "b reference", "a citation", "b citation"]
+    eq = [dict(zip(head, x)) for x in wb["Numerically equal"].iter_rows(min_row=2, values_only=True)]
+    assert [(x["parameter"], x["a"], x["b"], x["b reference"]) for x in eq] == [
+        ("L(BCC_A2,CR,FE:VA;0)", "22780.0 - 14.6*T", "22780.002 - 14.6*T", "REF1"),
+        ("TC(BCC_A2,FE:VA;0)", "1043", "1043.00001", "REF2")]
+    assert eq[0]["max |Δ|"] == pytest.approx(0.002, rel=1e-6) and eq[0]["a reference"] is None
+    assert eq[1]["b citation"] == "A.T. Dinsdale, Calphad, 15, 317-425(1991)."
+    dif = [x for x in wb["Differences"].iter_rows(min_row=2, values_only=True)]
+    assert [x[1] for x in dif] == ["L(LIQUID,CR,FE;0)"]
+    db = {x[1]: x for x in wb["DB b"].iter_rows(values_only=True)}
+    assert db["G(LIQUID,CR;0)"][5:] == ("REF2", "A.T. Dinsdale, Calphad, 15, 317-425(1991).")
+    assert db["G(LIQUID,FE;0)"][5:] == (None, None)
+    rows_csv = list(csv.DictReader(open(r["files"]["csv"])))
+    got = {(x["key"], x["database"]): (x["reference"], x["reference_short"]) for x in rows_csv}
+    assert got[("G(LIQUID,CR,FE;0)", "b")] == ("Smi24", "Smith et al. 2024")
+    assert got[("G(LIQUID,CR,FE;0)", "a")] == ("", "")
+    # slides: Differences, then the equal table (max |Δ| under the parameter, references under the cells)
+    prs = Presentation(r["files"]["pptx"])
+    titles = [s.shapes[0].text_frame.text for s in prs.slides]
+    i_d, i_e, i_a = (titles.index(t) for t in ("Differences", EQUAL_TITLE, "All parameters"))
+    assert i_d < i_e < i_a
+    tbl = next(sh.table for sh in prs.slides[i_e].shapes if sh.has_table)
+    cells = [[tbl.cell(i, j).text for j in range(3)] for i in range(1, len(tbl.rows))]
+    assert cells[0][0] == "BCC_A2"                                                           # phase band
+    assert cells[1] == ["L(BCC_A2,CR,FE:VA;0)\nmax |Δ| 0.002 J/mol", "22780.0 - 14.6*T",
+                        "22780.002 - 14.6*T\nREF1 · Sundman 2025"]
+    assert cells[2] == ["TC(BCC_A2,FE:VA;0)\nmax |Δ| 1e-05 K", "1043", "1043.00001\nREF2 · Dinsdale 1991"]
+    tbl = next(sh.table for sh in prs.slides[i_d].shapes if sh.has_table)
+    assert len(tbl.rows) == 3 and tbl.cell(2, 0).text.startswith("L(LIQUID,CR,FE;0)")
+    per_db = next(s for s, t in zip(prs.slides, titles) if t.startswith("b: parameters"))
+    tbl = next(sh.table for sh in per_db.shapes if sh.has_table)
+    assert tbl.cell(0, 2).text == "reference"
+    refs = {tbl.cell(i, 0).text.split("\n")[0]: tbl.cell(i, 2).text for i in range(1, len(tbl.rows))}
+    assert refs["G(LIQUID,CR;0)"] == "REF2\nDinsdale 1991" and refs["G(LIQUID,FE;0)"] == ""
+    per_db = next(s for s, t in zip(prs.slides, titles) if t.startswith("a: parameters"))
+    assert len(next(sh.table for sh in per_db.shapes if sh.has_table).columns) == 2     # no references at all
+
+
 # ------------------------------------------------------------------------------------------ show_code
 def test_show_code_reproduces_numbers(tb, tmp_path):
     args = {"tdbs": [HER, HER82, CHOI], "elements": ["FE", "CR"], "phase_map": {"SIGMA_D8B": "SIGMA"},
@@ -547,11 +734,68 @@ def test_show_code_reproduces_numbers(tb, tmp_path):
     status = {row["key"]: row["status"] for row in csv.DictReader(open(tmp_path / "standalone_outputs" /
                                                                        "sc_written.csv"))}
     assert all(status[k] == row["written_status"] for (k, _), row in tool.items() if row["written_status"])
+    # references: key as written and the full citation, per database
+    sc_rows = list(csv.DictReader(open(tmp_path / "standalone_outputs" / "sc_written.csv")))
+    refs = {(row["key"], lab): (row[f"{lab} reference"], row[f"{lab} citation"]) for row in sc_rows
+            for lab in ("Cr-Fe_her", "CrFe-82Her", "CoCrFeNiV_Choi2019")}
+    n = 0
+    for (key, lab), row in tool.items():
+        if row["kind"] == "parameter" and row["written"] and row["written"] != "—":
+            assert refs[(key, lab)] == (row["reference"], row["reference_citation"]), (key, lab)
+            n += bool(row["reference_citation"])
+    assert n > 20
     assert "16 parameters differ numerically, 0 written differently but equal, 15 absent" in r.stdout
     from openpyxl import load_workbook
     wb = load_workbook(tmp_path / "standalone_outputs" / "sc.xlsx")
     assert {"Differences", "All parameters", "DB Cr-Fe_her", "Values"} <= set(wb.sheetnames)
     assert (tmp_path / "standalone_outputs" / "sc.pptx").exists()
+
+
+def test_show_code_equal_table_and_references(tmp_path):
+    """The standalone script rebuilds the numerically-equal table and the reference columns (ESPEI-style pair)."""
+    from openpyxl import load_workbook
+    from pptx import Presentation
+    work = tmp_path / "w"
+    work.mkdir()
+    _espei_pair(work)
+    tb = _tb(work, tmp_path / "out")
+    _call(tb, "compare_system", {"tdbs": ["a.tdb", "b.tdb"], "elements": ["CR", "FE"], "output_pptx": "ab.pptx"})
+    text = _call(tb, "show_code", {"target": "1"})
+    script = Path(re.search(r"saved (\S+\.py)", text).group(1))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "gen.py").write_text(script.read_text())
+    r = subprocess.run([sys.executable, "-W", "ignore", "gen.py"], cwd=run_dir, capture_output=True, text=True,
+                       timeout=600)
+    assert r.returncode == 0, r.stderr[-3000:]
+    assert "1 parameters differ numerically, 2 written differently but equal, 0 absent" in r.stdout
+    out = run_dir / "standalone_outputs"
+    mine = {row["key"]: row for row in csv.DictReader(open(out / "ab_written.csv"))}
+    tool = load_workbook(Path(tb.out) / "ab.xlsx")
+    wb = load_workbook(out / "ab.xlsx")
+    assert wb.sheetnames[:3] == ["Differences", "Numerically equal", "All parameters"]
+    for sheet in ("Differences", "Numerically equal", "All parameters"):
+        a, b = ([dict(zip([c.value for c in w[sheet][1]], x)) for x in w[sheet].iter_rows(min_row=2, values_only=True)]
+                for w in (tool, wb))
+        cols = ["parameter", "a", "b", "status", "a reference", "b reference", "a citation", "b citation"]
+        assert [[x[c] or "" for c in cols] for x in a] == [[x[c] or "" for c in cols] for x in b], sheet
+        for x, y in zip(a, b):
+            assert (x["max |Δ|"] is None and (y["max |Δ|"] is None or math.isnan(y["max |Δ|"]))) or \
+                math.isclose(x["max |Δ|"], y["max |Δ|"], rel_tol=1e-9)
+    assert [k for k, row in mine.items() if row["status"] == "equal"] == ["G(BCC_A2,CR,FE;0)", "TC(BCC_A2,FE;0)"]
+    assert mine["G(LIQUID,CR;0)"]["b reference"] == "REF2" and mine["G(LIQUID,CR;0)"]["status"] == "same"
+    prs = Presentation(str(out / "ab.pptx"))
+    titles = [s.shapes.title.text for s in prs.slides]
+    assert titles.index("Differences") < titles.index("Numerically equal within tolerance (written differently)") \
+        < titles.index("All parameters")
+    eq = prs.slides[titles.index("Numerically equal within tolerance (written differently)")]
+    tbl = next(sh.table for sh in eq.shapes if sh.has_table)
+    assert tbl.cell(1, 0).text == "BCC_A2: L(BCC_A2,CR,FE:VA;0)\nmax |Δ| 0.002"
+    assert tbl.cell(1, 2).text == "22780.002 - 14.6*T\n[REF1 · Sundman 2025]"
+    per_db = prs.slides[titles.index("b: parameters")]
+    tbl = next(sh.table for sh in per_db.shapes if sh.has_table)
+    assert [tbl.cell(0, j).text for j in range(4)] == ["phase", "parameter", "expression", "reference"]
+    assert any(tbl.cell(i, 3).text == "Smi24 · Smith et al. 2024" for i in range(1, len(tbl.rows)))
 
 
 def test_folder_input_and_order_disorder(fecr_dir, tmp_path):

@@ -854,6 +854,8 @@ TASKS: List[Tuple[str, List[str]]] = [
     ("compare / merge TDBs (2-way full diff; N-way table for one element subsystem with inlined functions, "
      "formation energies, phase candidates -> phase_map on a second call)",
      ["compare_tdbs", "compare_system", "merge_tdbs"]),
+    ("can TDB B join base A (staged check, unary50, new end-members, what to replot); merge it step by step with "
+     "diagrams + invariant shifts per step", ["evaluate_compatibility", "staged_merge"]),
     ("experimental data -> ESPEI datasets; ESPEI + Flux jobs",
      ["parse_dataplot_exp", "convert_dataplot_exp_to_zpf", "convert_pop_to_zpf", "convert_csv_to_zpf",
       "write_zpf_dataset", "check_espei_datasets", "make_phase_models", "generate_espei_flux_batch"]),

@@ -93,7 +93,8 @@ def assert_shaded_binary(ax):
 
 
 def check_anchors(ax):
-    """Every phase label (or the end of its leader line) lies in a region with exactly its phase set."""
+    """Every phase label lies in a region with exactly its phase set (a stoichiometric phase named outside the
+    plot: that phase is stable at the compound)."""
     import warnings
     from calphad_tools.calc import get_db
     from calphad_tools.phase_regions import key_at, ordered_info
@@ -103,7 +104,7 @@ def check_anchors(ax):
     n = 0
     for t in labels_of(ax, ("phase_label:",)):
         lab = t._calphad_label
-        x, y = t.xy if hasattr(t, "xy") and lab.get("leader") else t.get_position()
+        x, y = lab["at"] if lab.get("outside") else t.get_position()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             got = key_at(db, rec, info, x, y)
@@ -164,13 +165,40 @@ def test_ternary_shaded(tb):
     tri = [ln for ln in lines if len(ln.get_xdata()) == 4 and ln.get_xdata()[0] == ln.get_xdata()[-1]]
     assert len(tri) >= 1                                                 # tie-triangle edges, grey
     assert not any(type(c).__name__ == "LineCollection" for c in ax.collections)        # no tie-lines
-    assert not fills(ax) and ax.get_legend() is None
+    assert any(ALICEBLUE in facecolors(c) for c in fills(ax)) and ax.get_legend() is None   # two-phase fields
+    _assert_fill_matches_fields(ax, Path(imgs[0]))
     assert tuple(fig.get_size_inches()) == (7.0, 6.0)
     assert {t.get_text() for t in ax.texts if (t.get_gid() or "").startswith("corner_label:")} == {"Co", "Cr", "Ni"}
     assert ax.get_xlabel() == "Mole fraction Cr" and ax.get_title().startswith("Co-Cr-Ni   1000 °C")
     texts = {t.get_text() for t in labels_of(ax)}
-    assert {"FCC", "BCC", "BCC+FCC+σ"} <= texts, texts
+    assert {"FCC", "BCC", "BCC+σ", "FCC+σ"} <= texts, texts
+    # the tie-triangle is too thin for an 8 pt label at 1000 °C: left out (no leader line), and said so
+    assert "BCC+FCC+σ" in texts or re.search(r"omitted \d+ \(no room for 8 pt\): .*BCC\+FCC\+σ", text), text
+    assert all(mcolors.to_hex(t.get_color()) == BLACK and t.get_fontsize() >= 8 for t in labels_of(ax))
+    assert all(t.get_bbox_patch() is None for t in labels_of(ax))         # no white box on the light-blue fill
     assert check_anchors(ax) >= 4
+
+
+def _assert_fill_matches_fields(ax, png):
+    """Two-phase fields are filled, tie-triangles are not: the middle of each tie-line (from the CSV) lies in a
+    filled polygon, the centroid of each tie-triangle in none (plotted x, y = 2nd and 3rd element)."""
+    import csv
+    import matplotlib.path as mpath
+    paths = [mpath.Path(p.vertices) for c in fills(ax) for p in c.get_paths()]
+    stem = str(png.with_suffix(""))
+    rows = list(csv.DictReader(open(stem + "_tielines.csv")))
+    c1 = [k for k in rows[0] if k.startswith("X1(")]
+    c2 = [k for k in rows[0] if k.startswith("X2(")]
+    mids = [((float(r[c1[1]]) + float(r[c2[1]])) / 2, (float(r[c1[2]]) + float(r[c2[2]])) / 2) for r in rows]
+    assert np.mean([any(p.contains_point(m) for p in paths) for m in mids]) > 0.9
+    inv = list(csv.DictReader(open(stem + "_invariants.csv")))
+    xs = [k for k in inv[0] if k.startswith("X(")]
+    tris = {}
+    for r in inv:
+        tris.setdefault(r["invariant"], []).append((float(r[xs[1]]), float(r[xs[2]])))
+    assert tris
+    for pts in tris.values():
+        assert not any(p.contains_point(np.mean(pts, axis=0)) for p in paths), pts
 
 
 def test_isopleth_shaded_names_lines(tb):
@@ -324,7 +352,8 @@ def test_show_code_reproduces_shaded_ternary_overview(tb, tmp_path):
     single = next(Path(imgs[0]).parent.glob("CoCrFeNiV_Choi2019_CO-CR-NI_1000C.png"))
     want = _style_of(stored(single)[0])
     assert got[0]["lines"] == want[0]["lines"] == [[GREY, 1.0, "-"]]
-    assert not got[0]["fills"] and not got[0]["legend"] and not got[0]["tielines"]
+    assert got[0]["fills"] == want[0]["fills"] == [ALICEBLUE]
+    assert not got[0]["legend"] and not got[0]["tielines"]
     assert len(set(want[0]["labels"]) & set(got[0]["labels"])) >= 3 and len(got[0]["labels"]) >= 4
 
 

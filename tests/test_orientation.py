@@ -92,7 +92,8 @@ def labels_of(ax, prefix=("phase_label:", "invariant_label:")):
 
 
 def check_anchors(ax):
-    """Every phase label (or its leader end) lies in a region with exactly its phase set (equilibrium check)."""
+    """Every phase label lies in a region with exactly its phase set (equilibrium check; a stoichiometric phase
+    named outside the plot: that phase is stable at the compound)."""
     from calphad_tools.calc import get_db
     from calphad_tools.phase_regions import key_at, ordered_info
     rec = ax._calphad_diagram["recipe"]
@@ -101,7 +102,7 @@ def check_anchors(ax):
     n = 0
     for t in labels_of(ax, ("phase_label:",)):
         lab = t._calphad_label
-        x, y = t.xy if hasattr(t, "xy") and lab.get("leader") else t.get_position()
+        x, y = lab["at"] if lab.get("outside") else t.get_position()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             got = key_at(db, rec, info, x, y)
@@ -139,7 +140,7 @@ def point_in_rect(p, u, v, pad=0.0):
 
 def label_pos(ax, text):
     t = next(t for t in labels_of(ax) if t.get_text() == text)
-    return t.xy if t._calphad_label.get("leader") else t.get_position()
+    return t.get_position()
 
 
 def run_script(tb, target, tmp_path, name="gen"):
@@ -333,7 +334,7 @@ def test_ternary_permutations(fecrni):
     assert len(ia) == len(ib) >= 2
     for tri in ia:
         assert any(np.allclose(tri, t2, atol=0.02) for t2 in ib), tri
-    assert check_anchors(axa) >= 6                                    # labels of the Fe-bottom-right diagram
+    assert check_anchors(axa) >= 4      # labels of the Fe-bottom-right diagram (thin fields: no room for 8 pt)
 
 
 # ---------------------------------------------------------------------------------------------------------

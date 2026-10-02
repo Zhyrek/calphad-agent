@@ -1,8 +1,8 @@
 """show_code generator for compare_system.
 
 The standalone script builds the same tables as the tool: every parameter as written in each TDB (VV####
-handles replaced by their values), the rows that are not identical in all databases, and per-database parameter /
-function lists - using copies of calphad_tools.tdbparse / pwinline / tdbtables (standard library, numpy, symengine).
+handles replaced by their values) with its reference key and citation, the rows that differ, the rows written
+differently but numerically equal, and per-database parameter / function lists - using copies of calphad_tools.tdbparse / pwinline / tdbtables (standard library, numpy, symengine).
 Values at the temperatures come from an independent route: pycalphad's Database, with its FUNCTIONs (``db.symbols``)
 inlined.  Outputs: CSVs, an Excel workbook and a simplified PowerPoint.  What pycalphad's Database cannot tell (the phase_map
 applied, the resolved expressions, and parameters written with non-alphabetical constituents - pycalphad sorts
@@ -170,7 +170,9 @@ print(table[["item", "database"] + [f"value_{t:g}K" for t in TEMPERATURES]].to_s
 SUBS = [Subsystem(parse_tdb(str(path)), label, str(path), ELEMENTS, PHASE_MAP.get(label, {}))
         for label, path in DATABASES.items()]
 # status: same | equal (written differently, numerically equal within RTOL) | differs (value differs or absent);
-# where the databases do not share the same functions the cells show the inlined polynomial in T instead
+# where the databases do not share the same functions the cells show the inlined polynomial in T instead.
+# Each parameter's reference key is the token after its last T range ("6000 N 91Din !"); the citation comes from
+# the TDB's LIST_OF_REFERENCES (or a $-comment reference list) when it has that key.
 WRITTEN = expression_table(SUBS, PHASES, rtol=RTOL)
 if not INCLUDE_IDENTICAL:
     WRITTEN = [r for r in WRITTEN if r.status == "differs"]
@@ -178,21 +180,28 @@ written = pd.DataFrame([{"phase": r.phase, "key": r.key, "parameter": r.label,
                          **{s.label: (r.shown[s.label] if r.shown[s.label] is not None else "—") for s in SUBS},
                          "status": r.status, "note": r.note,
                          **{f"{s.label} (as written)": (r.cells[s.label].text if r.cells[s.label] is not None
-                                                        else "—") for s in SUBS}} for r in WRITTEN])
+                                                        else "—") for s in SUBS},
+                         "max |Δ|": r.max_diff,
+                         **{f"{s.label} reference": r.refs.get(s.label, "") for s in SUBS},
+                         **{f"{s.label} citation": r.citations.get(s.label, "") for s in SUBS}} for r in WRITTEN])
 written.to_csv(OUT / WRITTEN_CSV_NAME, index=False)
 diff = written[written["status"] == "differs"]
+# equal within the tolerance but written differently: not differences, listed in their own table
+equal = written[written["status"] == "equal"]
 print(f"\n{(diff['note'].str.contains('absent') == False).sum()} parameters differ numerically, "
-      f"{(written['status'] == 'equal').sum()} written differently but equal, "
+      f"{len(equal)} written differently but equal, "
       f"{diff['note'].str.contains('absent').sum()} absent in some database")
 print(diff[["parameter"] + list(DATABASES) + ["note"]].to_string(max_colwidth=40))
-per_db = {s.label: (pd.DataFrame([{"phase": ph, "parameter": lab, "expression": w.text}
-                                  for ph, lab, w in database_table(s, PHASES)]),
+per_db = {s.label: (pd.DataFrame([{"phase": s.rows[k].phase, "parameter": s.rows[k].label,
+                                   "expression": s.written(k).text, "reference": s.rows[k].reference,
+                                   "citation": s.citation(k)} for k in database_keys(s, PHASES)]),
                     pd.DataFrame([{"function": n, "expression": w.text} for n, w in database_functions(s, PHASES)]))
           for s in SUBS}
 
-# ---- Excel: differences, all parameters, one sheet per database, values at T
+# ---- Excel: differences, numerically equal, all parameters, one sheet per database, values at T
 with pd.ExcelWriter(OUT / XLSX_NAME, engine="openpyxl") as xl:
     diff.drop(columns=["key"]).to_excel(xl, sheet_name="Differences", index=False)
+    equal.drop(columns=["key"]).to_excel(xl, sheet_name="Numerically equal", index=False)
     written.drop(columns=["key"]).to_excel(xl, sheet_name="All parameters", index=False)
     for label, (params, funcs) in per_db.items():
         name = f"DB {label}"[:31]
@@ -230,11 +239,27 @@ def text_table(title, header, rows, widths, per_slide=12):
 
 labels = list(DATABASES)
 col_w = [2.6] + [(12.7 - 2.6) / len(labels)] * len(labels)
-for title, part in (("Differences", diff), ("All parameters", written)):
+ROW_OF = {r.key: r for r in WRITTEN}
+
+
+def cell(r, lab):
+    """Cell text with the reference (shorthand · first author + year) on a second line."""
+    ref = ROW_OF[r["key"]].ref_text(lab)
+    return r[lab] + (f"\n[{ref}]" if ref and r[lab] != "—" else "")
+
+
+for title, part in (("Differences", diff), ("Numerically equal within tolerance (written differently)", equal),
+                    ("All parameters", written)):
+    if title.startswith("Numerically") and not len(part):
+        continue
     text_table(title, ["parameter"] + labels,
-               [[f"{r['phase']}: {r['parameter']}"] + [r[lab] for lab in labels] for _, r in part.iterrows()], col_w)
+               [[f"{r['phase']}: {r['parameter']}" + (f"\nmax |Δ| {r['max |Δ|']:.3g}" if r["status"] == "equal"
+                                                     else "")]
+                + [cell(r, lab) for lab in labels] for _, r in part.iterrows()], col_w)
 for label, (params, funcs) in per_db.items():
-    text_table(f"{label}: parameters", ["phase", "parameter", "expression"], params.values.tolist(), [1.6, 3.0, 8.1])
+    text_table(f"{label}: parameters", ["phase", "parameter", "expression", "reference"],
+               [[r["phase"], r["parameter"], r["expression"],
+                 ref_display(r["reference"], r["citation"])] for _, r in params.iterrows()], [1.4, 2.8, 6.6, 1.9])
     if len(funcs):
         text_table(f"{label}: functions used", ["function", "expression"], funcs.values.tolist(), [2.0, 10.7])
 prs.save(OUT / PPTX_NAME)

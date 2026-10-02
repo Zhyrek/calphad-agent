@@ -5,8 +5,8 @@ Two styles:
 
 * ``"shaded"`` (default): binary T-x diagrams with black phase boundaries and invariant lines (lw 1.25, solid),
   two-phase fields filled ``aliceblue`` between their two boundaries, no tie-lines, minor ticks on and all ticks
-  pointing in on all four sides; ternary isotherms with grey (#999999) phase boundaries and tie-triangle edges, no
-  tie-lines.  No phase legend: the phases are named by labels inside the figure (region labels; on isopleths and
+  pointing in on all four sides; ternary isotherms with grey (#999999) phase boundaries and tie-triangle edges,
+  two-phase fields filled ``aliceblue`` too (three-phase triangles stay white), no tie-lines.  No phase legend: the phases are named by labels inside the figure (region labels; on isopleths and
   T-MU diagrams, where regions are not labelled, each line is labelled with :func:`line_labels`).
 * ``"color"``: one colour per phase, grey tie-lines, red invariants and a phase legend.
 
@@ -20,7 +20,7 @@ import numpy as np
 STYLES = ("shaded", "color")
 LINE_COLOR = "k"                 # binary / isopleth / T-MU boundaries and invariant lines (shaded)
 LINE_WIDTH = 1.25
-FILL_COLOR = "aliceblue"         # two-phase fields of a binary T-x diagram
+FILL_COLOR = "aliceblue"         # two-phase fields (binary T-x diagram and ternary isotherm)
 TERNARY_COLOR = "#999999"        # ternary boundaries and tie-triangle edges
 TERNARY_WIDTH = 1.0
 LABEL_COLOR = "black"            # phase labels and invariant temperatures on a shaded diagram
@@ -50,8 +50,9 @@ def draw_shaded(ax, boundaries, invariants, kind="binary", tiny=1e-3):
     boundaries: one entry per two-phase ZPF line: [xy of phase 1, xy of phase 2], each an (n, 2) array of plotted
                 (x, y) points (a binary: same y = temperature at each point, i.e. the ends of a tie-line).
     invariants: (3, 2) arrays: the three phase compositions of each invariant / tie-triangle.
-    kind: "binary" (black, two-phase fields filled), "ternary" (grey, nothing filled), "potential" (T-MU: black,
-          nothing filled - both boundaries of a two-phase equilibrium coincide there).
+    kind: "binary" (black, two-phase fields filled), "ternary" (grey, two-phase fields filled between the
+          tie-line ends), "potential" (T-MU: black, nothing filled - both boundaries of a two-phase equilibrium
+          coincide there).
     A boundary that collapses onto one point (relative extent < tiny) is drawn as a dot."""
     color, lw = (TERNARY_COLOR, TERNARY_WIDTH) if kind == "ternary" else (LINE_COLOR, LINE_WIDTH)
     pts_all = [np.asarray(p, float).reshape(-1, 2) for b in boundaries for p in b]
@@ -62,6 +63,8 @@ def draw_shaded(ax, boundaries, invariants, kind="binary", tiny=1e-3):
         pair = [np.asarray(p, float).reshape(-1, 2) for p in b]
         if kind == "binary" and len(pair) == 2 and len(pair[0]) == len(pair[1]) > 1:
             ax.fill_betweenx(pair[0][:, 1], pair[0][:, 0], pair[1][:, 0], color=FILL_COLOR, zorder=1)
+        elif kind == "ternary" and len(pair) == 2 and len(pair[0]) == len(pair[1]) > 1:
+            _fill_tielines(ax, pair[0], pair[1])
         for p in pair:
             if not len(p):
                 continue
@@ -76,6 +79,26 @@ def draw_shaded(ax, boundaries, invariants, kind="binary", tiny=1e-3):
         else:
             p = p[np.argsort(p[:, 0])]                      # invariant line, lowest to highest x
         ax.plot(p[:, 0], p[:, 1], color=color, lw=lw, ls="-", solid_capstyle="butt", zorder=2.5)
+
+
+def _fill_tielines(ax, a, b, jump=6.0):
+    """Fill a ternary two-phase field: a[i] - b[i] are the ends of consecutive tie-lines.  The field is filled as
+    one polygon per continuous run (no seams); the run is split where either boundary jumps (a step longer than
+    ``jump`` x the median step, e.g. a line that restarts elsewhere) so no area outside the field is covered."""
+    ok = np.isfinite(a).all(1) & np.isfinite(b).all(1)
+    step = np.maximum(np.hypot(*np.diff(a, axis=0).T), np.hypot(*np.diff(b, axis=0).T))
+    med = np.median(step[step > 0]) if (step > 0).any() else 0.0
+    brk = ~(ok[:-1] & ok[1:]) | (step > jump * med if med > 0 else np.zeros_like(step, bool))
+    from matplotlib.collections import PolyCollection
+    polys, start = [], 0
+    for i in list(np.nonzero(brk)[0]) + [len(a) - 1]:
+        run = slice(start, i + 1)
+        if i + 1 - start >= 2 and ok[run].all():
+            polys.append(np.vstack([a[run], b[run][::-1]]))
+        start = i + 1
+    if polys:
+        ax.add_collection(PolyCollection(polys, facecolors=FILL_COLOR, edgecolors="none", linewidths=0, zorder=1),
+                          autolim=False)
 
 
 def strategy_boundaries(strategy, x, y, y_offset=0.0):

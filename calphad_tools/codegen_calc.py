@@ -350,7 +350,7 @@ _MAP_PLOT = '''
 _MAP_PLOT_SHADED = '''
 
     # plot (shaded style): black phase boundaries and invariant lines, two-phase fields filled aliceblue between their
-    # two boundaries (binary); grey boundaries and tie-triangle edges (ternary); no tie-lines, no legend
+    # two boundaries (binary); grey lines, aliceblue two-phase fields (ternary); no tie-lines, no legend
     <<xy>>
 
     <<figline>>
@@ -656,12 +656,12 @@ def label_helpers(ctx: Ctx) -> str:
     return (names
             + module_source(ctx, phase_regions, "phase regions: two-phase polygons from ZPF lines, equilibrium "
                                                 "grid, stable phase set at a point")
-            + module_source(ctx, label_place, "label placement: region raster, obstacles, text fitting, leader "
-                                              "lines"))
+            + module_source(ctx, label_place, "label placement: region raster, obstacles, text fitting, names of "
+                                              "stoichiometric phases outside the axes"))
 
 
 def label_code(ctx: Ctx, recipe: Dict, db, models_expr: Optional[str], *, mapped: bool, invariants=True,
-               phase_labels=None, style=None, db_expr: str = "db", invariant_types: Optional[Dict] = None) -> str:
+               phase_labels=None, style=None, db_expr: str = "db") -> str:
     """Code that labels the phase regions of ``ax`` (a binary T-x diagram or ternary isotherm)."""
     from .region_labels import GRID_N, _db_elements, liquids_of
     rec = {k: val for k, val in recipe.items() if k != "tdb"}
@@ -669,16 +669,13 @@ def label_code(ctx: Ctx, recipe: Dict, db, models_expr: Optional[str], *, mapped
     info = (f"ordered_info({db_expr}, sorted(recipe['elements']) + ['VA'], recipe['phases']"
             + (f", {models_expr})" if models_expr else ")")) if rec.get("rename_disordered", True) else "{}"
     if mapped:
-        src = "regions = regions_from_lines(lines, invariants, recipe)   # exact two-phase fields / tie-triangles\n"
+        src = (f"regions = regions_from_lines(lines, invariants, recipe, {db_expr})   # exact two-phase fields / "
+               "tie-triangles\n")
     else:
         src = ("# map the diagram again (pycalphad mapping) for the exact two-phase fields / tie-triangles\n"
                f"map_zpf, map_nodes = map_lines({db_expr}, recipe, label_info, recipe['composition_step'], "
                "recipe['temperature_step'])\n"
-               "regions = regions_from_lines(map_zpf, map_nodes, recipe)\n")
-        if invariant_types:
-            src += (f"invariant_types = {Ctx.py(invariant_types)}   # reaction types found by the tool\n"
-                    "for inv in regions['invariants']:\n"
-                    "    inv['type'] = next((t for T, t in invariant_types.items() if abs(T - inv['T_K']) < 0.5), '')\n")
+               f"regions = regions_from_lines(map_zpf, map_nodes, recipe, {db_expr})\n")
     kw = {"kind": kind, "elements": _db_elements(db), "liquids": liquids_of(db, rec["phases"])}
     if phase_labels:
         kw["phase_labels"] = dict(phase_labels)
@@ -690,8 +687,9 @@ def label_code(ctx: Ctx, recipe: Dict, db, models_expr: Optional[str], *, mapped
     args = ", ".join(f"{k}={Ctx.py(val)}" for k, val in kw.items())
     return _T('''
         # ---- phase-region labels: two-phase fields and tie-triangles from the mapped lines, the rest of the diagram
-        # from an equilibrium grid; each label goes to the thickest free part of its region (clear of data points),
-        # smaller or with a leader line if it does not fit, and every position is checked by an equilibrium
+        # from an equilibrium grid; each label goes inside its region at the thickest free part (clear of data
+        # points), smaller or turned if needed, left out below min_fontsize (8 pt); stoichiometric phases are named
+        # outside the axes (covered tick labels hidden); every position is checked by an equilibrium
         recipe = <<recipe>>
         label_info = <<info>>
         <<src>>grid = equilibrium_grid(<<db>>, recipe, label_info, ax.get_xlim(), ax.get_ylim(), <<n>>)
@@ -2410,7 +2408,7 @@ _OVERVIEW_SHADED_HELPERS = '''
     def label_regions(done, grid_n):
         \"\"\"Phase-region labels (instead of a legend) on every diagram of a grid image, after the layout is fixed.\"\"\"
         for ax_i, kind, recipe, info, zpf, nodes, liquids in done:
-            regions = regions_from_lines(zpf, nodes, recipe)
+            regions = regions_from_lines(zpf, nodes, recipe, db)
             grid = equilibrium_grid(db, recipe, info, ax_i.get_xlim(), ax_i.get_ylim(), grid_n)
             label_diagram(ax_i, regions, grid, lambda x, y, r=recipe, i=info: key_at(db, r, i, x, y), kind=kind,
                           elements=ELEMENTS, liquids=liquids, T_unit="C", style={"invariant_color": "black"})
@@ -2476,7 +2474,7 @@ _TERNARIES_SHADED = '''
             try:
                 info = ordered_info(db, sorted([a, b, c]) + ["VA"], phases)
                 zpf, nodes = map_lines(db, recipe, info, 0.02, 10.0)
-                # shaded style: grey boundaries and tie-triangle edges, no tie-lines, no legend
+                # shaded style: grey boundaries and tie-triangle edges, aliceblue two-phase fields, no legend
                 draw_shaded(ax_k, *boundaries_of(recipe, zpf, nodes), kind="ternary")
                 done.append((ax_k, "ternary", recipe, info, zpf, nodes, LIQUIDS["-".join((a, b, c))]))
             except Exception as e:
@@ -2840,7 +2838,7 @@ _TERN_CALC = '''
     '''
 
 _TERN_CALC_SHADED = '''
-    # calculated isotherm, shaded style: grey boundaries and tie-triangle edges, no tie-lines;
+    # calculated isotherm, shaded style: grey boundaries and tie-triangle edges, aliceblue two-phase fields;
     # x axis = X(<<B>>) (bottom-right corner), y axis = X(<<C>>) (top corner)
     strategy = TernaryStrategy(db, elements + ["VA"], phases, {v.X(<<Br>>): (0, 1, 0.02), v.X(<<Cr>>): (0, 1, 0.02),
                                                                v.T: T_K, v.P: 101325, v.N: 1})

@@ -8,8 +8,9 @@
   numeric coefficient first) and with ESPEI's ``VV####`` optimisation handles replaced by their values in the
   precision the file wrote.  Other functions (GHSERFE, ...) keep their names.
 * Tables: every parameter across databases (sorted by phase, then G terms, L0/L1/..., ternary terms, TC/BMAGN/...),
-  the rows that are not identical everywhere (including "same expression, but a referenced function differs"), and
-  per-database parameter / function lists.
+  the rows that differ (values beyond the tolerance, or missing somewhere), the rows written differently but
+  numerically equal, and per-database parameter / function lists.  Each row keeps every database's reference key
+  (``ExprRow.refs``) and its full citation from the TDB's reference list (``ExprRow.citations``).
 
 * Numbers: every parameter is also inlined (all FUNCTIONs substituted, :mod:`calphad_tools.pwinline`), so a row is
   a *difference* only if the values differ (or the parameter is missing somewhere); rows written differently but
@@ -30,7 +31,7 @@ import numpy as np
 import symengine as se
 
 from .pwinline import P, T, MissingRef, evaluate, fmt_expr, inline
-from .tdbparse import TDB, ExpressionError, tokenize
+from .tdbparse import TDB, ExpressionError, short_citation, tokenize
 
 VV_RE = re.compile(r"^VV\d+$")
 MATH_NAMES = {"LN", "LOG", "EXP", "SQRT", "ABS"}
@@ -154,6 +155,7 @@ class ParamRow:
     raw_pw: object = None     # tdbparse.Piecewise as written
     segs: Optional[list] = None
     error: str = ""
+    reference: str = ""       # reference key as written ("91Din", "REF283"; "" = none)
 
     def sort_key(self):
         return row_sort_key(self.key, self.ptype)
@@ -318,9 +320,16 @@ class Subsystem:
             order_changed = p.sign != 1.0 or bool(p.order_map and any(a != b for a, b in p.order_map.items()))
             self.rows[key] = ParamRow(key, make_label(p.key.ptype, pv.canon, cons, p.key.order, p.key.diffusing),
                                       pv.canon, p.key.ptype, sum(1 for sl in reduced for s in sl if s != "VA"),
-                                      p.raw_name, p.expr.to_tdb(), p.sign, order_changed, p.expr)
+                                      p.raw_name, p.expr.to_tdb(), p.sign, order_changed, p.expr,
+                                      reference=getattr(p, "reference", "") or "")
             if order_changed:
                 self.pyc_sign_notes.append(p.raw_name)
+
+    def citation(self, key: str) -> str:
+        """Full citation of row ``key``'s reference from the database's reference list ("" if not resolved)."""
+        r = self.rows.get(key)
+        cite = getattr(self.tdb, "citation", None)
+        return cite(r.reference) if r is not None and r.reference and cite else ""
 
     def used_functions(self, keys: Optional[Sequence[str]] = None, include_vv: bool = False) -> List[str]:
         """FUNCTIONs reachable from the subsystem's parameters (VV#### optimisation handles left out)."""
@@ -635,6 +644,20 @@ class ExprRow:
     expanded: List[str] = field(default_factory=list)                  # functions expanded for the comparison
     cell_differs: Dict[str, bool] = field(default_factory=dict)        # value differs from the first database
     max_diff: float = math.nan
+    refs: Dict[str, str] = field(default_factory=dict)       # database label -> reference key as written ("" none)
+    citations: Dict[str, str] = field(default_factory=dict)  # database label -> full citation ("" unresolved)
+
+    def ref_text(self, label: str, width: int = 30) -> str:
+        """'91Din', '91Din · Dinsdale 1991' (short citation when the reference list resolves it) or ''."""
+        return ref_display(self.refs.get(label, ""), self.citations.get(label, ""), width)
+
+
+def ref_display(ref: str, citation: str = "", width: int = 30) -> str:
+    """Reference shorthand as written plus, when resolved, the short citation: '82Her · Hertzman & Sundman 1982'."""
+    if not ref:
+        return ""
+    short = short_citation(citation, width) if citation else ""
+    return f"{ref} · {short}" if short and short.lower() != ref.lower() else ref
 
 
 def tolerance(ptype: str) -> float:
@@ -703,6 +726,8 @@ def _compare_row(subs, k, ph, label, ptype, fdef, grid, rtol) -> ExprRow:
     cells = {s.label: (s.written(k) if k in s.rows else None) for s in subs}
     row = ExprRow(k, ph, label, ptype, cells)
     present = [s for s in subs if cells[s.label] is not None]
+    row.refs = {s.label: s.rows[k].reference for s in present}
+    row.citations = {s.label: s.citation(k) for s in present}
     absent = [s.label for s in subs if cells[s.label] is None]
     row.shown = {lab: (w.text if w is not None else None) for lab, w in cells.items()}
     row.shown_short = dict(row.shown)
@@ -751,21 +776,32 @@ def _compare_row(subs, k, ph, label, ptype, fdef, grid, rtol) -> ExprRow:
 
 
 def differences(rows: List[ExprRow]) -> List[ExprRow]:
+    """Rows whose values differ (beyond the tolerance) or that are missing from some database.  Rows equal within
+    the tolerance - identical, written differently, or differing only in their reference - are never listed."""
     return [r for r in rows if r.status == "differs"]
 
 
-def database_table(sub: Subsystem, phases: Optional[Sequence[str]] = None) -> List[Tuple[str, str, Written]]:
-    """(phase, label, written) of one database's subsystem parameters, in table order."""
+def equal_rows(rows: List[ExprRow]) -> List[ExprRow]:
+    """Rows written differently but numerically equal within the tolerance (status "equal")."""
+    return [r for r in rows if r.status == "equal"]
+
+
+def database_keys(sub: Subsystem, phases: Optional[Sequence[str]] = None) -> List[str]:
+    """Row keys of one database's subsystem parameters, in table order."""
     order = phase_order({r.phase for r in sub.rows.values()})
     if phases:
         want = {p.upper() for p in phases}
         order = [p for p in order if p in want]
     out = []
     for ph in order:
-        for k in sorted((k for k, r in sub.rows.items() if r.phase == ph),
-                        key=lambda k: row_sort_key(k, sub.rows[k].ptype)):
-            out.append((ph, sub.rows[k].label, sub.written(k)))
+        out += sorted((k for k, r in sub.rows.items() if r.phase == ph),
+                      key=lambda k: row_sort_key(k, sub.rows[k].ptype))
     return out
+
+
+def database_table(sub: Subsystem, phases: Optional[Sequence[str]] = None) -> List[Tuple[str, str, Written]]:
+    """(phase, label, written) of one database's subsystem parameters, in table order."""
+    return [(sub.rows[k].phase, sub.rows[k].label, sub.written(k)) for k in database_keys(sub, phases)]
 
 
 def database_functions(sub: Subsystem, phases: Optional[Sequence[str]] = None) -> List[Tuple[str, Written]]:
