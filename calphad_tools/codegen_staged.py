@@ -8,7 +8,8 @@ symengine) so the TDB text handling is exactly the tool's:
 * staged_merge: normalises B (and, for a magnetic B phase with ~1 atom/fu, rescales A's phase to it), writes B1, B2, B3, Q (and A1, A2) with the same text substitutions / merge plans and
   the decisions the tool used, prints the subsystem changes between consecutive versions, loads every version in
   pycalphad and draws the binaries / ternary isotherms that changed with pycalphad's binplot / ternplot (plain
-  colour style; the tool's shaded diagrams, invariant extraction and the deck are not reproduced).
+  colour style, with the tool's mapping check between mapping and plotting; the tool's shaded diagrams, invariant
+  extraction and the deck are not reproduced).
 """
 from __future__ import annotations
 
@@ -53,7 +54,8 @@ def _gen_evaluate(args, ctx: Ctx) -> str:
 
 _STAGED_BODY = r'''
 def plot_versions(labels, versions, items, tmin_c, tmax_c, x_step, t_step):
-    """Binary T-x diagrams / ternary isotherms with pycalphad's binplot / ternplot (one PNG per version and item)."""
+    """Binary T-x diagrams / ternary isotherms with pycalphad's binplot / ternplot, with the tools' mapping check
+    between mapping and plotting (one PNG per version and item)."""
     for lab in labels:
         db = Database(str(versions[lab]))
         for els, T_c in items:
@@ -63,14 +65,15 @@ def plot_versions(labels, versions, items, tmin_c, tmax_c, x_step, t_step):
             name = "-".join(e.capitalize() for e in els) + ("" if T_c is None else f"_{T_c:g}C")
             if T_c is None:
                 fig, ax = plt.subplots(figsize=(6.4, 4.8))
-                binplot(db, comps, phases, {v.X(els[1]): (0, 1, x_step), v.T: (tmin_c + 273.15, tmax_c + 273.15,
-                                                                              t_step), v.P: 101325, v.N: 1},
-                        plot_kwargs={"ax": ax})
+                checked_binplot(db, comps, phases, {v.X(els[1]): (0, 1, x_step),
+                                                    v.T: (tmin_c + 273.15, tmax_c + 273.15, t_step), v.P: 101325,
+                                                    v.N: 1}, plot_kwargs={"ax": ax})
             else:
                 fig = plt.figure(figsize=(6.4, 5.6))
                 ax = fig.add_subplot(projection="triangular")
-                ternplot(db, comps, phases, {v.X(els[1]): (0, 1, x_step), v.X(els[2]): (0, 1, x_step),
-                                             v.T: T_c + 273.15, v.P: 101325, v.N: 1}, plot_kwargs={"ax": ax})
+                checked_ternplot(db, comps, phases, {v.X(els[1]): (0, 1, x_step), v.X(els[2]): (0, 1, x_step),
+                                                     v.T: T_c + 273.15, v.P: 101325, v.N: 1},
+                                 x=v.X(els[1]), y=v.X(els[2]), ax=ax)
             ax.set_title(f"{lab}: {name}")
             fig.savefig(OUT / f"{lab}_{name}.png", dpi=130, bbox_inches="tight")
             plt.close(fig)
@@ -153,10 +156,11 @@ def _gen_staged(args, ctx: Ctx) -> str:
     VA, VB = ts.StageView(A, "A"), ts.StageView(Bn, "B")
     build_a12 = any(len(VB.row_elements(k)) <= 2 and k not in VA.rows for k in VB.rows)
     # the decisions the tool applied (auto: what the stages settle goes to A)
-    ctx.need("import matplotlib", "import matplotlib.pyplot as plt", "from pycalphad import Database, binplot, "
-             "ternplot, variables as v", "from pycalphad.plot import triangular  # noqa: F401")
+    ctx.need("import matplotlib", "import matplotlib.pyplot as plt", "from pycalphad import Database, variables as v",
+             "from pycalphad.plot import triangular  # noqa: F401")
     temps = args.get("ternary_temperatures_c")
-    body = _helpers(ctx)
+    from .codegen_calc import mapping_check_helpers
+    body = _helpers(ctx) + mapping_check_helpers(ctx)
     body += (f"BASE, ADD = {a}, {b}\n"
              f"PHASE_MAP = {Ctx.py(args.get('phase_map') or {})}\n"
              f"SUBLATTICE_MAP = {Ctx.py(args.get('sublattice_map') or {})}\n"

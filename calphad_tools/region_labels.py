@@ -17,8 +17,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from .figures import OpContext, register_op
-
-GRID_N = {"binary": (80, 60), "ternary": (40, 40)}
+from .mapping_check import GRID_N  # noqa: F401 - equilibrium grid size (shared with the mapping check)
 STYLE_KEYS = {"fontsize", "min_fontsize", "color", "background", "background_alpha", "rotate", "margin",
               "invariant_fontsize", "invariant_color", "fontweight"}
 # accepted and ignored: reaction types (eutectic ...) are never written; leader lines are drawn only for

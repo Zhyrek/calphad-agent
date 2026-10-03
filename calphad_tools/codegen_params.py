@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict
 
 from .codegen import Ctx, generator
+from .codegen_calc import mapping_check_helpers
 
 APPLY = '''
 def apply_edits(text, pairs):
@@ -73,9 +74,14 @@ def map_diagram(db, els, T, xstep=0.02):
     if len(els) == 3:
         conds[v.X(els[2])] = (0, 1, xstep)
     strategy = (BinaryStrategy if len(els) == 2 else TernaryStrategy)(db, comps, phases, conds)
-    strategy.generate_automatic_starting_points()
-    while not strategy.iterate():
-        pass
+    # map, then check / repair the traced lines against equilibrium as the tool does (mapping_check)
+    if len(els) == 2:
+        recipe = {"kind": "binary", "elements": list(els), "phases": phases, "P": 101325.0, "T_range": [T[0], T[1]],
+                  "x_range": [0.0, 1.0], "tmap": [1.0, 0.0], "comp": {"scale": 1.0, "weight": False}}
+    else:
+        recipe = {"kind": "ternary", "elements": list(els), "phases": phases, "P": 101325.0, "T_K": T,
+                  "comp": {"scale": 1.0, "weight": False}}
+    map_and_check(strategy, db, recipe, "auto", 600.0, grid_size(recipe["kind"], labels=False))
     names = phase_namer(db, strategy)
     order = [str(e) for e in strategy.elements if str(e) != "VA"]
 
@@ -241,7 +247,7 @@ def _gen_edit_parameters(args, ctx: Ctx) -> str:
             Tspec = repr(float(c["temperature"]) + off)
         tag = "-".join(els)
         png = ctx.out_name(tb.outp(None, f"whatif_{stem}/compare_{tag}.png"), f"compare_{tag}.png")
-        code.append(MAPPING.lstrip("\n"))
+        code.append(mapping_check_helpers(ctx) + MAPPING.lstrip("\n"))
         code += [f"els = {els!r}",
                  f"m0, m1 = map_diagram(db0, els, {Tspec}), map_diagram(db1, els, {Tspec})",
                  f"OFF = {off!r}   # K -> display unit",
@@ -394,7 +400,7 @@ def _gen_parameter_sensitivity(args, ctx: Ctx) -> str:
             ctx.need("import itertools", "import re", "from pycalphad import variables as v",
                      "from pycalphad.core.utils import filter_phases, unpack_species",
                      "from pycalphad.mapping import BinaryStrategy, TernaryStrategy")
-            code.append(MAPPING.lstrip("\n"))
+            code.append(mapping_check_helpers(ctx) + MAPPING.lstrip("\n"))
             tlo, thi = sorted((float(args["tmin"]) + off, float(args["tmax"]) + off))
             bT = [float(x) + off for x in (args.get("boundary_temperatures") or [])]
             qf += [f"    m = map_diagram(db, {els!r}, ({tlo!r}, {thi!r}, 10.0))"]

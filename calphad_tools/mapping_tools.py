@@ -40,6 +40,9 @@ STYLE_SCHEMA = {"type": "string", "enum": ["shaded", "color"],
                 "description": "shaded: black lines, two-phase fields filled, grey ternary, phases named by labels "
                                "in the figure (no legend); color: colour per phase + tie-lines + legend. Default: "
                                "config diagram_style (shaded)"}
+CHECK_SCHEMA = {"type": "string", "enum": ["auto", "thorough", "off"],
+                "description": "binary/ternary: check traced lines against equilibrium, trim metastable parts, "
+                               "drop duplicates, re-trace missing boundaries (default auto; off = raw pycalphad)"}
 TIELINE_COLOR = (0.45, 0.45, 0.45, 0.45)
 INVARIANT_COLOR = "#d62728"
 
@@ -243,19 +246,11 @@ class _Labeler:
 # ---------------------------------------------------------------------------
 # Mapping driver
 # ---------------------------------------------------------------------------
-def _run_strategy(strategy, time_limit: float) -> Dict:
-    t0 = time.time()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        if len(strategy.node_queue.nodes) == 0 and len(strategy.zpf_lines) == 0:
-            strategy.generate_automatic_starting_points()
-        finished, n = False, 0
-        while not finished:
-            finished = strategy.iterate()
-            n += 1
-            if not finished and time.time() - t0 > time_limit:
-                break
-    return {"finished": bool(finished), "iterations": n, "seconds": round(time.time() - t0, 1)}
+def _run_strategy(strategy, time_limit: float, check_mapping: str = "off") -> Dict:
+    """Run a mapping strategy (see mapping_check.run_strategy: with checking on, lines pycalphad discards are kept
+    aside for the repair)."""
+    from .mapping_check import run_strategy
+    return run_strategy(strategy, time_limit, check_mapping)
 
 
 def _point_T(p) -> float:
@@ -384,8 +379,13 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
                       label_regions: Optional[bool] = None, label_invariants: bool = True,
                       phase_labels: Optional[Dict[str, str]] = None, label_style: Optional[Dict] = None,
                       formats: Optional[Sequence[str]] = None, right: Optional[str] = None,
-                      corners: Optional[Dict[str, str]] = None, style: Optional[str] = "shaded") -> Dict:
+                      corners: Optional[Dict[str, str]] = None, style: Optional[str] = "shaded",
+                      check_mapping: str = "auto") -> Dict:
     """Run a pycalphad mapping strategy and write PNG + CSV/JSON data.  Returns a result dict.
+
+    check_mapping: "auto" (default) / "thorough" / "off" - binary T-x diagrams and ternary isotherms: check the
+    traced lines against equilibrium and repair them (metastable tie-lines trimmed, duplicate traces dropped,
+    missing boundaries traced again; see mapping_check); "off" = pycalphad's lines as traced.
 
     label_regions: write the phases of every region / tie-triangle (and binary invariant temperatures) on the
     diagram (see region_labels); None = on in the shaded style (binary T-x and ternary isotherms; isopleth and
@@ -400,8 +400,10 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
     from pycalphad.mapping import BinaryStrategy, IsoplethStrategy, TernaryStrategy
     from .calc import get_db
     from . import diagram_style as ds
+    from . import mapping_check as mc
     style = ds.check_style(style)
     shaded = style == "shaded"
+    check_mapping = mc.check_mode(check_mapping)
 
     db = get_db(tdb)
     els = _check_elements(db, elements)
@@ -488,7 +490,14 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         strategy = Strat(db, comps, ph, conds)
-    run = _run_strategy(strategy, time_limit_s)
+    check = None
+    if kind in ("binary", "ternary") and not mu_el:     # isopleths and T-MU diagrams: not checked
+        check = mc.map_and_check(strategy, db, _recipe("", kind, els, ph, pressure, conds, U, temperature_unit, True,
+                                                       xr, composition_step or 0.02, temperature_step),
+                                 check_mapping, float(time_limit_s), mc.grid_size(kind, label_regions, check_mapping))
+        run = check.pop("run")
+    else:
+        run = _run_strategy(strategy, time_limit_s)
     lab = _Labeler(db, strategy.models, rename_disordered)
     s_els = list(strategy.elements)  # order of cs.X / chemical potentials
     s_els = [e for e in s_els if e != "VA"]
@@ -581,6 +590,10 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
                                                                                recipe, db),
                                "invariant_types": {inv["T_K"]: inv.get("type", "") for inv in res["invariants"]},
                                "style": style}
+        from .region_labels import GRID_N
+        grid = mc.reuse_grid(check, ax.get_xlim(), ax.get_ylim(), GRID_N[kind], rename_disordered)
+        if grid is not None:    # the mapping check's equilibrium grid: the region labels use it too
+            ax._calphad_diagram.update(grid=grid, grid_lim=[list(ax.get_xlim()), list(ax.get_ylim())])
     if label_regions:
         from .region_labels import label_axes
         labels = label_axes(ax, recipe, label_invariants=label_invariants, phase_labels=phase_labels,
@@ -603,6 +616,8 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
         "mapping": {**run, "zpf_lines": len(strategy.zpf_lines),
                     "degenerate_edge_lines_dropped": res.get("degenerate_lines_dropped", 0),
                     "duplicate_lines_dropped": res.get("duplicate_lines_dropped", 0)},
+        "mapping_check": mc.report_json(check) if check else {"mode": check_mapping, "note": "not checked "
+                                                                "(isopleths and T-MU diagrams are not)"},
         "regions": res["regions"], "invariants": res["invariants"], "files": files,
         "renamed_when_disordered": dict(lab.renamed), "style": style,
     }
@@ -620,6 +635,8 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
     Path(jpath).write_text(json.dumps(summary, indent=1, default=str))
     files["json"] = jpath
     head, _, rest = _map_text(summary, U).partition("\n")
+    if check and check_mapping != "off":
+        head += "\n" + check["text"]
     summary["text"] = head + "\n" + o_text + "\n" + rest + (("\n" + labels["text"]) if labels is not None else "")
     return summary
 
@@ -1749,6 +1766,7 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
              "formats": {**STRS, "description": "extra files svg/pdf/eps with editable text (default svg+pdf "
                                                  "when shaded or labelling)"},
              "style": STYLE,
+             "check_mapping": CHECK_SCHEMA,
              "output_prefix": {**S, "description": "file name stem for outputs"}},
             ["tdb", "elements"])
     def _map(tdb, elements, tmin=None, tmax=None, temperature=None, temperature_unit="K", vary=None, fixed=None,
@@ -1756,7 +1774,7 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
              potential_axis=None, tielines=3, label_nodes=False, xlim=None, ylim=None, phases=None,
              exclude_phases=None, phase_colors=None, title=None, rename_disordered=True, pressure=101325.0,
              time_limit_s=600.0, output_prefix=None, label_regions=None, label_invariants=True, phase_labels=None,
-             label_style=None, formats=None, right=None, corners=None, style=None):
+             label_style=None, formats=None, right=None, corners=None, style=None, check_mapping="auto"):
         from .orientation import binary_order, ternary_order
         t = tb._find_tdb(tdb)
         els = [_el(e) for e in elements]
@@ -1781,7 +1799,7 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
                               rename_disordered=rename_disordered, pressure=pressure, time_limit_s=time_limit_s,
                               label_regions=label_regions, label_invariants=label_invariants,
                               phase_labels=phase_labels, label_style=label_style, formats=formats, right=right,
-                              corners=corners, style=style or tb.diagram_style)
+                              corners=corners, style=style or tb.diagram_style, check_mapping=check_mapping)
         return r["text"] + "\nFiles:\n" + rel_files(r["files"]), [out]
 
     @tb.add("step_map",

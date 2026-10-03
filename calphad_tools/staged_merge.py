@@ -167,6 +167,7 @@ def _content_key(tdb: str, item: Item, settings: Dict) -> str:
     text = "\n".join(ln for ln in Path(tdb).read_text(errors="replace").splitlines() if not ln.lstrip().startswith("$"))
     h = hashlib.sha256(text.encode())
     h.update(json.dumps([list(item.elements), item.T_c, settings], sort_keys=True).encode())
+    h.update(b"mapping-check-1")        # diagrams made before the mapping check are not reused
     return h.hexdigest()
 
 
@@ -259,13 +260,16 @@ def run_plots(versions, need, items, fig_dir: Path, settings: Dict, n_workers=No
         if src is not None:
             results[(lab, tag)] = {**results.get((src, tag), {"ok": False, "error": "source missing"}),
                                    "reused_from": src}
+    from .diagrams import _check_note
     for k, r in results.items():
         r["invariants"] = []
         if r.get("ok") and r.get("png"):
             j = Path(r["png"]).with_suffix(".json")
             if j.exists():
                 try:
-                    r["invariants"] = json.loads(j.read_text()).get("invariants", [])
+                    data = json.loads(j.read_text())
+                    r["invariants"] = data.get("invariants", [])
+                    r["mapping_check"] = _check_note(data.get("mapping_check"))
                 except (ValueError, OSError):
                     pass
     return results
@@ -759,6 +763,10 @@ def summary_text(r: Dict[str, Any], rel=lambda p: p) -> str:
     failed = [f"{k[0]} {k[1]}: {clip(v.get('error', ''), 70)}" for k, v in r["plots"].items() if not v.get("ok")]
     if failed:
         L.append(f"diagrams failed: {'; '.join(failed[:4])}")
+    checked = [f"{k[0]} {k[1]}: {clip(v['mapping_check'], 160)}" for k, v in r["plots"].items()
+               if v.get("mapping_check") and not v.get("reused_from")]
+    if checked:
+        L.append("mapping check: " + " | ".join(checked[:3]) + (f" (+{len(checked) - 3})" if len(checked) > 3 else ""))
     a0 = [f"A0 {rel(r['A_eff'])}"] if r.get("A_eff") and r["A_eff"] != r["A"] else []
     L.append("TDBs: " + ", ".join(a0 + [f"{k} {rel(v.path)}" for k, v in r["versions"].items() if k != "A"]))
     L.append("Files: " + ", ".join(f"{k} {rel(v)}" for k, v in r["files"].items()))

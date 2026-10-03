@@ -377,7 +377,7 @@ class ToolBox:
         ORDER = {**STRS, "description": "orientation preference, e.g. [\"FE\", \"CR\", \"NI\"]: earlier elements "
                                         "go left / bottom-left in every subsystem (default alphabetical)"}
         ORIENT = {"type": "object"}
-        from calphad_tools.mapping_tools import STYLE_SCHEMA as STYLE
+        from calphad_tools.mapping_tools import CHECK_SCHEMA as CHECK, STYLE_SCHEMA as STYLE
 
         @self.add("plot_all_binaries", "Compute every binary phase diagram in a TDB (T range in °C, 1 atm), "
                   "in parallel, and write a PowerPoint (grid images, 6 per slide).",
@@ -386,18 +386,20 @@ class ToolBox:
                    "elements": {**STRS, "description": "optional subset of elements"},
                    "element_order": ORDER, "orientation": {**ORIENT, "description": "per-system override, e.g. "
                                                            "{\"CR-FE\": [\"FE\", \"CR\"]} ([left, right])"},
-                   "output_pptx": S, "individual_slides": B, "style": STYLE}, ["tdb"])
+                   "output_pptx": S, "individual_slides": B, "style": STYLE, "check_mapping": CHECK},
+                  ["tdb"])
         def plot_all_binaries(tdb: str, tmin_c: float = 100, tmax_c: float = 3000, elements=None,
                               output_pptx: Optional[str] = None, individual_slides: bool = False,
-                              element_order=None, orientation=None, style=None):
+                              element_order=None, orientation=None, style=None, check_mapping="auto"):
             t = self._find_tdb(tdb)
             out = self.outp(output_pptx, f"binaries_{Path(t).stem}.pptx")
             r = diagrams.all_binaries(t, out, tmin_c=tmin_c, tmax_c=tmax_c, elements=elements,
                                       individual_slides=individual_slides, progress=self.ui.progress,
                                       element_order=element_order, orientation=orientation,
-                                      style=style or self.diagram_style)
+                                      style=style or self.diagram_style, check_mapping=check_mapping)
             txt = f"PowerPoint: {self.rel(r['pptx'])}\n" + "\n".join(
-                f"  {s['name']}: {'ok' if s['ok'] else 'FAILED ' + s['error']} ({s['seconds']} s)" for s in r["systems"])
+                f"  {s['name']}: {'ok' if s['ok'] else 'FAILED ' + s['error']} ({s['seconds']} s)"
+                + (f"; mapping check: {s['note']}" if s.get("note") else "") for s in r["systems"])
             return txt, r["grid_images"][:2]
 
         @self.add("plot_all_ternaries", "Compute isothermal sections of every ternary subsystem of a TDB "
@@ -406,17 +408,19 @@ class ToolBox:
                    "element_order": ORDER, "orientation": {**ORIENT, "description": "per-system override, e.g. "
                                                            "{\"CR-FE-NI\": {\"left\": \"NI\", \"right\": \"FE\", "
                                                            "\"top\": \"CR\"}}"},
-                   "individual_slides": B, "style": STYLE}, ["tdb", "temperatures_c"])
+                   "individual_slides": B, "style": STYLE, "check_mapping": CHECK}, ["tdb", "temperatures_c"])
         def plot_all_ternaries(tdb: str, temperatures_c, elements=None, output_pptx: Optional[str] = None,
-                               individual_slides: bool = False, element_order=None, orientation=None, style=None):
+                               individual_slides: bool = False, element_order=None, orientation=None, style=None,
+                               check_mapping="auto"):
             t = self._find_tdb(tdb)
             out = self.outp(output_pptx, f"ternaries_{Path(t).stem}.pptx")
             r = diagrams.all_ternaries(t, temperatures_c, out, elements=elements,
                                        individual_slides=individual_slides, progress=self.ui.progress,
                                        element_order=element_order, orientation=orientation,
-                                       style=style or self.diagram_style)
+                                       style=style or self.diagram_style, check_mapping=check_mapping)
             txt = f"PowerPoint: {self.rel(r['pptx'])}\n" + "\n".join(
-                f"  {s['name']}: {'ok' if s['ok'] else 'FAILED ' + s['error']} ({s['seconds']} s)" for s in r["systems"])
+                f"  {s['name']}: {'ok' if s['ok'] else 'FAILED ' + s['error']} ({s['seconds']} s)"
+                + (f"; mapping check: {s['note']}" if s.get("note") else "") for s in r["systems"])
             return txt, r["grid_images"][:2]
 
         # (single binary/ternary/isopleth diagrams, step and G-x plots: see mapping_tools.py and props.py)

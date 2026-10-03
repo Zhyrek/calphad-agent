@@ -93,10 +93,13 @@ def plot_binary(tdb: str, elements: Sequence[str], out_png: str, tmin_c: float =
                 tmax_c: float = 3000.0, x_step: float = 0.02, t_step: float = 10.0,
                 phases: Optional[Sequence[str]] = None, exclude_phases=None,
                 pressure: float = 101325.0, tielines: int | bool = 4, dpi: int = 150,
-                title: Optional[str] = None, units: str = "C", keep_order: bool = False) -> Dict:
+                title: Optional[str] = None, units: str = "C", keep_order: bool = False,
+                check_mapping: str = "auto") -> Dict:
     """Binary T-x phase diagram.  Temperatures in °C unless units='K'.  x axis = second element: alphabetical, or
     the given order with keep_order ([left, right])."""
-    from pycalphad import binplot, variables as v
+    from pycalphad import variables as v
+    from pycalphad.mapping import BinaryStrategy, plot_binary as pc_plot_binary
+    from .mapping_check import grid_size, map_and_check
 
     db = load_db(tdb)
     a, b = [e.upper() for e in elements] if keep_order else sorted(e.upper() for e in elements)
@@ -104,11 +107,16 @@ def plot_binary(tdb: str, elements: Sequence[str], out_png: str, tmin_c: float =
     tlo, thi = (tmin_c + KELVIN, tmax_c + KELVIN) if units.upper() == "C" else (tmin_c, tmax_c)
     fig, ax = plt.subplots(figsize=(6.4, 4.8))
     t0 = time.time()
+    recipe = {"kind": "binary", "elements": [a, b], "phases": ph, "P": float(pressure), "T_range": [tlo, thi],
+              "x_range": [0.0, 1.0], "tmap": [1.0, 0.0], "T_unit": "C" if units.upper() == "C" else "K",
+              "comp": {"scale": 1.0, "weight": False}}
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        binplot(db, [a, b, "VA"], ph,
-                {v.X(b): (0, 1, x_step), v.T: (tlo, thi, t_step), v.P: pressure, v.N: 1},
-                plot_kwargs=dict(ax=ax, tielines=tielines, tieline_color=TIELINE_COLOR))
+        warnings.simplefilter("ignore")    # binplot, with the mapping check (mapping_check) between map and plot
+        strategy = BinaryStrategy(db, [a, b, "VA"], ph,
+                                  {v.X(b): (0, 1, x_step), v.T: (tlo, thi, t_step), v.P: pressure, v.N: 1})
+        check = map_and_check(strategy, db, recipe, check_mapping, grid_n=grid_size("binary", labels=False))
+        pc_plot_binary(strategy, ax=ax, tielines=tielines, tieline_color=TIELINE_COLOR)
+        ax.grid(False)
     ax.set_xlim(0, 1)
     ax.set_ylim(tlo, thi)
     if units.upper() == "C":
@@ -118,17 +126,20 @@ def plot_binary(tdb: str, elements: Sequence[str], out_png: str, tmin_c: float =
     ax.set_title(title or f"{_label_el(a)}–{_label_el(b)}{note}", fontsize=12)
     fig.savefig(out_png, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
-    return {"png": out_png, "phases": ph, "seconds": round(time.time() - t0, 1)}
+    return {"png": out_png, "phases": ph, "seconds": round(time.time() - t0, 1), "note": _check_note(check)}
 
 
 @pcache.cached
 def plot_ternary(tdb: str, elements: Sequence[str], temperature: float, out_png: str,
                  units: str = "C", step: float = 0.02, phases: Optional[Sequence[str]] = None,
                  exclude_phases=None, pressure: float = 101325.0, tielines: int | bool = 4,
-                 dpi: int = 150, title: Optional[str] = None, keep_order: bool = False) -> Dict:
+                 dpi: int = 150, title: Optional[str] = None, keep_order: bool = False,
+                 check_mapping: str = "auto") -> Dict:
     """Ternary isothermal section.  Corners bottom-left, bottom-right (x axis), top (y axis) = the elements in
     alphabetical order, or in the given order with keep_order."""
-    from pycalphad import ternplot, variables as v
+    from pycalphad import variables as v
+    from pycalphad.mapping import TernaryStrategy, plot_ternary as pc_plot_ternary
+    from .mapping_check import grid_size, map_and_check
     from .orientation import corner_labels
 
     db = load_db(tdb)
@@ -138,18 +149,23 @@ def plot_ternary(tdb: str, elements: Sequence[str], temperature: float, out_png:
     fig = plt.figure(figsize=(6.4, 5.6))
     ax = fig.add_subplot(projection="triangular")
     t0 = time.time()
+    recipe = {"kind": "ternary", "elements": [a, b, c], "phases": ph, "P": float(pressure), "T_K": float(T),
+              "T_unit": "C" if units.upper() == "C" else "K", "comp": {"scale": 1.0, "weight": False}}
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        ternplot(db, [a, b, c, "VA"], ph,
-                 {v.X(b): (0, 1, step), v.X(c): (0, 1, step), v.T: T, v.P: pressure, v.N: 1},
-                 x=v.X(b), y=v.X(c), ax=ax, tielines=tielines, tieline_color=TIELINE_COLOR)
+        warnings.simplefilter("ignore")    # ternplot, with the mapping check (mapping_check) between map and plot
+        strategy = TernaryStrategy(db, [a, b, c, "VA"], ph,
+                                   {v.X(b): (0, 1, step), v.X(c): (0, 1, step), v.T: T, v.P: pressure, v.N: 1})
+        check = map_and_check(strategy, db, recipe, check_mapping, grid_n=grid_size("ternary", labels=False))
+        pc_plot_ternary(strategy, x=v.X(b), y=v.X(c), ax=ax, tielines=tielines, tieline_color=TIELINE_COLOR)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
     corner_labels(ax, [a, b, c])
     tc = T - KELVIN
     ax.set_title(title or f"{_label_el(a)}–{_label_el(b)}–{_label_el(c)}   {tc:.0f} °C ({T:.0f} K)",
                  fontsize=12)
     fig.savefig(out_png, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
-    return {"png": out_png, "phases": ph, "seconds": round(time.time() - t0, 1)}
+    return {"png": out_png, "phases": ph, "seconds": round(time.time() - t0, 1), "note": _check_note(check)}
 
 
 # ---------------------------------------------------------------------------
@@ -162,13 +178,22 @@ class TaskResult:
     png: Optional[str] = None
     error: str = ""
     seconds: float = 0.0
+    note: str = ""              # e.g. the mapping check's finding (mapping_check)
 
 
 def map_diagram(**kwargs) -> Dict:
     """mapping_tools.map_phase_diagram in a worker (PNG + boundary CSV/JSON next to it)."""
     from .mapping_tools import map_phase_diagram
     r = map_phase_diagram(**kwargs)
-    return {"png": kwargs["out_png"], "files": r.get("files", {})}
+    return {"png": kwargs["out_png"], "files": r.get("files", {}), "note": _check_note(r.get("mapping_check"))}
+
+
+def _check_note(check: Optional[Dict]) -> str:
+    """The mapping check's line for an overview, empty when it found nothing (or did not run)."""
+    if not check or not check.get("text") or check.get("mode") == "off":
+        return ""
+    t = check["text"]
+    return "" if "no problems found" in t else t.replace("mapping check: ", "")
 
 
 _WORKERS: Dict[str, Callable] = {"binary": plot_binary, "ternary": plot_ternary, "map": map_diagram}
@@ -291,7 +316,7 @@ def run_tasks(tasks: List[Dict], n_workers: Optional[int] = None, timeout: float
                     r = {"ok": False, "error": f"worker exited with code {w['proc'].exitcode}"}
                 if r is not None:
                     results[t["name"]] = TaskResult(t["name"], r.get("ok", False), r.get("png"),
-                                                    r.get("error", ""), round(elapsed, 1))
+                                                    r.get("error", ""), round(elapsed, 1), r.get("note", "") or "")
                     w["task"] = None
                     say(f"{'finished' if r.get('ok') else 'FAILED'} {t['name']} ({elapsed:.0f}s)"
                         + ("" if r.get("ok") else f": {r.get('error')}"))
@@ -361,12 +386,13 @@ def _chunks(seq, n):
 # Top-level feature functions
 # ---------------------------------------------------------------------------
 def _shaded_binary_task(tdb, a, b, out_png, tmin_c, tmax_c, x_step, t_step, exclude_phases, title, formats,
-                        timeout) -> Dict:
+                        timeout, check_mapping="auto") -> Dict:
     """map_phase_diagram (worker "map") arguments of one shaded overview binary (°C axis, phase-region labels; see
     diagram_style)."""
     return dict(tdb=str(tdb), elements=[a, b], right=b, out_png=out_png, tmin=tmin_c, tmax=tmax_c,
                 temperature_unit="C", composition_step=x_step, temperature_step=t_step, exclude_phases=exclude_phases,
-                tielines=0, style="shaded", title=title, formats=formats, time_limit_s=0.9 * timeout)
+                tielines=0, style="shaded", title=title, formats=formats, time_limit_s=0.9 * timeout,
+                check_mapping=check_mapping)
 
 
 def all_binaries(tdb: str, output_pptx: str = "binaries.pptx", tmin_c: float = 100.0,
@@ -374,7 +400,8 @@ def all_binaries(tdb: str, output_pptx: str = "binaries.pptx", tmin_c: float = 1
                  timeout: float = 900.0, per_slide: int = 6, x_step: float = 0.02, t_step: float = 10.0,
                  individual_slides: bool = False, exclude_phases=None, elements=None,
                  progress: Optional[Callable[[str], None]] = None, element_order=None, orientation=None,
-                 style: str = "shaded", formats: Optional[Sequence[str]] = None) -> Dict:
+                 style: str = "shaded", formats: Optional[Sequence[str]] = None,
+                 check_mapping: str = "auto") -> Dict:
     """element_order: earlier elements on the left of every binary; orientation: per-system overrides
     {"CR-FE": ["FE", "CR"] | "CR" (right element)} (see orientation.subsystem_order); default alphabetical.
     style: "shaded" (map_phase_diagram in the shaded style with phase-region labels, its CSV/JSON data and SVG+PDF
@@ -396,12 +423,13 @@ def all_binaries(tdb: str, output_pptx: str = "binaries.pptx", tmin_c: float = 1
                                                 x_step, t_step, exclude_phases,
                                                 f"{_label_el(a)}–{_label_el(b)}" + ("" if has_interaction(db, [a, b])
                                                                                     else "  (no binary parameters in TDB)"),
-                                                formats, timeout)} for a, b in pairs]
+                                                formats, timeout, check_mapping)} for a, b in pairs]
     else:
         tasks = [{"name": f"{a}-{b}", "kind": "binary",
                   "kwargs": dict(tdb=str(tdb), elements=[a, b], out_png=str(out_dir / f"{stem}_{a}-{b}.png"),
                                  tmin_c=tmin_c, tmax_c=tmax_c, x_step=x_step, t_step=t_step,
-                                 exclude_phases=exclude_phases, keep_order=True)} for a, b in pairs]
+                                 exclude_phases=exclude_phases, keep_order=True, check_mapping=check_mapping)}
+                 for a, b in pairs]
     results = run_tasks(tasks, n_workers=n_workers, timeout=timeout, progress=progress)
     prs = pu.new_presentation()
     pu.add_title_slide(prs, f"Binary phase diagrams: {Path(tdb).name}",
@@ -427,7 +455,8 @@ def all_ternaries(tdb: str, temperatures_c: Sequence[float], output_pptx: str = 
                   per_slide: int = 6, step: float = 0.02, individual_slides: bool = False,
                   exclude_phases=None, elements=None, units: str = "C",
                   progress: Optional[Callable[[str], None]] = None, element_order=None, orientation=None,
-                  style: str = "shaded", formats: Optional[Sequence[str]] = None) -> Dict:
+                  style: str = "shaded", formats: Optional[Sequence[str]] = None,
+                  check_mapping: str = "auto") -> Dict:
     """element_order: earlier elements go bottom-left, then bottom-right, then top; orientation: per-system
     overrides {"CR-FE-NI": {"left": .., "right": .., "top": ..} | [bottom-left, bottom-right, top]}.
     style: "shaded" (map_phase_diagram: grey boundaries and tie-triangles, no tie-lines, phase-region labels
@@ -457,14 +486,14 @@ def all_ternaries(tdb: str, temperatures_c: Sequence[float], output_pptx: str = 
                 kw = dict(tdb=str(tdb), elements=list(tri), corners=dict(zip(("left", "right", "top"), tri)),
                           temperature=T, temperature_unit="C" if units.upper() == "C" else "K", out_png=png,
                           composition_step=step, exclude_phases=exclude_phases, tielines=0, style="shaded",
-                          formats=formats, time_limit_s=0.9 * timeout,
+                          formats=formats, time_limit_s=0.9 * timeout, check_mapping=check_mapping,
                           title="–".join(_label_el(e) for e in tri) + f"   {T_K - KELVIN:.0f} °C ({T_K:.0f} K)")
                 tasks.append({"name": name, "kind": "map", "T": T, "kwargs": kw})
             else:
                 tasks.append({"name": name, "kind": "ternary", "T": T,
                               "kwargs": dict(tdb=str(tdb), elements=list(tri), temperature=T, units=units,
                                              out_png=png, step=step, exclude_phases=exclude_phases,
-                                             keep_order=True)})
+                                             keep_order=True, check_mapping=check_mapping)})
     results = run_tasks(tasks, n_workers=n_workers, timeout=timeout, progress=progress)
     prs = pu.new_presentation()
     pu.add_title_slide(prs, f"Ternary isothermal sections: {Path(tdb).name}",

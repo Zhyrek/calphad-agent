@@ -1399,8 +1399,9 @@ def zpf_overlay_figure(dbf, elements: Sequence[str], rows: List[Dict], title: st
     import matplotlib.pyplot as plt
     from matplotlib.colors import Normalize
     from matplotlib.lines import Line2D
-    from pycalphad import binplot, variables as v
+    from pycalphad import variables as v
     from .diagrams import TIELINE_COLOR, phases_for
+    from .mapping_check import checked_binplot
     a, b = sorted(e.upper() for e in elements)
     pts = [r for r in rows if r.get("composition") is not None and len(r["composition"]) == 2
            and np.all(np.isfinite(r["composition"]))]
@@ -1411,8 +1412,9 @@ def zpf_overlay_figure(dbf, elements: Sequence[str], rows: List[Dict], title: st
     ph = phases_for(dbf, [a, b])
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        binplot(dbf, [a, b, "VA"], ph, {v.P: DEFAULT_P, v.T: (lo, hi, t_step), v.X(b): (0, 1, x_step), v.N: 1},
-                plot_kwargs=dict(ax=ax, tielines=False, tieline_color=TIELINE_COLOR))
+        checked_binplot(dbf, [a, b, "VA"], ph, {v.P: DEFAULT_P, v.T: (lo, hi, t_step), v.X(b): (0, 1, x_step),
+                                               v.N: 1},
+                        plot_kwargs=dict(ax=ax, tielines=False, tieline_color=TIELINE_COLOR))   # + mapping check
     leg = ax.get_legend()
     handles = list(leg.legend_handles) if leg is not None and hasattr(leg, "legend_handles") else []
     df = np.array([abs(r["residual"]) if np.isfinite(r["residual"]) else np.nan for r in pts])

@@ -762,7 +762,11 @@ def _map_binary_sample(db, els, phases, tlo, thi, dT, dx, time_limit) -> Dict:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         strategy = BinaryStrategy(db, comps, phases, conds)
-    run = mt._run_strategy(strategy, time_limit)
+    from . import mapping_check as mc       # map + check / repair (coarse grid: no labels here)
+    recipe = {"kind": "binary", "elements": list(els), "phases": list(phases), "P": 101325.0, "T_range": [tlo, thi],
+              "x_range": [0.0, 1.0], "tmap": [1.0, 0.0], "comp": {"scale": 1.0, "weight": False}}
+    check = mc.map_and_check(strategy, db, recipe, "auto", time_limit, mc.grid_size("binary", labels=False))
+    run = check.pop("run")
     lab = mt._Labeler(db, strategy.models, True)
     s_els = [e for e in strategy.elements if e != "VA"]
     with tempfile.TemporaryDirectory() as td:
@@ -786,7 +790,7 @@ def _map_binary_sample(db, els, phases, tlo, thi, dT, dx, time_limit) -> Dict:
              "reaction": i.get("reaction_on_cooling", ""),
              "X": {n: i["compositions"][n][b] for n in i["phases"]}} for i in res["invariants"]]
     return {"finished": run["finished"], "seconds": run["seconds"], "segments": segs, "invariants": invs,
-            "phases_found": sorted(res["phases_found"])}
+            "phases_found": sorted(res["phases_found"]), "mapping_check": check.get("text", "")}
 
 
 def _stats(a: Sequence[float]) -> Dict:
@@ -960,6 +964,9 @@ def propagate_binary(tdb: str, trace: str, lnprob: str, elements: Sequence[str],
                "burn_in": burn, "burn_in_info": binfo, "n_samples_requested": n_req, "n_samples_drawn": len(draws),
                "n_samples_computed": len(results), "n_samples_ok": len(ok),
                "n_samples_unfinished": sum(1 for r in ok if not r["finished"]),
+               "mapping_check": {"reference": ref.get("mapping_check", ""),
+                                 "samples_changed": sum(1 for r in ok if "no problems" not in r.get("mapping_check",
+                                                                                                    "no problems"))},
                "failed": [{"sample": r["index"], "error": r["error"]} for r in results if not r["ok"]][:10],
                "stopped": stopped, "resolution": {"composition_step": composition_step,
                                                   "temperature_step_K": temperature_step},
@@ -1225,6 +1232,10 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
                 L.append("STOPPED: " + r["stopped"])
             if r["n_samples_unfinished"]:
                 L.append(f"{r['n_samples_unfinished']} sample map(s) hit the per-sample time limit (partial)")
+            mc_ = r.get("mapping_check") or {}
+            if mc_.get("samples_changed") or "no problems" not in (mc_.get("reference") or "no problems"):
+                L.append(f"{mc_.get('reference', '')} (median parameters); mapping check changed the lines of "
+                         f"{mc_.get('samples_changed', 0)} sample map(s)")
             for f in r["failed"]:
                 L.append(f"sample {f['sample']} failed: {f['error']}")
             L.append("invariants (T in K; median [95% interval], found in n samples):")

@@ -115,8 +115,8 @@ def test_cached_results_identical(work, name, args):
     assert files or name == "calculate_equilibrium"
     for k in files:
         a, b = files[k], ref_files[k]
-        if k.endswith(".json"):                                # drop the run time ("seconds") only
-            a, b = (re.sub(rb'"seconds": [0-9.]+', b"", x) for x in (a, b))
+        if k.endswith(".json"):                                # drop the run times ("seconds") only
+            a, b = (re.sub(rb'"seconds": (?:[0-9.]+|\{[^{}]*\})', b"", x) for x in (a, b))
         assert a == b, k                                       # byte-identical numbers
 
 

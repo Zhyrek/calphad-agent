@@ -1867,7 +1867,8 @@ def diagram_with_data_pair(tdb0: str, tdb1: str, elements: Sequence[str], datase
                            tmin: Optional[float] = None, tmax: Optional[float] = None) -> str:
     """Before | after binary diagrams with the ZPF data (as the plot_diagram_with_data tool draws them)."""
     from espei.plot import dataplot
-    from pycalphad import binplot, variables as v
+    from pycalphad import variables as v
+    from .mapping_check import checked_binplot
     from .calc import get_db
     from .diagrams import TIELINE_COLOR, phases_for
     from .espei_plot_tools import _consistent_legend, _load_datasets
@@ -1887,8 +1888,8 @@ def diagram_with_data_pair(tdb0: str, tdb1: str, elements: Sequence[str], datase
             ph = phases_for(db, [a, b])
             data_phases = {p for d in datasets.all() for p in d.get("phases", [])}
             legend = _consistent_legend(sorted(set(ph) | data_phases))
-            binplot(db, comps, ph, conds, plot_kwargs=dict(ax=ax, tielines=4, tieline_color=TIELINE_COLOR,
-                                                           legend_generator=legend))
+            checked_binplot(db, comps, ph, conds, plot_kwargs=dict(ax=ax, tielines=4, tieline_color=TIELINE_COLOR,
+                                                                   legend_generator=legend))   # + mapping check
             dataplot(comps, ph, conds, datasets, ax=ax, legend_generator=legend)
             ax.set_xlim(0, 1)
             ax.set_ylim(lo, hi)

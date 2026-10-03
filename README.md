@@ -304,6 +304,19 @@ diagram_style = "color"     # shaded (default) | color
 On the command line: `calphad-tools binaries my.tdb --style color`. `show_code` reproduces the style the tool used.
 The drawing code is in `calphad_tools/diagram_style.py`; standalone scripts contain a copy of it.
 
+### Mapping check
+
+pycalphad's mapping can drop a boundary (Fe–Ni: the α/γ line below 1184 K) or trace a line past its end node
+(Al–Cr–Ni 1200 °C: a B2+FCC line past the B2 + γ + γ′ triangle), so every binary T–x diagram and ternary isotherm
+(`map_phase_diagram`, the `plot_all_*` overviews, `plot_diagram_with_data`, `staged_merge`) is checked against point
+equilibria after mapping: metastable tie-lines are trimmed, duplicate traces and invariants dropped, invariants
+that are not equilibria are removed (Ce–Co: BCC + Ce₅Co₁₉ + L at pure Ce's melting point), invariants that
+pycalphad rejects as metastable are added when point equilibria confirm them (Fe–Ni: BCC + FCC + FCC#2 at 683 K), and
+two-phase areas of an equilibrium grid that no traced line bounds are traced again; the result says what was changed or could not be
+repaired in one `mapping check:` line, with details in the JSON. `check_mapping: "off"` gives pycalphad's raw lines
+and `"thorough"` validates more points; the code is `calphad_tools/mapping_check.py`, which `show_code` copies, and
+isopleths and T–μ diagrams are not checked.
+
 ### Phase labels on diagrams
 
 `map_phase_diagram` (binary T–x and ternary isotherms) and `plot_diagram_with_data` take `label_regions: true` (the default in the shaded style).

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .codegen import Ctx, generator
+from .mapping_check import check_mode
 
 KELVIN = 273.15
 
@@ -459,6 +460,21 @@ def _gen_map_phase_diagram(args, ctx: Ctx) -> str:
     dis = _disordered_names(db, ph, a["rename_disordered"])
     all_names = list(ph) + [d for d, _ in dis.values()]
     colors = _colors(all_names, a.get("phase_colors"))
+    from .mapping_check import check_mode, grid_size
+    check = check_mode(a.get("check_mapping"))
+    label_regions = a.get("label_regions")
+    if label_regions is None:       # the tool's default: labels on in the shaded style (no legend)
+        label_regions = shaded and kind in ("binary", "ternary")
+    if kind == "isopleth" or check == "off":
+        run_code = "strategy.do_map()\n"
+        checked = False
+    else:
+        unit_ = a["temperature_unit"]
+        crec = mt._recipe("", kind, els, ph, P, _conds_values(kind, a, unit_, xr, step),
+                          mt._Units(unit_, cu, masses), unit_, True, xr, step, float(a["temperature_step"]))
+        run_code = check_code(ctx, crec, check, float(a.get("time_limit_s") or 600.0),
+                              grid_size(kind, bool(label_regions), check)).lstrip("\n")
+        checked = True
 
     head = _load_db_code(ctx, a["tdb"]) + _T('''
         elements = <<els>>   # first = balance element<<axes_note>>
@@ -470,9 +486,8 @@ def _gen_map_phase_diagram(args, ctx: Ctx) -> str:
         # map the <<what>> with pycalphad's mapping strategy (note: which lines get traced - and how often - can
         # vary slightly with Python's hash seed; the phase boundaries and invariants are the same)
         strategy = <<strat>>(db, comps, phases, conds)
-        strategy.do_map()
-
-        ''', els=Ctx.py(els), comps=Ctx.py(comps), ph=Ctx.py(ph), conds=", ".join(conds), strat=strat,
+        <<run>>
+        ''', run=run_code, els=Ctx.py(els), comps=Ctx.py(comps), ph=Ctx.py(ph), conds=", ".join(conds), strat=strat,
                                                   axes_note={"binary": f"; {orientation_text(kind, els)[13:]}",
                                                              "ternary": f"; {orientation_text(kind, els)[13:]}",
                                                              "isopleth": ""}[kind],
@@ -481,6 +496,7 @@ def _gen_map_phase_diagram(args, ctx: Ctx) -> str:
                                                   what={"binary": "binary phase diagram",
                                                         "ternary": "isothermal section",
                                                         "isopleth": "isopleth"}[kind])
+    head = head.replace("KELVIN = 273.15\n", "KELVIN = 273.15\n" + (mapping_check_helpers(ctx) if checked else ""), 1)
     head += _names_code(dis) + "\n\n" + (shaded_helpers(ctx) if shaded else "")
     units = _unit_code(tC, cu, masses) + "\n\n"
     if kind == "isopleth":
@@ -558,16 +574,14 @@ def _gen_map_phase_diagram(args, ctx: Ctx) -> str:
         title = system
     title = a.get("title") or title
     labels = ""
-    label_regions = a.get("label_regions")
-    if label_regions is None:       # the tool's default: labels on in the shaded style (no legend)
-        label_regions = shaded and kind in ("binary", "ternary")
     if label_regions:
         rec = mt._recipe(ctx.tb._find_tdb(a["tdb"]), kind, els, ph, P, _conds_values(kind, a, unit, xr, step),
                          mt._Units(unit, cu, masses), unit, a["rename_disordered"], xr, step,
                          float(a["temperature_step"]))
         labels = label_helpers(ctx) + label_code(
             ctx, rec, db, "strategy.models", mapped=True, invariants=a.get("label_invariants", True),
-            phase_labels=a.get("phase_labels"), style=_label_style(a.get("label_style"), shaded))
+            phase_labels=a.get("phase_labels"), style=_label_style(a.get("label_style"), shaded),
+            check_expr="mapping_check" if checked else None)
         if not shaded:
             labels += f"prettify_legend(ax, {list(els)!r}, {a.get('phase_labels')!r})\n"
     fmts = a.get("formats")
@@ -644,25 +658,56 @@ def _vector_saves(ctx: Ctx, png: str, fmts) -> str:
 # ---------------------------------------------------------------------------------------------------------
 # phase-region labels (shared with the edit_figure generator)
 # ---------------------------------------------------------------------------------------------------------
+def mapping_check_helpers(ctx: Ctx) -> str:
+    """Sources of phase_regions and mapping_check (the check / repair of mapped ZPF lines), once per script."""
+    from . import mapping_check, phase_regions
+    from .codegen_compare import module_source
+    out = ""
+    if not ctx.__dict__.get("_phase_regions"):
+        ctx._phase_regions = True
+        out += module_source(ctx, phase_regions, "phase regions: two-phase polygons from ZPF lines, equilibrium "
+                                                 "grid, stable phase set at a point")
+    if not ctx.__dict__.get("_mapping_check"):
+        ctx._mapping_check = True
+        out += module_source(ctx, mapping_check, "mapping check: traced ZPF lines checked against equilibrium "
+                                                 "(metastable tie-lines trimmed, duplicate traces dropped, missing "
+                                                 "boundaries traced again)")
+    return out
+
+
 def label_helpers(ctx: Ctx) -> str:
-    """Source of the label helpers (names, regions, placement), once per script."""
+    """Source of the label helpers (names, regions, mapping check, placement), once per script."""
     if ctx.__dict__.get("_label_helpers"):
         return ""
     ctx._label_helpers = True
-    from . import label_place, phase_names, phase_regions
+    from . import label_place, phase_names
     from .codegen_compare import module_source
     names = "" if ctx.__dict__.get("_phase_names") else module_source(
         ctx, phase_names, "phase names -> labels (BCC_A2 -> BCC, SIGMA -> σ, FE3CR4 -> Fe₃Cr₄)")
-    return (names
-            + module_source(ctx, phase_regions, "phase regions: two-phase polygons from ZPF lines, equilibrium "
-                                                "grid, stable phase set at a point")
+    return (names + mapping_check_helpers(ctx)
             + module_source(ctx, label_place, "label placement: region raster, obstacles, text fitting, names of "
                                               "stoichiometric phases outside the axes"))
 
 
+def check_code(ctx: Ctx, recipe: Dict, mode: str, time_limit: float, grid_n, strategy: str = "strategy",
+               out: str = "mapping_check") -> str:
+    """Code that maps with ``strategy`` and checks / repairs its lines as the tools do (mapping_check)."""
+    rec = {k: val for k, val in recipe.items() if k != "tdb"}
+    return _T('''
+        # map, then check the traced lines against equilibrium as the tool does (mapping_check): equilibrium at points
+        # of every line (metastable tie-lines trimmed), duplicate traces dropped, two-phase areas of an equilibrium
+        # grid that no line bounds traced again
+        check_recipe = <<recipe>>
+        <<out>> = map_and_check(<<strategy>>, db, check_recipe, <<mode>>, <<tl>>, <<n>>)
+        print(<<out>>["text"])
+        ''', recipe=Ctx.py(rec, 15), out=out, strategy=strategy, mode=repr(mode), tl=_num(float(time_limit)),
+              n=Ctx.py(tuple(grid_n)))
+
+
 def label_code(ctx: Ctx, recipe: Dict, db, models_expr: Optional[str], *, mapped: bool, invariants=True,
-               phase_labels=None, style=None, db_expr: str = "db") -> str:
-    """Code that labels the phase regions of ``ax`` (a binary T-x diagram or ternary isotherm)."""
+               phase_labels=None, style=None, db_expr: str = "db", check_expr: Optional[str] = None) -> str:
+    """Code that labels the phase regions of ``ax`` (a binary T-x diagram or ternary isotherm); check_expr: the
+    mapping check report whose equilibrium grid is reused when it covers the axes."""
     from .region_labels import GRID_N, _db_elements, liquids_of
     rec = {k: val for k, val in recipe.items() if k != "tdb"}
     kind = rec["kind"]
@@ -692,7 +737,7 @@ def label_code(ctx: Ctx, recipe: Dict, db, models_expr: Optional[str], *, mapped
         # outside the axes (covered tick labels hidden); every position is checked by an equilibrium
         recipe = <<recipe>>
         label_info = <<info>>
-        <<src>>grid = equilibrium_grid(<<db>>, recipe, label_info, ax.get_xlim(), ax.get_ylim(), <<n>>)
+        <<src>>grid = <<reuse>>equilibrium_grid(<<db>>, recipe, label_info, ax.get_xlim(), ax.get_ylim(), <<n>>)
         report = label_diagram(ax, regions, grid, lambda x, y: key_at(<<db>>, recipe, label_info, x, y),
                                <<args>>)
         for lab in report["labels"]:
@@ -700,7 +745,9 @@ def label_code(ctx: Ctx, recipe: Dict, db, models_expr: Optional[str], *, mapped
         for skip in report["skipped"]:
             print("not labelled:", skip["label"], "-", skip["reason"])
         ''', recipe=Ctx.py(rec, 9), info=info, src=src, db=db_expr,
-              n=Ctx.py(tuple(GRID_N[kind])), args=args)
+              n=Ctx.py(tuple(GRID_N[kind])), args=args,
+              reuse=(f"reuse_grid({check_expr}, ax.get_xlim(), ax.get_ylim(), {Ctx.py(tuple(GRID_N[kind]))}, "
+                     f"{bool(rec.get('rename_disordered', True))}) or ") if check_expr else "")
 
 
 _ISO_BODY = '''
@@ -2407,9 +2454,10 @@ _OVERVIEW_SHADED_HELPERS = '''
 
     def label_regions(done, grid_n):
         \"\"\"Phase-region labels (instead of a legend) on every diagram of a grid image, after the layout is fixed.\"\"\"
-        for ax_i, kind, recipe, info, zpf, nodes, liquids in done:
+        for ax_i, kind, recipe, info, zpf, nodes, liquids, check in done:
             regions = regions_from_lines(zpf, nodes, recipe, db)
-            grid = equilibrium_grid(db, recipe, info, ax_i.get_xlim(), ax_i.get_ylim(), grid_n)
+            grid = (reuse_grid(check, ax_i.get_xlim(), ax_i.get_ylim(), grid_n)   # the mapping check's grid
+                    or equilibrium_grid(db, recipe, info, ax_i.get_xlim(), ax_i.get_ylim(), grid_n))
             label_diagram(ax_i, regions, grid, lambda x, y, r=recipe, i=info: key_at(db, r, i, x, y), kind=kind,
                           elements=ELEMENTS, liquids=liquids, T_unit="C", style={"invariant_color": "black"})
     '''
@@ -2433,7 +2481,9 @@ _BINARIES_SHADED = '''
                       "comp": {"scale": 1.0, "weight": False, "masses": {}}}
             try:
                 info = ordered_info(db, sorted([a, b]) + ["VA"], phases)
-                zpf, nodes = map_lines(db, recipe, info, 0.02, 10.0)
+                check = {}      # map + mapping check / repair (as the tool); its report goes into check
+                zpf, nodes = map_lines(db, recipe, info, 0.02, 10.0, report=check)
+                print(f"{a}-{b}:", check.get("text", ""))
             except Exception as e:
                 ax_i.text(0.5, 0.5, f"{a}-{b}\\n\\ncalculation failed:\\n{e}", ha="center", va="center",
                           transform=ax_i.transAxes, color="#9b1c1c")
@@ -2446,7 +2496,7 @@ _BINARIES_SHADED = '''
             ax_i.set_ylabel("Temperature (°C)")
             ax_i.set_title(titles[f"{a}-{b}"], fontsize=11)
             ticks_in(ax_i)
-            done.append((ax_i, "binary", recipe, info, zpf, nodes, LIQUIDS[f"{a}-{b}"]))
+            done.append((ax_i, "binary", recipe, info, zpf, nodes, LIQUIDS[f"{a}-{b}"], check))
         fig.tight_layout()
         label_regions(done, (80, 60))
         fig.savefig(OUT / name, dpi=150, bbox_inches="tight")
@@ -2473,10 +2523,12 @@ _TERNARIES_SHADED = '''
                       "T_K": T, "comp": {"scale": 1.0, "weight": False, "masses": {}}}
             try:
                 info = ordered_info(db, sorted([a, b, c]) + ["VA"], phases)
-                zpf, nodes = map_lines(db, recipe, info, 0.02, 10.0)
+                check = {}      # map + mapping check / repair (as the tool); its report goes into check
+                zpf, nodes = map_lines(db, recipe, info, 0.02, 10.0, report=check)
+                print(f"{a}-{b}-{c} {T_c:g} °C:", check.get("text", ""))
                 # shaded style: grey boundaries and tie-triangle edges, aliceblue two-phase fields, no legend
                 draw_shaded(ax_k, *boundaries_of(recipe, zpf, nodes), kind="ternary")
-                done.append((ax_k, "ternary", recipe, info, zpf, nodes, LIQUIDS["-".join((a, b, c))]))
+                done.append((ax_k, "ternary", recipe, info, zpf, nodes, LIQUIDS["-".join((a, b, c))], check))
             except Exception as e:
                 ax_k.text(0.5, 0.5, f"calculation failed:\\n{e}", ha="center", transform=ax_k.transAxes)
             ax_k.set_xlim(0, 1)
@@ -2543,7 +2595,8 @@ def _gen_plot_all_binaries(args, ctx: Ctx) -> str:
     ctx.need("import numpy as np", "import matplotlib.pyplot as plt", "from pycalphad import Database",
              "from pycalphad import variables as v", "from pycalphad.core.utils import filter_phases, unpack_species")
     if not shaded:
-        ctx.need("from pycalphad import binplot", "from matplotlib.collections import LineCollection")
+        ctx.need("from pycalphad.mapping import BinaryStrategy, plot_binary",
+                 "from matplotlib.collections import LineCollection")
     code = _load_db_code(ctx, a["tdb"]) + _T('''
         KELVIN = 273.15
         pairs = <<pairs>>   # every binary subsystem as (left, right): x axis = mole fraction of the right one
@@ -2555,7 +2608,7 @@ def _gen_plot_all_binaries(args, ctx: Ctx) -> str:
                                                            tmax=f"{a['tmax_c']:g}", tlo=_num(tlo), thi=_num(thi),
                                                            first=first)
         return code + _T(_PPTX_NOTE, pptx=repr(Path(pptx).name))
-    code += _T(_TO_CELSIUS) + _T('''
+    code += mapping_check_helpers(ctx) + _T(_TO_CELSIUS) + _T('''
 
 
         figures = []
@@ -2569,9 +2622,16 @@ def _gen_plot_all_binaries(args, ctx: Ctx) -> str:
             for ax_i, (a, b) in zip(axs.flat, chunk):
                 phases = sorted(filter_phases(db, unpack_species(db, [a, b, "VA"])))
                 try:   # binary phase diagram <<tmin>>-<<tmax>> °C, x step 0.02, T step 10 K (pycalphad mapping)
-                    binplot(db, [a, b, "VA"], phases, {v.X(b): (0, 1, 0.02), v.T: (<<tlo>>, <<thi>>, 10.0),
-                                                      v.P: 101325.0, v.N: 1},
-                            plot_kwargs=dict(ax=ax_i, tielines=4, tieline_color=(0.55, 0.55, 0.55, 0.35)))
+                    strategy = BinaryStrategy(db, [a, b, "VA"], phases, {v.X(b): (0, 1, 0.02),
+                                                                         v.T: (<<tlo>>, <<thi>>, 10.0),
+                                                                         v.P: 101325.0, v.N: 1})
+                    recipe = {"kind": "binary", "elements": [a, b], "phases": phases, "P": 101325.0,
+                              "T_range": [<<tlo>>, <<thi>>], "x_range": [0.0, 1.0], "tmap": [1.0, 0.0], "T_unit": "C",
+                              "comp": {"scale": 1.0, "weight": False}}
+                    # mapping check / repair as the tool (mapping_check), then pycalphad's plot (= binplot)
+                    print(f"{a}-{b}:", map_and_check(strategy, db, recipe, <<mode>>, 600.0, (40, 30))["text"])
+                    plot_binary(strategy, ax=ax_i, tielines=4, tieline_color=(0.55, 0.55, 0.55, 0.35))
+                    ax_i.grid(False)
                 except Exception as e:
                     ax_i.text(0.5, 0.5, f"{a}-{b}\\n\\ncalculation failed:\\n{e}", ha="center", va="center",
                               transform=ax_i.transAxes, color="#9b1c1c")
@@ -2586,7 +2646,8 @@ def _gen_plot_all_binaries(args, ctx: Ctx) -> str:
             figures.append(fig)
         fig = figures[<<first>>]
         ax = fig.axes[0]
-        ''', tmin=f"{a['tmin_c']:g}", tmax=f"{a['tmax_c']:g}", tlo=_num(tlo), thi=_num(thi), first=first)
+        ''', tmin=f"{a['tmin_c']:g}", tmax=f"{a['tmax_c']:g}", tlo=_num(tlo), thi=_num(thi), first=first,
+                 mode=repr(check_mode(a.get("check_mapping"))))
     return code + _T(_PPTX_NOTE, pptx=repr(Path(pptx).name))
 
 
@@ -2618,7 +2679,7 @@ def _gen_plot_all_ternaries(args, ctx: Ctx) -> str:
              "from pycalphad import variables as v", "from pycalphad.core.utils import filter_phases, unpack_species",
              "from pycalphad.plot import triangular  # registers the 'triangular' projection")
     if not shaded:
-        ctx.need("from pycalphad import ternplot")
+        ctx.need("from pycalphad.mapping import TernaryStrategy, plot_ternary")
     code = _load_db_code(ctx, args["tdb"]) + _T('''
         KELVIN = 273.15
         triples = <<triples>>   # every ternary subsystem: (bottom-left, bottom-right = x axis, top = y axis)
@@ -2627,7 +2688,7 @@ def _gen_plot_all_ternaries(args, ctx: Ctx) -> str:
     if shaded:
         code += "\n" + _overview_shaded_head(ctx, db, triples) + _T(_TERNARIES_SHADED, first=first)
         return code + _T(_PPTX_NOTE, pptx=repr(Path(pptx).name))
-    code += _T('''
+    code += mapping_check_helpers(ctx) + _T('''
 
         figures = []
         for T_c, g, name in grids:
@@ -2640,9 +2701,16 @@ def _gen_plot_all_ternaries(args, ctx: Ctx) -> str:
                 phases = sorted(filter_phases(db, unpack_species(db, [a, b, c, "VA"])))
                 T = T_c + KELVIN
                 try:   # isothermal section, composition step 0.02 (pycalphad mapping)
-                    ternplot(db, [a, b, c, "VA"], phases, {v.X(b): (0, 1, 0.02), v.X(c): (0, 1, 0.02), v.T: T,
-                                                           v.P: 101325.0, v.N: 1},
-                             x=v.X(b), y=v.X(c), ax=ax_k, tielines=4, tieline_color=(0.55, 0.55, 0.55, 0.35))
+                    strategy = TernaryStrategy(db, [a, b, c, "VA"], phases, {v.X(b): (0, 1, 0.02),
+                                                                             v.X(c): (0, 1, 0.02), v.T: T,
+                                                                             v.P: 101325.0, v.N: 1})
+                    recipe = {"kind": "ternary", "elements": [a, b, c], "phases": phases, "P": 101325.0, "T_K": T,
+                              "T_unit": "C", "comp": {"scale": 1.0, "weight": False}}
+                    # mapping check / repair as the tool (mapping_check), then pycalphad's plot (= ternplot)
+                    print(f"{a}-{b}-{c} {T_c:g} °C:", map_and_check(strategy, db, recipe, <<mode>>, 600.0,
+                                                                     (20, 20))["text"])
+                    plot_ternary(strategy, x=v.X(b), y=v.X(c), ax=ax_k, tielines=4,
+                                 tieline_color=(0.55, 0.55, 0.55, 0.35))
                 except Exception as e:
                     ax_k.text(0.5, 0.5, f"calculation failed:\\n{e}", ha="center", transform=ax_k.transAxes)
                 for (x, y), el in zip([(0.0, -0.08), (1.0, -0.08)], (a, b)):   # corner labels
@@ -2657,7 +2725,7 @@ def _gen_plot_all_ternaries(args, ctx: Ctx) -> str:
             figures.append(fig)
         fig = figures[<<first>>]
         ax = fig.axes[0]
-        ''', first=first)
+        ''', first=first, mode=repr(check_mode(args.get("check_mapping"))))
     return code + _T(_PPTX_NOTE, pptx=repr(Path(pptx).name))
 
 
@@ -2695,7 +2763,7 @@ def _gen_plot_diagram_with_data(args, ctx: Ctx) -> str:
              "from espei.plot import dataplot")
     code = ""
     if a.get("tdb"):
-        ctx.need("from pycalphad import Database", *([] if shaded else ["from pycalphad import binplot"]))
+        ctx.need("from pycalphad import Database")
         code += _load_db_code(ctx, a["tdb"])
     ddir = ctx.path(a["datasets_dir"])
     code += _T('''
@@ -2724,19 +2792,26 @@ def _gen_plot_diagram_with_data(args, ctx: Ctx) -> str:
         fig, ax = plt.subplots(figsize=(7.5, 5.2))
         ''', comps=Ctx.py([A, B, "VA"]), ph=Ctx.py(ph), lo=_num(lo), hi=_num(hi), B=repr(B), ddir=ddir,
                orient=orientation_text("binary", [A, B])[13:], Bc=B)
+    if a.get("tdb"):            # the tool's mapping + check (mapping_check)
+        from .mapping_check import grid_size
+        crec = {"kind": "binary", "elements": [A, B], "phases": list(ph), "P": 101325.0, "rename_disordered": True,
+                "composition_step": 0.02, "temperature_step": 10.0, "T_unit": "C" if celsius else "K",
+                "tmap": [1.0, 0.0], "T_range": [lo, hi], "x_range": [0.0, 1.0], "comp": {"scale": 1.0, "weight": False}}
+        ctx.need("from pycalphad.mapping import BinaryStrategy" + ("" if shaded else ", plot_binary"))
+        code = code.replace("KELVIN = 273.15\n", "KELVIN = 273.15\n" + mapping_check_helpers(ctx), 1)
+        code += "strategy = BinaryStrategy(db, comps, phases, conds)\n" + check_code(
+            ctx, crec, check_mode(a.get("check_mapping")), 600.0, grid_size("binary", bool(a.get("label_regions"))))
     if a.get("tdb") and shaded:
-        ctx.need("from pycalphad.mapping import BinaryStrategy")
         code = code.replace("KELVIN = 273.15\n", "KELVIN = 273.15\n" + shaded_helpers(ctx), 1)
         code += ("# calculated diagram, shaded style: black boundaries, two-phase fields filled aliceblue, no tie-lines\n"
-                 "strategy = BinaryStrategy(db, comps, phases, conds)\nstrategy.do_map()\n"
                  f"draw_shaded(ax, *strategy_boundaries(strategy, v.X({B!r}), v.T), kind='binary')\n"
                  "# data markers keep their phase colours; the legend lists only the references (the phases are "
                  "named by the region labels)\n"
                  "dataplot(comps, phases, conds, datasets, ax=ax, legend_generator=lambda names: ([], legend(names)[1]))\n")
     else:
         if a.get("tdb"):
-            code += ("binplot(db, comps, phases, conds, plot_kwargs=dict(ax=ax, tielines=4, "
-                     "tieline_color=(0.55, 0.55, 0.55, 0.35), legend_generator=legend))\n")
+            code += ("plot_binary(strategy, ax=ax, tielines=4, tieline_color=(0.55, 0.55, 0.55, 0.35), "
+                     "legend_generator=legend)   # = pycalphad binplot\nax.grid(False)\n")
         code += "dataplot(comps, phases, conds, datasets, ax=ax, legend_generator=legend)\n"
     code += f"ax.set_xlim(0, 1)\nax.set_ylim({_num(lo)}, {_num(hi)})\n"
     if celsius:
@@ -2757,8 +2832,10 @@ def _gen_plot_diagram_with_data(args, ctx: Ctx) -> str:
                "P": 101325.0, "rename_disordered": True, "composition_step": 0.02, "temperature_step": 10.0,
                "T_unit": "C" if celsius else "K", "tmap": [1.0, KELVIN if celsius else 0.0],   # data in °C here
                "T_range": [lo, hi], "x_range": [0.0, 1.0], "comp": {"scale": 1.0, "weight": False}}
-        code += label_helpers(ctx) + label_code(ctx, rec, db, None, mapped=False, phase_labels=a.get("phase_labels"),
-                                                style=_label_style(a.get("label_style"), shaded))
+        code += (label_helpers(ctx) + "lines, invariants = strategy_lines(strategy, db, check_recipe)   # the checked "
+                 "mapping's fields\n"
+                 + label_code(ctx, rec, db, None, mapped=True, phase_labels=a.get("phase_labels"),
+                              style=_label_style(a.get("label_style"), shaded), check_expr="mapping_check"))
     code += f"fig.savefig(OUT / {png_name!r}, dpi=150, bbox_inches='tight')\n"
     fmts = a.get("formats")
     if fmts is None:
@@ -2828,21 +2905,20 @@ _TERN_DATA = '''
     shown = set(data_phases)
     '''
 
-_TERN_CALC = '''
+_TERN_MAP = '''
     # calculated isotherm: x axis = X(<<B>>) (bottom-right corner), y axis = X(<<C>>) (top corner)
-    _, strategy = ternplot(db, elements + ["VA"], phases, {v.X(<<Br>>): (0, 1, 0.02), v.X(<<Cr>>): (0, 1, 0.02),
-                                                          v.T: T_K, v.P: 101325, v.N: 1},
-                           x=v.X(<<Br>>), y=v.X(<<Cr>>), ax=ax, tielines=4, tieline_color=(0.55, 0.55, 0.55, 0.35),
-                           legend_generator=legend, return_strategy=True)
+    strategy = TernaryStrategy(db, elements + ["VA"], phases, {v.X(<<Br>>): (0, 1, 0.02), v.X(<<Cr>>): (0, 1, 0.02),
+                                                               v.T: T_K, v.P: 101325, v.N: 1})
+    '''
+
+_TERN_CALC = '''
+    plot_ternary(strategy, x=v.X(<<Br>>), y=v.X(<<Cr>>), ax=ax, tielines=4, tieline_color=(0.55, 0.55, 0.55, 0.35),
+                 legend_generator=legend)   # = pycalphad ternplot
     shown |= {cs.phase_record.phase_name for z in strategy.zpf_lines for p in z.points for cs in p.stable_composition_sets}
     '''
 
 _TERN_CALC_SHADED = '''
-    # calculated isotherm, shaded style: grey boundaries and tie-triangle edges, aliceblue two-phase fields;
-    # x axis = X(<<B>>) (bottom-right corner), y axis = X(<<C>>) (top corner)
-    strategy = TernaryStrategy(db, elements + ["VA"], phases, {v.X(<<Br>>): (0, 1, 0.02), v.X(<<Cr>>): (0, 1, 0.02),
-                                                               v.T: T_K, v.P: 101325, v.N: 1})
-    strategy.do_map()
+    # shaded style: grey boundaries and tie-triangle edges, aliceblue two-phase fields
     draw_shaded(ax, *strategy_boundaries(strategy, v.X(<<Br>>), v.X(<<Cr>>)), kind="ternary")
     '''
 
@@ -2905,18 +2981,25 @@ def _gen_ternary_with_data(a, els, ctx: Ctx) -> str:
              "from espei.datasets import load_datasets, recursive_glob", "from espei.utils import bib_marker_map")
     code = ""
     if a.get("tdb"):
-        ctx.need("from pycalphad import Database",
-                 *([] if _style(ctx, a) == "shaded" else ["from pycalphad import ternplot"]))
+        ctx.need("from pycalphad import Database")
         code += _load_db_code(ctx, a["tdb"])
     code += _T(_TERN_DATA, els=Ctx.py(list(els)), orient=orientation_text("ternary", els)[13:], ph=Ctx.py(ph),
                T=_num(T_K), tol=_num(tol), ddir=ctx.path(a["datasets_dir"]))
     shaded = _style(ctx, a) == "shaded"
+    if a.get("tdb"):            # the tool's mapping + check (mapping_check)
+        from .mapping_check import grid_size
+        crec = {"kind": "ternary", "elements": list(els), "phases": list(ph), "P": 101325.0, "rename_disordered": True,
+                "composition_step": 0.02, "temperature_step": 10.0, "T_unit": "C" if celsius else "K", "T_K": T_K,
+                "comp": {"scale": 1.0, "weight": False}}
+        ctx.need("from pycalphad.mapping import TernaryStrategy" + ("" if shaded else ", plot_ternary"))
+        code = code.replace("KELVIN = 273.15\n", "KELVIN = 273.15\n" + mapping_check_helpers(ctx), 1)
+        code += _T(_TERN_MAP, B=B, C=C, Br=repr(B), Cr=repr(C)) + check_code(
+            ctx, crec, check_mode(a.get("check_mapping")), 600.0, grid_size("ternary", bool(a.get("label_regions"))))
     if a.get("tdb") and shaded:
-        ctx.need("from pycalphad.mapping import TernaryStrategy")
         code = code.replace("KELVIN = 273.15\n", "KELVIN = 273.15\n" + shaded_helpers(ctx), 1)
-        code += _T(_TERN_CALC_SHADED, B=B, C=C, Br=repr(B), Cr=repr(C))
+        code += _T(_TERN_CALC_SHADED, Br=repr(B), Cr=repr(C))
     elif a.get("tdb"):
-        code += _T(_TERN_CALC, B=B, C=C, Br=repr(B), Cr=repr(C))
+        code += _T(_TERN_CALC, Br=repr(B), Cr=repr(C))
     code += _T(_TERN_DATA_PLOT, xl=repr(f"Mole fraction {B.capitalize()}"),
                yl=repr(f"Mole fraction {C.capitalize()}"),
                phase_handles=("[]" if shaded and a.get("tdb")
@@ -2932,8 +3015,10 @@ def _gen_ternary_with_data(a, els, ctx: Ctx) -> str:
         rec = {"kind": "ternary", "tdb": ctx.tb._find_tdb(a["tdb"]), "elements": list(els), "phases": list(ph),
                "P": 101325.0, "rename_disordered": True, "composition_step": 0.02, "temperature_step": 10.0,
                "T_unit": "C" if celsius else "K", "T_K": T_K, "comp": {"scale": 1.0, "weight": False}}
-        code += label_helpers(ctx) + label_code(ctx, rec, db, None, mapped=False, phase_labels=a.get("phase_labels"),
-                                                style=_label_style(a.get("label_style"), shaded))
+        code += (label_helpers(ctx) + "lines, invariants = strategy_lines(strategy, db, check_recipe)   # the checked "
+                 "mapping's fields\n"
+                 + label_code(ctx, rec, db, None, mapped=True, phase_labels=a.get("phase_labels"),
+                              style=_label_style(a.get("label_style"), shaded), check_expr="mapping_check"))
     code += f"fig.savefig(OUT / {png_name!r}, dpi=150, bbox_inches='tight')\n"
     fmts = a.get("formats")
     if fmts is None:

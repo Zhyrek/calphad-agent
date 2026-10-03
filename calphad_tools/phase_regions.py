@@ -13,7 +13,8 @@ after its disordered phase (B2_BCC -> BCC_A2), as in the phase-boundary data.
 * :func:`regions_from_lines` - exact two-phase polygons (the two phase-boundary traces of each ZPF line),
   the boundary points of every phase (``phase_points``),
   tie-triangles, line compounds and binary invariant lines from mapped ZPF data;
-* :func:`map_lines` - that ZPF data from a pycalphad mapping strategy;
+* :func:`map_lines` - that ZPF data from a pycalphad mapping (checked and repaired: mapping_check);
+  :func:`strategy_lines` - the same from a finished mapping strategy;
 * :func:`equilibrium_grid` - stable phase set on a coarse grid (finds regions the mapping did not trace);
 * :func:`key_at` - phase set at one plotted point (used to confirm every label position).
 """
@@ -278,23 +279,37 @@ def mapping_conditions(recipe: Dict, step: float = 0.02, T_step: float = 10.0) -
 
 
 def map_lines(db, recipe: Dict, info: Dict[str, tuple], step: float = 0.02, T_step: float = 10.0,
-              time_limit: float = 600.0):
+              time_limit: float = 600.0, check: str = "auto", report: Optional[Dict] = None):
     """(lines, invariants) of a pycalphad mapping strategy for the recipe (same structures as regions_from_lines
-    reads)."""
+    reads).  check: the mapping check (mapping_check.check_and_repair: "auto", "thorough" or "off"); its report
+    goes into ``report`` (a dict) when given."""
     import time
-    from pycalphad import variables as v
     from pycalphad.mapping import BinaryStrategy, TernaryStrategy
+    try:                    # a standalone script has the mapping check in the same file
+        _run, _check = run_strategy, check_and_repair  # noqa: F821
+    except NameError:
+        from .mapping_check import check_and_repair as _check, run_strategy as _run
     els = recipe["elements"]
     comps = sorted(els) + ["VA"]
     Strat = BinaryStrategy if recipe["kind"] == "binary" else TernaryStrategy
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         strategy = Strat(db, comps, list(recipe["phases"]), mapping_conditions(recipe, step, T_step))
-        strategy.generate_automatic_starting_points()
-        t0 = time.time()
-        while not strategy.iterate():
-            if time.time() - t0 > time_limit:
-                break
+    t0 = time.time()
+    run = _run(strategy, time_limit, check)
+    strategy._mc_seconds = run["seconds"]
+    rep = _check(strategy, db, recipe, mode=check if run["finished"] else "off", deadline=t0 + time_limit)
+    if report is not None:
+        report.update(rep)
+    return strategy_lines(strategy, db, recipe, info)
+
+
+def strategy_lines(strategy, db, recipe: Dict, info: Optional[Dict[str, tuple]] = None):
+    """(lines, invariants) of a finished BinaryStrategy / TernaryStrategy (the structures regions_from_lines
+    reads); zero-length lines along an edge are left out."""
+    from pycalphad import variables as v
+    els = recipe["elements"]
+    comps = sorted(els) + ["VA"]
     info = {**ordered_info(db, comps, recipe["phases"], strategy.models), **(info or {})}
     s_els = [e for e in strategy.elements if e != "VA"]
 
@@ -384,9 +399,12 @@ def key_at(db, recipe: Dict, info: Dict[str, tuple], x: float, y: float) -> Opti
     return _keys_from_eq(eq, info)[0]
 
 
-def equilibrium_grid(db, recipe: Dict, info: Dict[str, tuple], xlim, ylim, n: Tuple[int, int] = (80, 60)) -> Dict:
+def equilibrium_grid(db, recipe: Dict, info: Dict[str, tuple], xlim, ylim, n: Tuple[int, int] = (80, 60),
+                     models=None, phase_records=None) -> Dict:
     """Stable phase sets on a grid over the plotted area: {"xy": [N, 2] plotted points, "keys": [N] int (index
-    into "table", -1 = none), "table": [key, ...]}."""
+    into "table", -1 = none), "table": [key, ...]}.  models / phase_records: those of a mapping strategy of the
+    same system (saves building and compiling them again; same results)."""
+    kw = {"model": models, "phase_records": phase_records} if models is not None else {}
     from pycalphad import equilibrium, variables as v
     els = recipe["elements"]
     comps = sorted(els) + ["VA"]
@@ -398,7 +416,7 @@ def equilibrium_grid(db, recipe: Dict, info: Dict[str, tuple], xlim, ylim, n: Tu
         conds = {v.P: float(recipe.get("P", 101325.0)), v.N: 1, v.T: T_of_y(recipe, ys), v.X(els[1]): Xb}
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            eq = equilibrium(db, comps, list(recipe["phases"]), conds)
+            eq = equilibrium(db, comps, list(recipe["phases"]), conds, **kw)
         keys = _keys_from_eq(eq, info)                       # T major, then X
         pts = np.array([[x, y] for y in ys for x in xs], float)
     else:
@@ -408,7 +426,7 @@ def equilibrium_grid(db, recipe: Dict, info: Dict[str, tuple], xlim, ylim, n: Tu
                  v.X(els[1]): g, v.X(els[2]): g}
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            eq = equilibrium(db, comps, list(recipe["phases"]), conds)
+            eq = equilibrium(db, comps, list(recipe["phases"]), conds, **kw)
         order = [str(d)[2:] for d in eq.Phase.dims if str(d).startswith("X_")]   # condition dimension order
         keys = _keys_from_eq(eq, info)
         pts = []

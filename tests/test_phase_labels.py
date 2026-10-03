@@ -274,18 +274,20 @@ def check_inside(fig, ax):
 
 
 def check_clearance(fig, ax, margin=2.5):
-    """Every phase label in its region keeps >= margin - 0.5 pt from every drawn phase boundary (the polygon edges
-    of two-phase fields and tie-triangles).  (Invariant temperatures hug their own line: check_invariants.)
-    Returns the smallest clearance found (pt)."""
+    """Every phase label in its region keeps >= margin - 0.5 pt from every drawn phase boundary (the boundary,
+    invariant and tie-triangle lines actually drawn; not the region polygons, whose closing edges can be invisible
+    tie-lines where pycalphad stopped a trace part-way).  (Invariant temperatures hug their own line:
+    check_invariants.)  Returns the smallest clearance found (pt)."""
     from scipy.spatial import cKDTree
     from matplotlib.path import Path as MPath
     fig.canvas.draw()
     r = fig.canvas.get_renderer()
     f = fig.dpi / 72
     segs = []
-    for p in ax._calphad_diagram["regions"]["polygons"]:
-        q = ax.transData.transform(np.asarray(p["xy"], float))
-        q = np.vstack([q, q[:1]])
+    for ln in ax.lines:                 # boundaries are >= 1 pt; thin guide / leader lines of labels are not
+        if not ln.get_visible() or ln.get_linewidth() < 0.9:
+            continue
+        q = ax.transData.transform(np.column_stack([ln.get_xdata(), ln.get_ydata()]).astype(float))
         for a, b in zip(q[:-1], q[1:]):
             n = max(2, int(np.hypot(*(b - a)) / (0.25 * f)) + 1)
             segs.append(a + (b - a) * np.linspace(0, 1, n)[:, None])
