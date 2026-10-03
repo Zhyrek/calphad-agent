@@ -1,0 +1,217 @@
+$
+$ Database for Ce-Co from X.Y. Liu et al. 2024.
+$
+$ X.Y. Liu, P.P. Liu, C. Tan, S.Y. Yang, Y.C. Bai, J. Wang, G.H. Rao, H.Y. Zhou,
+$ Calphad, 84, 102653(2024).
+$
+$ Dataset created 2024.07.22 by Bengt Hallstedt.
+$
+$ Reoptimized from 98Su/19Xu. Added magnetic properties.
+$
+$ ------------------------------------------------------------------------------
+ TEMP-LIM 298.15 6000.00 !
+$
+$ELEMENT NAME  REF. STATE               ATOMIC MASS H298-H0    S298    !
+$
+ ELEMENT VA   VACUUM                      0.0          0.0      0.0    ! 
+ ELEMENT CE   FCC_A1                    140.12      7280.16    69.454  ! 
+ ELEMENT CO   HCP_A3                     58.9332    4765.567   30.0400 ! 
+$ ------------------------------------------------------------------------------
+$ Phase definitions
+$
+ PHASE LIQUID:L % 1 1 !
+ CONST LIQUID:L : CE CO : !
+$
+$ Fcc (cF4, Fm-3m) and MeX (cF8, Fm-3m)
+$
+ PHASE FCC_A1 %A 2 1 1 !
+ CONST FCC_A1 : CE% CO% : VA : !
+$
+$ Bcc (cI2, Im-3m)
+$
+ PHASE BCC_A2 %B 2 1 3 !
+ CONST BCC_A2 : CE% CO : VA : !
+$
+$ Hcp (hP2, P6_3/mmc) and Me2X (NiAs-type, hP4, P6_3/mmc, B8_1)
+$
+ PHASE HCP_A3 %A 2 1 0.5 !
+ CONST HCP_A3 : CE CO% : VA : !
+$
+$ Prototype Ce24Co11 (hP70, P6_3mc)
+$
+ PHASE CE24CO11 % 2 24 11 !
+ CONST CE24CO11 : CE : CO : !
+$
+$ Prototype Cu2Mg (cF24, Fd-3m)
+$
+ PHASE CECO2_C15 % 2 1 2 !
+ CONST CECO2_C15 : CE : CO : !
+$
+$ Prototype Ni3Pu (hR12, R-3m)
+$
+ PHASE CECO3 %A 2 1 3 !
+ CONST CECO3 : CE : CO : !
+$
+$ Prototype Ce2Ni7 (hP36, P6_3/mmc, ht) and Co7Gd2 (hR18, R-3m, lt)
+$
+ PHASE CE2CO7 %A 2 2 7 !
+ CONST CE2CO7 : CE : CO : !
+$
+$ Prototype Ce5Co19 (hR24, R-3m)
+$
+ PHASE CE5CO19 %A 2 5 19 !
+ CONST CE5CO19 : CE : CO : !
+$
+$ Prototype CaCu5 (hP6, P6/mmm)
+$
+ PHASE CECO5_D2D %A 2 1 5 !
+ CONST CECO5_D2D : CE : CO : !
+$
+$ Prototype Ni17Th2 (hP38, P6_3/mmc, ht) and Th2Zn17 (hR19, R-3m, lt)
+$
+ PHASE CE2CO17 %A 2 2 17 !
+ CONST CE2CO17 : CE : CO : !
+$ ------------------------------------------------------------------------------
+$ Defaults
+$
+ DEFINE-SYSTEM-DEFAULT ELEMENT 2 !
+ DEFAULT-COM DEFINE_SYSTEM_ELEMENT VA !
+ TYPE-DEF % SEQ * !
+ TYPE-DEF A GES AMEND_PHASE_DESCRIPTION @ MAGNETIC -3 0.28 !
+ TYPE-DEF B GES AMEND_PHASE_DESCRIPTION @ MAGNETIC -1 0.4 !
+ FUNCTION ZERO      298.15  0;                                         6000 N !
+ FUNCTION UN_ASS    298.15  0;                                         6000 N !
+ FUNCTION R         298.15  +8.31451;                                  6000 N !
+$ ------------------------------------------------------------------------------
+$ Element data
+$ ------------------------------------------------------------------------------
+$ Ce
+$
+$ HCP_A3 and DHCP added in unary 3.0
+$ HCP_A3 and DHCP revised in unary 4.4
+$
+ PAR  G(FCC_A1,CE:VA),,                 +GHSERCE;                4000 N 91Din !
+ PAR  G(BCC_A2,CE:VA),,                 +GBCCCE;                 4000 N 91Din !
+ PAR  G(HCP_A3,CE:VA),,                 +GHSERCE+300;            4000 N Frank !
+$PAR  G(HCP_A3,CE:VA),,                 +GHSERCE+50000;          4000 N 96SGUN !
+$PAR  G(DHCP,CE:VA),,                   +GHSERCE
+$            -122.539+0.433*T;                                   4000 N 99Gsc !
+$PAR  G(DHCP,CE),,                      +GHSERCE-190+0.56886*T;  4000 N 96SGUN !
+ PAR  G(LIQUID,CE),,                    +GLIQCE;                 4000 N 91Din !
+$
+ FUNCTION GHSERCE   298.15  -7160.519+84.23022*T-22.3664*T*LN(T)
+       -0.0067103*T**2-3.20773E-07*T**3-18117*T**(-1);
+      1000.00  Y  -79678.506+659.4604*T-101.32248*T*LN(T)
+       +0.026046487*T**2-1.930297E-06*T**3+11531707*T**(-1);
+      2000.00  Y  -14198.639+190.370192*T-37.6978*T*LN(T);
+      4000.00  N !
+ FUNCTION GBCCCE    298.15  -1354.69-5.21501*T-7.7305867*T*LN(T)
+       -0.029098402*T**2+4.784299E-06*T**3-196303*T**(-1);
+      1000.00  Y  -12101.106+187.449688*T-37.6142*T*LN(T);
+      1072.00  Y  -11950.375+186.333811*T-37.4627992*T*LN(T)
+       -5.7145E-05*T**2+2.348E-09*T**3-25897*T**(-1);
+      4000.00  N !
+ FUNCTION GLIQCE    298.15  +4117.865-11.423898*T-7.5383948*T*LN(T)
+       -0.02936407*T**2+4.827734E-06*T**3-198834*T**(-1);
+      1000.00  Y  -6730.605+183.023193*T-37.6978*T*LN(T);
+      4000.00  N !
+$ ------------------------------------------------------------------------------
+$ Co
+$
+ PAR  G(HCP_A3,CO:VA),,                 +GHSERCO;,,                   N 91Din !
+ PAR  TC(HCP_A3,CO:VA),,                 1396.00;,,                   N 91Din !
+ PAR  BMAG(HCP_A3,CO:VA),,                  1.35;,,                   N 91Din !
+ PAR  G(FCC_A1,CO:VA),,                 +GHSERCO
+             +427.591-0.615248*T;,,                                   N 91Din !
+ PAR  TC(FCC_A1,CO:VA),,                 1396.00;,,                   N 91Din !
+ PAR  BMAG(FCC_A1,CO:VA),,                  1.35;,,                   N 91Din !
+ PAR  G(BCC_A2,CO:VA),,                 +GHSERCO+2938-0.7138*T;,,     N 91Din !
+ PAR  TC(BCC_A2,CO:VA),,                 1450.00;,,                   N 91Din !
+ PAR  BMAG(BCC_A2,CO:VA),,                  1.35;,,                   N 91Din !
+$PAR  G(CBCC_A12,CO:VA),,               +GHSERCO+4155;,,              N 91Din !
+$PAR  G(CUB_A13,CO:VA),,                +GHSERCO+3155;,,              N 91Din !
+ PAR  G(LIQUID,CO),,                    +GLIQCO;,,                    N 91Din !
+$
+ FUNCTION GHSERCO   298.15  +310.241+133.36601*T-25.0861*T*LN(T)
+       -0.002654739*T**2-1.7348E-07*T**3+72527*T**(-1);
+      1768.00  Y  -17197.666+253.28374*T-40.5*T*LN(T)+9.3488E+30*T**(-9);
+      6000.00  N !
+ FUNCTION GLIQCO    298.15  +15085.037-8.931932*T+GHSERCO-2.19801E-21*T**7;
+      1768.00  Y  -846.61+243.599944*T-40.5*T*LN(T);
+      6000.00  N !
+ FUNCTION GFCCCO    298.15  +GHSERCO+427.59-0.615248*T;                6000 N !
+ FUNCTION GBCCCO    298.15  +GHSERCO+2938-0.7138*T;                    6000 N !
+$ ------------------------------------------------------------------------------
+$ Binary system
+$
+$ X.Y. Liu, P.P. Liu, C. Tan, S.Y. Yang, Y.C. Bai, J. Wang, G.H. Rao, H.Y. Zhou,
+$ Calphad, 84, 102653(2024).
+$
+$ Checked against paper and author's tdb. Checked at 6000 K.
+$
+$ Reoptimized from 98Su/19Xu. Added magnetic properties.
+$
+ PAR  L(LIQUID,CE,CO;0),,               -56000-17*T;,,                N 24Liu !
+ PAR  L(LIQUID,CE,CO;1),,               +29000-20*T;,,                N 24Liu !
+ PAR  L(LIQUID,CE,CO;2),,               +2000+12*T;,,                 N 24Liu !
+$
+ PAR  L(FCC_A1,CE,CO:VA;0),,            -2127;,,                      N 98Su !
+ PAR  L(BCC_A2,CE,CO:VA;0),,            +20000;,,                     N 24Liu !
+ PAR  L(HCP_A3,CE,CO:VA;0),,            +20000;,,                     N 24Liu !
+$
+ PAR  G(CE24CO11,CE:CO),,               +24*GHSERCE+11*GHSERCO
+             -470540+52.5*T;,,                                        N 24Liu !
+ PAR  G(CECO2_C15,CE:CO),,              +GHSERCE+2*GHSERCO
+             -71155+2.4*T;,,                                          N 24Liu !
+$
+ PAR  G(CECO3,CE:CO),,                  +GHSERCE+3*GHSERCO
+             -105354+19.84*T;,,                                       N 24Liu !
+ PAR  TC(CECO3,CE:CO),,                    78.00;,,                   N 24Liu !
+$ 1 mole of atoms below
+$PAR  BMAG(CECO3,CE:CO),,                   0.047;,,                  N 24Liu !
+ PAR  BMAG(CECO3,CE:CO),,                   0.202;,,                  N 24Liu !
+$
+ PAR  G(CE2CO7,CE:CO),,                 +2*GHSERCE+7*GHSERCO
+             -244647+58.32*T;,,                                       N 24Liu !
+ PAR  TC(CE2CO7,CE:CO),,                  123.00;,,                   N 24Liu !
+$ 1 mole of atoms below
+$PAR  BMAG(CE2CO7,CE:CO),,                  0.0205;,,                 N 24Liu !
+ PAR  BMAG(CE2CO7,CE:CO),,                  0.200;,,                  N 24Liu !
+$
+ PAR  G(CE5CO19,CE:CO),,                +5*GHSERCE+19*GHSERCO
+             -655200+170.52*T;,,                                      N 24Liu !
+ PAR  TC(CE5CO19,CE:CO),,                 293.00;,,                   N 24Liu !
+$ 1 mole of atoms below
+$PAR  BMAG(CE5CO19,CE:CO),,                 0.007;,,                  N 24Liu !
+ PAR  BMAG(CE5CO19,CE:CO),,                 0.182;,,                  N 24Liu !
+$
+ PAR  G(CECO5_D2D,CE:CO),,              +GHSERCE+5*GHSERCO
+             -130980+30.24*T;,,                                       N 24Liu !
+ PAR  TC(CECO5_D2D,CE:CO),,               737.00;,,                   N 24Liu !
+$ 1 mole of atoms below
+$PAR  BMAG(CECO5_D2D,CE:CO),,               0.339;,,                  N 24Liu !
+ PAR  BMAG(CECO5_D2D,CE:CO),,               4.763;,,                  N 24Liu !
+$
+ PAR  G(CE2CO17,CE:CO),,                +2*GHSERCE+17*GHSERCO
+             -313500+89.3*T;,,                                        N 24Liu !
+ PAR  TC(CE2CO17,CE:CO),,                1078.00;,,                   N 24Liu !
+$ 1 mole of atoms below
+$PAR  BMAG(CE2CO17,CE:CO),,                 0.188;,,                  N 24Liu !
+ PAR  BMAG(CE2CO17,CE:CO),,                25.394;,,                  N 24Liu !
+$ ------------------------------------------------------------------------------
+$
+$
+ LIST-OF-REFERENCE
+ NUMBER  SOURCE
+  Null   'Unknown source'
+  Same   'Same or similar interaction as in the corresponding stable phase'
+  COST   'COST 507 database'
+  Frank  'Peter Franke, unpublished, SGTE unary database V.4.4, 2001; Ce'
+  91Din  'A.T. Dinsdale, Calphad, 15, 317-425(1991).'
+  96SGUN 'SGTE unary database V.3.0, 1996.'
+  98Su   'X. Su, W. Zhang, Z. Du, J. Alloys Compd., 267, 121-27(1998); Ce-Co'
+  99Gsc  'K.A. Gschneidner, Jr., V.K. Pecharsky, J. Phase Equilib.,
+          20, 612-14(1999), SGTE unary database V.4.4, 2001; Ce'
+  24Liu  'X.Y. Liu, P.P. Liu, C. Tan, S.Y. Yang, Y.C. Bai, J. Wang, G.H. Rao,
+          H.Y. Zhou, Calphad, 84, 102653(2024); Ce-Co'
+!
