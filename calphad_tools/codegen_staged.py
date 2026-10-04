@@ -113,6 +113,7 @@ if text is None:
     raise SystemExit("decisions still needed for Q:\n" + plan.report())
 versions["Q"] = str(OUT / f"Q_{Path(BASE).stem}+{Path(ADD).stem}.tdb")
 Path(versions["Q"]).write_text(text)
+RENAMES = plan.renames_of(1)    # B's phases kept under a new name in Q (decision 'rename'): the same phase
 if BUILD_A12:
     for lab, n_el in (("A1", 1), ("A2", 2)):
         part = write_tdb(restrict_tdb(Bn, Bn.real_elements, max_elements=n_el, constituents_from_params=True),
@@ -125,7 +126,11 @@ if BUILD_A12:
 for chain, els in ((["B", "B1", "B2", "B3", "Q"], sorted(Bn.real_elements)),
                    (["A", "A1", "A2"] if BUILD_A12 else [], sorted(dbA.real_elements))):
     subs = stage_subsystems(els, (2, 3))
-    views = {lab: StageView(parse_tdb(versions[lab]), lab, elements=els) for lab in chain}
+    views = {}
+    for lab in chain:
+        tdb = parse_tdb(versions[lab])
+        ren = stage_renames(tdb, RENAMES) if lab in ("B", "B1", "B2", "B3") else {}
+        views[lab] = StageView(tdb, lab, elements=els, rename=ren)
     for old, new in zip(chain[:-1], chain[1:]):
         d = diff_versions(views[old], views[new], subs)
         print(f"\n{old} -> {new}: {len(d.params)} parameter change(s)")

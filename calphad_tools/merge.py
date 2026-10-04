@@ -99,6 +99,11 @@ class MergePlan:
     other_commands: List[str] = field(default_factory=list)
     references: List[str] = field(default_factory=list)
     temp_limits: Tuple[float, float] = (298.15, 6000.0)
+    phase_renames: List[Tuple[int, str, str]] = field(default_factory=list)   # (db index, old name, new name)
+
+    def renames_of(self, i: int) -> Dict[str, str]:
+        """{old: new} for the phases of db ``i`` that a 'rename' decision renamed."""
+        return {old: new for j, old, new in self.phase_renames if j == i}
 
     @property
     def pending(self) -> List[Conflict]:
@@ -356,7 +361,13 @@ def plan_merge(paths: Sequence[str], decisions: Optional[Dict[str, str]] = None,
     # conversion of parameters for phases aligned by vacancy sublattices: (db, phase) -> index map
     convert: Dict[Tuple[int, str], List[Optional[int]]] = {}
     dropped_phase_src: Dict[str, set] = {}
-    for name in sorted({p for d in dbs for p in d.phases}):
+    # a worklist: a 'rename' decision appends the renamed copies (e.g. MU_D85_2), which are then planned like any
+    # other phase (PHASE / CONSTITUENT line, type definitions re-lettered, parameters, DIS_PART links)
+    phase_names = sorted({p for d in dbs for p in d.phases})
+    k_phase = 0
+    while k_phase < len(phase_names):
+        name = phase_names[k_phase]
+        k_phase += 1
         have = [i for i, d in enumerate(dbs) if name in d.phases]
         # pick the model: prefer the one with more sublattices among reduced-equal models
         sigs = {i: dbs[i].phases[name].model_signature() for i in have}
@@ -393,8 +404,15 @@ def plan_merge(paths: Sequence[str], decisions: Optional[Dict[str, str]] = None,
                 if c.decision == "rename":
                     for sig, idxs in list(groups.items())[1:]:
                         for i in idxs:
-                            _rename_phase(dbs[i], name, f"{name}_{i + 1}")
-                            plan.log.append(f"phase {name} in {dbs[i].name} renamed to {name}_{i + 1}")
+                            new = f"{name}_{i + 1}"
+                            k = 2
+                            while any(new in d.phases for d in dbs):
+                                new, k = f"{name}_{i + 1}_{k}", k + 1
+                            _rename_phase(dbs[i], name, new)
+                            plan.phase_renames.append((i, name, new))
+                            phase_names.append(new)
+                            plan.log.append(f"phase {name} in {dbs[i].name} renamed to {new} (kept with its own "
+                                            f"model {dbs[i].phases[new].site_ratios})")
                     have = groups[list(groups)[0]]
                     base = have[0]
                 elif c.decision:

@@ -87,7 +87,8 @@ def strip_compset(name: str, known: Optional[Iterable[str]] = None) -> str:
     if m:
         base = m.group(1)
         kn = {k.upper() for k in (known or ())}
-        if base in kn or base in NAMES or base in GREEK or _structure(base) or base in GREEK_NAMES:
+        # also a merge's renamed copy of a phase (MU_D85_2 -> MU_D85 -> μ, decision 'rename')
+        if base in kn or base in NAMES or base in GREEK or _structure(base) or base in GREEK_NAMES or _greek(base):
             n = base
     return n
 

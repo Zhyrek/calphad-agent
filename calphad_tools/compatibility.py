@@ -94,9 +94,10 @@ def locate_unary50(spec: Optional[str] = "auto", cache_dir: Optional[str] = None
 class Stage:
     n: int
     title: str
-    verdict: str                    # OK | INCOMPATIBLE | CONFLICT | CHANGES | NONE
+    verdict: str                    # OK | INCOMPATIBLE | CONFLICT | WARNING | CHANGES | NONE
     line: str
     rows: List[Dict[str, Any]] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)     # for the overall line (e.g. zero-G end-members)
 
 
 @dataclass
@@ -118,11 +119,17 @@ class Evaluation:
         v = {s.n: s.verdict for s in self.stages}
         bad = [n for n in (1, 2, 5) if v.get(n) == "INCOMPATIBLE"]
         conf = [n for n in (3, 4) if v.get(n) == "CONFLICT"]
+        warn = [w for s in self.stages for w in s.warnings]
         if bad:
             return f"INCOMPATIBLE as is (stage {', '.join(map(str, bad))}: harmonise before merging)" + (
-                f"; stage {', '.join(map(str, conf))}: choose one assessment per subsystem" if conf else "")
+                f"; stage {', '.join(map(str, conf))}: choose one assessment per subsystem" if conf else "") + (
+                f"; warnings: {_examples(warn, 3)}" if warn else "")
+        warn = [w for s in self.stages for w in s.warnings]
         if conf:
-            return f"MERGEABLE WITH DECISIONS (stage {', '.join(map(str, conf))}: differently assessed subsystems)"
+            return f"MERGEABLE WITH DECISIONS (stage {', '.join(map(str, conf))}: differently assessed subsystems)" + (
+                f"; warnings: {_examples(warn, 3)}" if warn else "")
+        if warn:
+            return f"COMPATIBLE with warnings: {_examples(warn, 3)}"
         return "COMPATIBLE"
 
 
@@ -177,6 +184,7 @@ STATUS_FILL = {"OK": "same", "NONE": "absent", "CHANGES": "error", "CONFLICT": "
 
 
 STATUS_RGB = {"OK": "C8E6C9", "COMPATIBLE": "C8E6C9", "NONE": "ECEFF1", "CHANGES": "FFE082", "MERGEABLE": "FFE082",
+              "WARNING": "FFCC80",
               "CONFLICT": "EF9A9A", "INCOMPATIBLE": "EF9A9A"}
 
 
@@ -415,8 +423,34 @@ def _restrict_pm(pm: ts.PhaseModel, E, views) -> Optional[ts.PhaseModel]:
     return ts.PhaseModel(pm.ratios, tuple(cons), pm.magnetic, pm.dis_part)
 
 
+def _model_decision_hint(ph: str) -> str:
+    return (f"staged_merge / merge_tdbs decisions {{'phase:{ph}': 'rename'}} keeps both, B's as {ph}_2; 'db1' keeps "
+            f"only A's model, 'db2' only B's")
+
+
+def _assessed_in(view: ts.StageView, ph: str, els) -> bool:
+    """Does ``view`` describe phase ``ph`` in subsystem ``els`` (a parameter of the phase with >= 2 of its elements)?"""
+    E = set(els)
+    return any(r.phase == ph and len(view.row_elements(k)) >= 2 and view.row_elements(k) <= E
+               for k, r in view.rows.items())
+
+
+def _zero_g_warning(ph: str, em, where) -> str:
+    return f"{ph} {':'.join(em)} has no G (pycalphad uses 0; {_examples(where, 2)})"
+
+
 def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol) -> Tuple[Stage, List[str]]:
+    """Phase models.  A new end-member of the merged model with no G in either database (pycalphad uses G = 0):
+
+    * INCOMPATIBLE when the database whose space it lies in already describes the phase in a binary containing
+      the end-member (a parameter of the phase with two elements of that binary): the zero G changes an assessed
+      phase there;
+    * WARNING otherwise - the phase is new in that binary (a phase of the other database entering it) or has only
+      unary end-members there: it was not assessed in that binary; the overall verdict says 'COMPATIBLE with
+      warnings', and staged_merge reports whether the phase becomes stable in the mapped diagrams.
+    """
     rows, parts, verdict = [], [], "OK"
+    warnings: List[str] = []
     EA, EB = VA.own_elements, VB.own_elements
     subsA = ts.stage_subsystems(EA, (2, 3))
     subsB = ts.stage_subsystems(EB, (2, 3))
@@ -426,12 +460,23 @@ def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol) -> Tuple[Stage
             continue
         row = {"phase": ph, "A model": ma.text(), "B model": mb.text(), "A magnetic/ordering": ma.extras(),
                "B magnetic/ordering": mb.extras()}
+        unm = next((n for n in norm_notes if n.phase == ph and n.action == "unmapped"), None)
+        if unm is not None:
+            # the sublattice correspondence is ambiguous: compared as is, but the user has to say how they map
+            row["issue"] = f"sublattice mapping undecided: {unm.detail}"
+            verdict = "INCOMPATIBLE"
+            parts.append(f"{ph}: sublattice mapping undecided ({unm.detail.split(': ', 1)[-1]}) - INCOMPATIBLE as "
+                         f"is; give {ts.unmapped_hint(ph)}")
+            rows.append(row)
+            continue
         merged = ts.union_model(ma, mb)
         if merged is None:
             row["issue"] = "site ratios differ: models cannot be merged"
+            row["decision"] = _model_decision_hint(ph)
             verdict = "INCOMPATIBLE"
             parts.append(f"{ph}: site ratios {':'.join(f'{x:g}' for x in ma.ratios)} (A) vs "
-                         f"{':'.join(f'{x:g}' for x in mb.ratios)} (B) - INCOMPATIBLE (rename one, or drop one model)")
+                         f"{':'.join(f'{x:g}' for x in mb.ratios)} (B) - INCOMPATIBLE (rename one, or drop one "
+                         f"model: {_model_decision_hint(ph)})")
             rows.append(row)
             continue
         row["merged model"] = merged.text()
@@ -457,8 +502,16 @@ def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol) -> Tuple[Stage
                     prov = (f"G from {src}" + ("" if okk else f"; with {side}'s functions it shifts by "
                                                                f"{ts.fmt_energy(d)}"))
                 else:
-                    prov = "no G in either: pycalphad uses 0"
-                    verdict = "INCOMPATIBLE"
+                    bins = [s for s in subs if len(s) == 2 and ts.endmember_elements(own, em) <= set(s)
+                            and _restrict_pm(merged, s, (VA, VB)) is not None]
+                    assessed = [ts.stage_sysname(s) for s in bins if _assessed_in(own, ph, s)]
+                    if assessed:
+                        prov = (f"no G in either: pycalphad uses 0 - changes {side}'s assessed {ph} in "
+                                f"{_examples(assessed, 2)}")
+                        verdict = "INCOMPATIBLE"
+                    else:
+                        prov = "no G in either: pycalphad uses 0"
+                        warnings.append(_zero_g_warning(ph, em, where or [ts.stage_sysname(em)]))
                 news.append(f"{':'.join(em)} in {side}'s space ({_examples(where, 3) or 'unary'}; {prov})")
                 rows.append({"phase": ph, "new end-member": ":".join(em), "in space of": side,
                              "affects subsystems": ", ".join(where), "provided by": prov})
@@ -478,7 +531,19 @@ def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol) -> Tuple[Stage
         for ph in sorted(set(other.phases) - set(own.phases)):
             m = ts.restricted_model(other, ph, E)
             if m is not None:
-                newp.append(f"{ph} {m.text()}")
+                miss = [em for em in sorted(ts.model_endmembers(m)) if other.key_for("G", ph, em) not in other.rows]
+                zero = []
+                for em in miss:
+                    where = [ts.stage_sysname(s) for s in ts.stage_subsystems(E, (2, 3))
+                             if ts.endmember_elements(other, em) <= set(s) and ts.restricted_model(other, ph, s)]
+                    zero.append(":".join(em))
+                    warnings.append(_zero_g_warning(ph, em, where or [ts.stage_sysname(
+                        ts.endmember_elements(other, em))]))
+                    rows.append({"phase": ph, "new end-member": ":".join(em), "in space of": side,
+                                 "affects subsystems": ", ".join(where),
+                                 "provided by": f"no G in either: pycalphad uses 0 ({ph} is new in {side}'s space)"})
+                newp.append(f"{ph} {m.text()}" + (f" [no G for {', '.join(zero[:3])}: pycalphad uses 0]"
+                                                  if zero else ""))
                 rows.append({"phase": ph, "new phase in space of": side, "model there": m.text()})
         if newp:
             parts.append(f"new phases in {side}'s space: {_examples(newp, 3)}")
@@ -497,8 +562,12 @@ def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol) -> Tuple[Stage
         rows.append({"phase": n.phase, "name candidate": n.detail})
     if cands:
         parts.append(f"name candidates (not merged): {_examples([n.phase + ' ' + n.detail.split(';')[0] for n in cands], 2)}")
+    if warnings and verdict in ("OK", "CHANGES"):
+        verdict = "WARNING"
     line = (f"{verdict}: " + "; ".join(parts)) if parts else "OK (shared phases have identical models)"
-    return Stage(5, "phase models", verdict, line, rows), []
+    st = Stage(5, "phase models", verdict, line, rows)
+    st.warnings = warnings
+    return st, []
 
 
 def _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir,
@@ -534,6 +603,11 @@ def _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir,
     line = "(A's values win conflicts) " + " | ".join(parts) if parts else "no binaries/ternaries"
     for n in a_rescaled:
         line += f" | {n.phase}: A rescaled to B's site ratios (B magnetic, 1 atom/fu): exact, not a change"
+    for c in plan.conflicts:
+        if c.kind == "phase_model" and c.decided_by.startswith("policy"):
+            ph = c.id.split(":", 1)[1]
+            line += (f" | {ph}: predicted with A's model only ('{c.decision}'); decision 'rename' keeps B's as "
+                     f"{ph}_2 instead (B's subsystems with it then keep it)")
     exact = sorted({s.name for d in (da, db) for s in d.subsystems if s.notes and not s.changed})
     if exact:
         line += (f" | exact-only: {', '.join(exact)} (staged_merge force_replot={exact!r} maps them anyway)")
@@ -546,7 +620,7 @@ def evaluate_pair(a_path: str, b_path: str, *, phase_map: Optional[Dict[str, str
     A, B = parse_tdb(a_path), parse_tdb(b_path)
     workdir = Path(workdir or tempfile.mkdtemp(prefix="compat_"))
     workdir.mkdir(parents=True, exist_ok=True)
-    An, Bn, notes = ts.normalize_pair(A, B, phase_map, sublattice_map)
+    An, Bn, notes = ts.normalize_pair(A, B, phase_map, sublattice_map, on_error="keep")
     changed = [n for n in notes if n.action in ("renamed", "reordered", "rescaled")]
     a_rescaled = [n for n in notes if n.action == ts.A_RESCALED]
     an_path = a_path
@@ -597,7 +671,7 @@ def summary_text(ev: Evaluation, rel=lambda p: p) -> str:
     L = [f"evaluate_compatibility: A = {Path(ev.a_path).name} (base), B = {Path(ev.b_path).name}; shared elements "
          f"{', '.join(map(_cap, ev.shared)) or 'none'}"]
     done = [n.text() for n in ev.norm_notes if n.action in ts.NORM_CHANGES]
-    kept = [n.text() for n in ev.norm_notes if n.action in ("not_rescaled", "incompatible", "kept")]
+    kept = [n.text() for n in ev.norm_notes if n.action in ("not_rescaled", "incompatible", "unmapped", "kept")]
     if done or kept:
         L.append("Normalised B to A's conventions: " + (_examples(done, 4) if done else "nothing")
                  + (f"; NOT normalised: {_examples(kept, 3)}" if kept else ""))
@@ -678,7 +752,7 @@ def write_pptx(ev: Evaluation, path: str) -> str:
             line = line[1:-1]
         rows.append([C(f"{s.n}  {s.title}", bold=True), C(s.verdict, bold=True, align="c"),
                      C(clip(line, 420, f"Excel sheet '{sheets[s.n]}'"))])
-    ov = ev.overall.split(" ")[0]
+    ov = "WARNING" if "with warnings" in ev.overall.split(";")[0] else ev.overall.split(" ")[0]
     rows.append([C("Overall", bold=True), C(ov, bold=True, align="c"), C(ev.overall)])
     pu.add_flow_table_slides(prs, f"Compatibility: {Path(ev.a_path).stem} + {Path(ev.b_path).stem}",
                              ["Stage", "Status", "Verdict"], rows, [2.3, 1.9, 8.6], font_size=13, subtitle=sub,

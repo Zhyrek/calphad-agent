@@ -128,6 +128,12 @@ class StageView(Subsystem):
             return None
 
 
+def stage_renames(tdb: TDB, renames: Dict[str, str]) -> Dict[str, str]:
+    """The part of ``renames`` ({old: new}, from a merge's 'rename' decision) that applies to ``tdb``: phases it still
+    has under the old name and not under the new one (B's own versions, not the merged file)."""
+    return {o: n for o, n in (renames or {}).items() if o in tdb.phases and n not in tdb.phases}
+
+
 def stage_view_of(path_or_tdb, label: str, elements=None, rename=None) -> StageView:
     tdb = path_or_tdb if isinstance(path_or_tdb, TDB) else parse_tdb(str(path_or_tdb))
     return StageView(tdb, label, elements, rename)
@@ -827,7 +833,7 @@ def phase_tokens(name: str) -> frozenset:
 @dataclass
 class NormNote:
     phase: str
-    action: str          # renamed | reordered | rescaled | not_rescaled | incompatible | candidate | kept
+    action: str          # renamed | reordered | rescaled | not_rescaled | incompatible | unmapped | candidate | kept
     detail: str
 
     def text(self) -> str:
@@ -983,6 +989,12 @@ def normalize_phase_model(A: TDB, B: TDB, phase: str, override=None) -> List[Nor
     pa, pb = A.phases[phase], B.phases[phase]
     if isinstance(override, str) and override.lower() == "keep":
         return [NormNote(phase, "kept", f"B's model {_subl_text(pb)} left unchanged (sublattice_map 'keep')")]
+    na, nb = (len(p.site_ratios) - len(_va_only(p)) for p in (pa, pb))
+    if na != nb:
+        # a different number of real sublattices is a different model: no sublattice_map can map it, the merge
+        # has to keep one model or both (merge decision db1 / db2 / rename)
+        return [NormNote(phase, "incompatible", f"A {_subl_text(pa)} has {na} non-vacancy sublattices, B "
+                                                f"{_subl_text(pb)} has {nb}: different models, B's kept as is")]
     m = sublattice_mapping(pa, pb, override)
     if m is None:
         return [NormNote(phase, "incompatible", f"site ratios not proportional: A {_subl_text(pa)} vs B "
@@ -1059,22 +1071,33 @@ def normalize_phase_model(A: TDB, B: TDB, phase: str, override=None) -> List[Nor
 
 
 def normalize_pair(A: TDB, B: TDB, phase_map: Optional[Dict[str, str]] = None,
-                   sublattice_map: Optional[Dict] = None) -> Tuple[TDB, TDB, List[NormNote]]:
+                   sublattice_map: Optional[Dict] = None, on_error: str = "raise") -> Tuple[TDB, TDB, List[NormNote]]:
     """(A', B', notes): B in A's conventions (normalize_to_base); A' is A, except for phases where the magnetic
     exception applies (B magnetic with ~1 atom/fu, A not magnetic): there A is rescaled to B's site ratios."""
     An = copy.deepcopy(A)
-    Bn, notes = normalize_to_base(An, B, phase_map, sublattice_map)
+    Bn, notes = normalize_to_base(An, B, phase_map, sublattice_map, on_error)
     return An, Bn, notes
 
 
+def unmapped_hint(phase: str) -> str:
+    return (f"sublattice_map {{'{phase}': [...]}} (B's sublattice i -> A's position) if the user knows the "
+            f"correspondence, or {{'{phase}': 'keep'}} to leave B's model as is (the merge then asks "
+            f"'phase:{phase}': db1 / db2 / rename if the models differ)")
+
+
 def normalize_to_base(A: TDB, B: TDB, phase_map: Optional[Dict[str, str]] = None,
-                      sublattice_map: Optional[Dict] = None) -> Tuple[TDB, List[NormNote]]:
+                      sublattice_map: Optional[Dict] = None, on_error: str = "raise") -> Tuple[TDB, List[NormNote]]:
     """Copy of B in A's conventions.  Phase names: an explicit phase_map {B name: A name}, else a clear alias
     (identical structure tokens - LAVES_C15 / C15_LAVES / C15, SIGMA / SIGMA_D8B, A2_BCC / BCC_A2 - one phase on
     each side, the A name unused in B, and proportional site ratios).  Weaker matches are returned as 'candidate'
     notes, never applied.  Then each phase present in both is reordered / rescaled to A's model - except a magnetic
     B phase with ~1 atom/fu against a non-magnetic A phase: there ``A`` itself (modified in place; normalize_pair
-    works on a copy) is rescaled to B's site ratios."""
+    works on a copy) is rescaled to B's site ratios.
+
+    on_error: 'raise' (a phase whose sublattice correspondence is ambiguous raises SublatticeMapError) or 'keep'
+    (that phase keeps B's model unchanged and gets an 'unmapped' note with the error - evaluate_compatibility and
+    staged_merge report it instead of stopping).  A different number of non-vacancy sublattices is never an error:
+    it is a different model ('incompatible' note; the merge decides db1 / db2 / rename)."""
     out = copy.deepcopy(B)
     notes: List[NormNote] = []
     smap = {k.upper(): v for k, v in (sublattice_map or {}).items()}
@@ -1120,5 +1143,11 @@ def normalize_to_base(A: TDB, B: TDB, phase_map: Optional[Dict[str, str]] = None
             notes.append(NormNote(b, "candidate", f"~ A's {a} (shares '{'/'.join(sorted(tb & phase_tokens(a)))}'); "
                                                   f"phase_map {{'{b}': '{a}'}} if the user says it is the same phase"))
     for ph in sorted(set(out.phases) & set(A.phases)):
-        notes += normalize_phase_model(A, out, ph, smap.get(ph))
+        try:
+            notes += normalize_phase_model(A, out, ph, smap.get(ph))
+        except SublatticeMapError as e:
+            if on_error != "keep":
+                raise
+            msg = str(e).split("; give sublattice_map")[0]
+            notes.append(NormNote(ph, "unmapped", f"B's model {_subl_text(out.phases[ph])} kept as is: {msg}"))
     return out, notes

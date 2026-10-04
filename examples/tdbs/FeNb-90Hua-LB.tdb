@@ -1,0 +1,164 @@
+$
+$ Database for Fe-Nb from W. Huang 1990 (Included in LB Vol. 3)
+$
+$ W. Huang, Z. Metallkd., 81, 397-404(1990).
+$
+$ Dataset created 2010.01.23 by Bengt Hallstedt.
+$ 2021.01.02: Modified for use with GES6.
+$
+$ Stoichiometric C14_LAVES.
+$
+$ The equilibria involving MU_D85 are slightly different in the paper.
+$
+$ ------------------------------------------------------------------------------
+ TEMP-LIM 298.15 6000.00 !
+$
+$ELEMENT NAME  REF. STATE               ATOMIC MASS H298-H0    S298    !
+$
+ ELEMENT VA   VACUUM                      0.0          0.0      0.0    ! 
+ ELEMENT FE   BCC_A2                     55.847     4489.0     27.2797 ! 
+ ELEMENT NB   BCC_A2                     92.9064    5220.0     36.27   ! 
+$ ------------------------------------------------------------------------------
+$ Phase definitions
+$
+ PHASE LIQUID:L % 1 1 !
+ CONST LIQUID:L : FE NB : !
+$
+$ Fcc (cF4, Fm-3m) and MeX (cF8, Fm-3m)
+$
+ PHASE FCC_A1 %A 2 1 1 !
+ CONST FCC_A1 : FE% NB : VA : !
+$
+$ Bcc (cI2, Im-3m)
+$
+ PHASE BCC_A2 %B 2 1 3 !
+ CONST BCC_A2 : FE% NB% : VA : !
+$
+$ Hcp (hP2, P6_3/mmc) and Me2X (NiAs-type, hP4, P6_3/mmc, B8_1)
+$
+ PHASE HCP_A3 %A 2 1 0.5 !
+ CONST HCP_A3 : FE NB : VA : !
+$
+$ Prototype MgZn2 (hP12, P6_3/mmc)
+$
+ PHASE C14_LAVES % 2 2 1 !
+ CONST C14_LAVES : FE : NB : !
+$
+$ Prototype Fe7W6 (hR13, R-3m)
+$
+ PHASE MU_D85 % 3 7 2 4 !
+ CONST MU_D85 : FE : NB : FE NB% : !
+$ ------------------------------------------------------------------------------
+$ Defaults
+$
+ DEFINE-SYSTEM-DEFAULT ELEMENT 2 !
+ DEFAULT-COM DEFINE_SYSTEM_ELEMENT VA !
+ TYPE-DEF % SEQ * !
+ TYPE-DEF A GES AMEND_PHASE_DESCRIPTION @ MAGNETIC -3 0.28 !
+ TYPE-DEF B GES AMEND_PHASE_DESCRIPTION @ MAGNETIC -1 0.4 !
+ FUNCTION ZERO      298.15  0;                                         6000 N !
+ FUNCTION UN_ASS    298.15  0;                                         6000 N !
+ FUNCTION R         298.15  +8.31451;                                  6000 N !
+$ ------------------------------------------------------------------------------
+$ Element data
+$ ------------------------------------------------------------------------------
+$ Fe
+$
+$ ORTHORHOMBIC_A20 and TETRAGONAL_U added im unary 4.1
+$
+ PAR  G(BCC_A2,FE:VA),,                 +GHSERFE;,,                   N 91Din !
+ PAR  TC(BCC_A2,FE:VA),,                 1043.00;,,                   N 91Din !
+ PAR  BM(BCC_A2,FE:VA),,                    2.22;,,                   N 91Din !
+ PAR  G(FCC_A1,FE:VA),,                 +GFCCFE;,,                    N 91Din !
+ PAR  TC(FCC_A1,FE:VA),,                 -201.00;,,                   N 91Din !
+ PAR  BM(FCC_A1,FE:VA),,                   -2.10;,,                   N 91Din !
+ PAR  G(HCP_A3,FE:VA),,                 +GHCPFE;,,                    N 91Din !
+$PAR  G(CBCC_A12,FE:VA),,               +GHSERFE+4745;,,              N 91Din !
+$PAR  G(CUB_A13,FE:VA),,                +GHSERFE+3745;,,              N 91Din !
+$PAR  G(ORTHORHOMBIC_A20,FE),,          +GHSERFE+5000;,,              N 99SGUN !
+$PAR  G(TETRAGONAL_U,FE),,              +GHSERFE+5000;,,              N 99SGUN !
+ PAR  G(LIQUID,FE),,                    +GLIQFE;,,                    N 91Din !
+$
+ FUNCTION GHSERFE   298.15  +1225.7+124.134*T-23.5143*T*LN(T)
+       -0.00439752*T**2-5.8927E-08*T**3+77359*T**(-1);
+      1811.00  Y  -25383.581+299.31255*T-46*T*LN(T)+2.29603E+31*T**(-9);
+      6000.00  N !
+ FUNCTION GFCCFE    298.15  -1462.4+8.282*T-1.15*T*LN(T)
+       +6.4E-04*T**2+GHSERFE;
+      1811.00  Y  -1713.815+0.940009*T+GHSERFE+4.9251E+30*T**(-9);
+      6000.00  N !
+ FUNCTION GHCPFE    298.15  -3705.78+12.591*T-1.15*T*LN(T)
+       +6.4E-04*T**2+GHSERFE;
+      1811.00  Y  -3957.195+5.249009*T+GHSERFE+4.9251E+30*T**(-9);
+      6000.00  N !
+ FUNCTION GLIQFE    298.15  +12040.17-6.55843*T+GHSERFE-3.67516E-21*T**7;
+      1811.00  Y  -10838.83+291.302*T-46*T*LN(T);
+      6000.00  N !
+$ ------------------------------------------------------------------------------
+$ Nb
+$
+ PAR  G(BCC_A2,NB:VA),,                 +GHSERNB;,,                   N 91Din !
+ PAR  G(FCC_A1,NB:VA),,                 +GHSERNB+13500+1.7*T;,,       N 91Din !
+ PAR  G(HCP_A3,NB:VA),,                 +GHSERNB+10000+2.4*T;,,       N 91Din !
+ PAR  G(LIQUID,NB),,                    +GLIQNB;,,                    N 91Din !
+$
+ FUNCTION GHSERNB   298.15  -8519.353+142.045475*T-26.4711*T*LN(T)
+       +2.03475E-04*T**2-3.5012E-07*T**3+93399*T**(-1);
+      2750.00  Y  -37669.3+271.720843*T-41.77*T*LN(T)+1.528238E+32*T**(-9);
+      6000.00  N !
+ FUNCTION GLIQNB    298.15  +29781.555-10.816418*T+GHSERNB-3.06098E-23*T**7;
+      2750.00  Y  -7499.398+260.756148*T-41.77*T*LN(T);
+      6000.00  N !
+$ ------------------------------------------------------------------------------
+$ Binary system
+$
+$ From W. Huang 1990 (Included in LB Vol. 3)
+$
+$ W. Huang, Z. Metallkd., 81, 397-404(1990).
+$
+$ Checked against LB and paper. Checked at 6000K.
+$
+$ Stoichiometric C14_LAVES.
+$
+$ The equilibria involving MU_D85 are slightly different in the paper.
+$
+ PAR  L(LIQUID,FE,NB;0),,               -56553+10.828*T;,,            N 90Hua3 !
+ PAR  L(LIQUID,FE,NB;1),,               +13400;,,                     N 90Hua3 !
+$
+ PAR  L(FCC_A1,FE,NB:VA;0),,            -4784;,,                      N 90Hua3 !
+$
+ PAR  L(BCC_A2,FE,NB:VA;0),,            -4400+6.333*T;,,              N 90Hua3 !
+$
+ PAR  G(C14_LAVES,FE:NB),,              +2*GFCCFE+GHSERNB
+             -53623+5.542*T;,,                                        N 90Hua3 !
+$
+ PAR  G(MU_D85,FE:NB:FE),,              +7*GFCCFE+2*GHSERNB+4*GHSERFE
+             +103747;,,                                               N 90Hua3 !
+ PAR  G(MU_D85,FE:NB:NB),,              +7*GFCCFE+6*GHSERNB
+             -239093+20*T;,,                                          N 90Hua3 !
+$
+$ Metastable
+$
+ PAR  L(HCP_A3,FE,NB:VA;0),,            -4784;,,                      N 90Hua3 !
+$
+$PAR  G(SIGMA_OLD,FE:NB:FE),,           +8*GFCCFE+4*GHSERNB
+$            +18*GHSERFE+UN_ASS;,,                                    N !
+$PAR  G(SIGMA_OLD,FE:NB:NB),,           +8*GFCCFE+22*GHSERNB
+$            +UN_ASS;,,                                               N !
+$ ------------------------------------------------------------------------------
+$
+ ASSESSED_SYSTEM
+  FE-NB(TDB -* +LIQUID +FCC_A1 +BCC_A2 +C14_LAVES +MU_D85
+  ;P3 TMM:300/3000 STP:.1/1800/-2) !
+$
+$
+ LIST-OF-REFERENCE
+ NUMBER  SOURCE
+  Null   'Unknown source'
+  Same   'Same or similar interaction as in the corresponding stable phase'
+  REFLAV 'Laves phase convention: G(LAVES,X:X)=+3*GHSERXX+15000'
+  COST   'COST 507 database'
+  90Hua3 'W. Huang, Z. Metallkd., 81, 397-404(1990); Fe-Nb'
+  91Din  'A.T. Dinsdale, Calphad, 15, 317-425(1991).'
+  99SGUN 'SGTE unary database V.4.1, 1999.'
+!

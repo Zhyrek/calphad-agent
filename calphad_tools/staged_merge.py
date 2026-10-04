@@ -77,7 +77,21 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
     work.mkdir(parents=True, exist_ok=True)
     A, B = parse_tdb(a_path), parse_tdb(b_path)
     sa, sb = _stem(a_path), _stem(b_path)
-    An, Bn, notes = ts.normalize_pair(A, B, phase_map, sublattice_map)
+    An, Bn, notes = ts.normalize_pair(A, B, phase_map, sublattice_map, on_error="keep")
+    unmapped = [n for n in notes if n.action == "unmapped"]
+    if unmapped:
+        # B's sublattices cannot be matched to A's unambiguously: a decision, asked like the merge's own
+        lines = ["Merge of: db1 (" + Path(a_path).name + "), db2 (" + Path(b_path).name + ")",
+                 f"Pending decisions: {len(unmapped)}"]
+        for n in unmapped:
+            lines += [f"  * sublattice_map:{n.phase}: {n.detail.split(' kept as is: ', 1)[-1]}",
+                      f"      - sublattice_map {{'{n.phase}': [...]}}: B's sublattice i -> A's position (as in A's "
+                      f"PHASE line; vacancy-only sublattices stay in place)",
+                      f"      - sublattice_map {{'{n.phase}': 'keep'}}: leave B's model as is; if the models then "
+                      f"differ, decisions {{'phase:{n.phase}': ...}}: 'db1' (A's model), 'db2' (B's) or 'rename' "
+                      f"(keep both, B's as {n.phase}_2)"]
+        return {"versions": {}, "notes": notes, "unmapped": unmapped, "pending_report": "\n".join(lines),
+                "A": a_path, "B": b_path, "B_original": b_path}
     changed = [n for n in notes if n.action in ("renamed", "reordered", "rescaled")]
     a_resc = [n for n in notes if n.action == ts.A_RESCALED]
     a_eff = a_path                      # A's description used everywhere below (A0 when the magnetic exception applies)
@@ -122,7 +136,9 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
     plan = ts.plan_merge([a_eff, b_eff], dec, policy)
     result: Dict[str, Any] = {"versions": versions, "notes": notes, "shared": shared, "decisions": dec,
                               "auto_decisions": auto, "A": a_path, "A_eff": a_eff, "B": b_eff,
-                              "B_original": b_path}
+                              "B_original": b_path,
+                              # B's phases a 'rename' decision kept under a new name in Q: {B name: Q name}
+                              "phase_renames": plan.renames_of(1)}
     if plan.pending:
         result["pending"] = plan
         return result
@@ -269,6 +285,7 @@ def run_plots(versions, need, items, fig_dir: Path, settings: Dict, n_workers=No
                 try:
                     data = json.loads(j.read_text())
                     r["invariants"] = data.get("invariants", [])
+                    r["phases_found"] = [str(p) for p in data.get("phases_found") or []]
                     r["mapping_check"] = _check_note(data.get("mapping_check"))
                 except (ValueError, OSError):
                     pass
@@ -283,6 +300,23 @@ def _base(p: str) -> str:
 def _vertices(inv: Dict, els: Sequence[str]) -> List[Tuple[str, Tuple[float, ...]]]:
     comp = inv.get("compositions", {})
     return sorted((_base(p), tuple(float(comp.get(p, {}).get(e, math.nan)) for e in els)) for p in inv["phases"])
+
+
+def rename_invariants(invs: List[Dict], mapping: Dict[str, str]) -> List[Dict]:
+    """Invariants with phases renamed (B's MU_D85 -> Q's MU_D85_2; '#n' suffixes kept)."""
+    if not mapping:
+        return invs
+    out = []
+    for inv in invs:
+        def ren(p):
+            b = _base(p)
+            return mapping.get(b, b) + p[len(b):]
+        inv = dict(inv)
+        inv["phases"] = [ren(p) for p in inv.get("phases", [])]
+        if isinstance(inv.get("compositions"), dict):
+            inv["compositions"] = {ren(p): v for p, v in inv["compositions"].items()}
+        out.append(inv)
+    return out
 
 
 def compare_invariants(old: List[Dict], new: List[Dict], els: Sequence[str], ternary: bool,
@@ -333,6 +367,7 @@ class Step:
     forced_items: List[Item] = field(default_factory=list)      # exact-only subsystems replotted on request
     forced_inv: Dict[str, List[Dict]] = field(default_factory=dict)
     forced_kind: Dict[str, str] = field(default_factory=dict)
+    zero_g: List[str] = field(default_factory=list)            # end-members with no G (pycalphad 0): stable or not
 
     def forced_shift(self, name: str) -> Tuple[float, float, bool]:
         """(max |ΔT|, max Δx, consistent?) of a forced replot: consistent = nothing appeared/disappeared and the
@@ -345,11 +380,14 @@ class Step:
         ok = all(r["status"] in ("moved", "same") for r in rows) and dT <= FORCE_TOL_T and dx <= FORCE_TOL_X
         return dT, dx, ok
 
+    def forced_phrase(self, name: str) -> str:
+        return "replotted as a check" if " kept as " in self.forced_kind.get(name, "") else "replotted on request"
+
     def forced_label(self, it: "Item") -> str:
         dT, dx, ok = self.forced_shift(it.name)
         if not math.isfinite(dT):
-            return f"{it.name}: {self.forced_kind.get(it.name, 'exact')}, replotted on request - not compared"
-        s = (f"{it.name}: {self.forced_kind.get(it.name, 'exact')}, replotted on request - max invariant "
+            return f"{it.name}: {self.forced_kind.get(it.name, 'exact')}, {self.forced_phrase(it.name)} - not compared"
+        s = (f"{it.name}: {self.forced_kind.get(it.name, 'exact')}, {self.forced_phrase(it.name)} - max invariant "
              f"ΔT {dT:.2f} K, Δx {dx:.4f}")
         if not ok:
             s += " - SHIFTED: the exactness claim FAILED"
@@ -427,6 +465,8 @@ def step_line(st: Step, tol_T: float) -> str:
             s += f", largest {_fmt_shift(*b)}"
         elif mv:
             s += f" ({_fmt_shift(*mv[0])})"
+    if st.zero_g:
+        s += "\n    no G (pycalphad uses 0): " + "; ".join(st.zero_g)
     if st.forced_items:
         parts = []
         for it in st.forced_items:
@@ -528,12 +568,15 @@ def write_deck(steps: List[Step], plots, path: str, a_name: str, b_name: str, to
         failed = [it for it in st.forced_items if not st.forced_shift(it.name)[2]]
         diag = ", ".join(it.name for it in st.changed_items) or "none"
         if st.forced_items:
-            diag += "\nreplotted on request: " + ", ".join(
-                f"{it.name} (ΔT {st.forced_shift(it.name)[0]:.2f} K)" for it in st.forced_items)
+            for phrase in sorted({st.forced_phrase(it.name) for it in st.forced_items}):
+                diag += f"\n{phrase}: " + ", ".join(
+                    f"{it.name} (ΔT {st.forced_shift(it.name)[0]:.2f} K)" for it in st.forced_items
+                    if st.forced_phrase(it.name) == phrase)
         if failed:
             shift = "FORCED REPLOT SHIFTED - exactness FAILED: " + ", ".join(it.name for it in failed) + \
                 ("" if shift == "—" else f"; {shift}")
-        rows.append([C(st.title, bold=True), C(STEP_DESC.get(st.new, "")), C(st.what_changed()),
+        wc = st.what_changed() + ("\nno G (pycalphad uses 0): " + "; ".join(st.zero_g) if st.zero_g else "")
+        rows.append([C(st.title, bold=True), C(STEP_DESC.get(st.new, "")), C(wc),
                      C(diag, fill="differs" if failed else "error" if st.changed_items else "same"),
                      C(f"{len(mv)} of {max(st.n_compared(), len(mv))}" if st.changed_items else "—", align="c"),
                      C(shift, fill="differs" if failed else None, bold=bool(failed))])
@@ -560,7 +603,10 @@ def write_deck(steps: List[Step], plots, path: str, a_name: str, b_name: str, to
             n_all = len(st.changed_items) + len(st.forced_items)
             n_shown = min(n_all, 4 + (2 if st.forced_items else 0))
             pu.add_image_slide(prs, f"{st.title}: diagrams that changed"
-                               + (" + exact changes replotted on request" if st.forced_items else ""), png,
+                               + ("" if not st.forced_items else
+                                  " + renamed phase replotted as a check" if all(
+                                      st.forced_phrase(it.name) == "replotted as a check" for it in st.forced_items)
+                                  else " + exact changes replotted on request"), png,
                                subtitle=(f"left {st.old}, right {st.new}" if n_shown <= 2 else
                                          f"top {st.old}, bottom {st.new}")
                                + (f"  (first {n_shown} of {n_all})" if n_all > n_shown else ""))
@@ -646,6 +692,10 @@ def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, subl
     r = build_versions(a_path, b_path, str(out), phase_map=phase_map, sublattice_map=sublattice_map,
                        decisions=decisions, policy=policy, progress=progress)
     versions: Dict[str, Version] = r["versions"]
+    if r.get("unmapped"):
+        r["written"] = False
+        r["report"] = r["pending_report"]
+        return r
     if r.get("pending") is not None:
         r["written"] = False
         r["report"] = r["pending"].report()
@@ -653,8 +703,20 @@ def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, subl
     EA = sorted(parse_tdb(a_path).real_elements)
     EB = sorted(parse_tdb(r["B"]).real_elements)
     views = {}
+    # a phase of B kept under a new name in Q (decision 'rename', e.g. MU_D85 -> MU_D85_2) is the same phase: the
+    # B-side versions that still call it by B's name are viewed (and their invariants matched) under Q's name
+    renames = r.get("phase_renames") or {}
+    inv_rename: Dict[str, Dict[str, str]] = {}
     for lab in ("B", "B1", "B2", "B3", "Q"):
-        views[lab] = ts.StageView(parse_tdb(versions[lab].path), lab, elements=EB)
+        tdb = parse_tdb(versions[lab].path)
+        inv_rename[lab] = {} if lab == "Q" else ts.stage_renames(tdb, renames)
+        views[lab] = ts.StageView(tdb, lab, elements=EB, rename=inv_rename[lab])
+    renamed_in: Dict[Tuple[str, ...], str] = {}           # B's subsystems where a renamed phase exists -> label
+    for old_n, new_n in renames.items():
+        for sub in ts.stage_subsystems(EB, (2, 3)):
+            if ts.restricted_model(views["B"], new_n, sub) is not None:
+                renamed_in.setdefault(tuple(sorted(sub)), f"{old_n} kept as {new_n}")
+    forced_user = forced
     chains = [["B", "B1", "B2", "B3", "Q"]]
     if "A1" in versions:
         versions["A"] = Version("A", a_path, f"{Path(a_path).name} (base)")
@@ -687,6 +749,11 @@ def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, subl
             items = [it for it in items if forced(it.elements) or any(
                 st.diff.get(it.elements) and st.diff.get(it.elements).changed for st in steps if st.old in chain)]
         need, fk = plan_plots(chain, versions, diffs, items, forced)
+        if not side_A:      # a renamed phase's subsystems are mapped again in Q as evidence (same diagram expected)
+            for it in items:
+                if tuple(sorted(it.elements)) in renamed_in and need.get(("Q", it.tag)) is not None:
+                    need[("Q", it.tag)] = None
+                    fk.add(("Q", it.tag))
         need_all.update(need)
         forced_all |= fk
         for st in steps:
@@ -694,8 +761,10 @@ def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, subl
                 st.forced_items = [it for it in items if (st.new, it.tag) in fk]
                 for it in st.forced_items:
                     sd = st.diff.get(it.elements)
+                    rn = renamed_in.get(tuple(sorted(it.elements))) if not side_A else None
                     st.forced_kind[it.name] = ("exact rescale" if sd is not None and sd.notes else
-                                               "numerically identical")
+                                               f"{rn}, numerically identical" if rn and not forced_user(it.elements)
+                                               else "numerically identical")
         items_by_chain.append(items)
     all_items = {it.tag: it for its in items_by_chain for it in its}
     plots: Dict[Tuple[str, str], Dict] = {}
@@ -708,8 +777,28 @@ def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, subl
             for it in its:
                 ro, rn = plots.get((st.old, it.tag)), plots.get((st.new, it.tag))
                 if ro and rn and ro.get("ok") and rn.get("ok"):
-                    target[it.name] = compare_invariants(ro["invariants"], rn["invariants"], list(it.elements),
-                                                         it.T_c is not None, tol_K, tol_x)
+                    target[it.name] = compare_invariants(
+                        rename_invariants(ro["invariants"], inv_rename.get(st.old, {})),
+                        rename_invariants(rn["invariants"], inv_rename.get(st.new, {})), list(it.elements),
+                        it.T_c is not None, tol_K, tol_x)
+    for st in steps:      # end-members without G (pycalphad uses 0): does the phase become stable where mapped?
+        done = set()
+        for it in sorted(st.items, key=lambda x: (len(x.elements), x.T_c or 0.0)):     # binaries first
+            sd = st.diff.get(it.elements)
+            for m in (sd.models if sd is not None else []):
+                ems = tuple(e for e in m.missing_g if (m.phase, e) not in done)
+                if not ems:
+                    continue
+                done |= {(m.phase, e) for e in ems}
+                rn = plots.get((st.new, it.tag)) or {}
+                where = it.name if it.T_c is not None else f"{it.name} {tmin_c:g}-{tmax_c:g} °C"
+                if not rn.get("ok"):
+                    seen = "not mapped"
+                elif m.phase in [_base(p) for p in rn.get("phases_found", [])]:
+                    seen = f"{m.phase} STABLE in the mapped {where} - check it"
+                else:
+                    seen = f"{m.phase} not stable in the mapped {where}"
+                st.zero_g.append(f"{m.phase} {', '.join(ems)}: {seen}")
     unknown = []
     if force_replot and force_replot is not True and not isinstance(force_replot, str):
         unknown = [n for n in force_replot if not any(force_matcher([n])(k) for k in known)]
@@ -717,6 +806,10 @@ def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, subl
     files = {"deck": str(out / f"staged_merge_{sa}+{sb}.pptx"), "xlsx": str(out / f"staged_merge_{sa}+{sb}.xlsx")}
     norm = [n for n in r["notes"] if n.action in ts.NORM_CHANGES]
     note = clip("Normalised: " + "; ".join(n.text() for n in norm), 125, "Excel 'Versions'") if norm else ""
+    if renames:
+        rn_note = "; ".join(f"{o} of B kept as {n} in Q (decision 'rename'), compared as the same phase"
+                            for o, n in renames.items())
+        note = (note + " | " if note else "") + clip(rn_note, 125, "Excel 'Versions'")
     imgs: List[str] = []
     if plot:
         fig_dir.mkdir(parents=True, exist_ok=True)
@@ -726,11 +819,17 @@ def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, subl
         files.pop("deck")
     write_xlsx(steps, plots, versions, files["xlsx"], r["notes"])
     r.update({"written": True, "steps": steps, "plots": plots, "files": files, "images": imgs,
+              "renamed_in": {ts.stage_sysname(k): v for k, v in renamed_in.items()},
               "tol_K": tol_K, "plotted": plot, "forced": sorted(forced_all), "force_unknown": unknown})
     return r
 
 
 def summary_text(r: Dict[str, Any], rel=lambda p: p) -> str:
+    if not r.get("written") and r.get("unmapped"):
+        return ("NOT FINISHED - decisions needed before staging: B's sublattices cannot be matched to A's for "
+                + ", ".join(n.phase for n in r["unmapped"]) + ". Nothing written.\n"
+                "Ask the user, then call again with sublattice_map (and decisions if the merge asks).\n"
+                + r["report"])
     if not r.get("written"):
         v = r["versions"]
         return ("NOT FINISHED - decisions needed for Q (the full merge). B1/B2 written: "
@@ -742,7 +841,12 @@ def summary_text(r: Dict[str, Any], rel=lambda p: p) -> str:
     norm = [n.text() for n in r["notes"] if n.action in ts.NORM_CHANGES]
     if norm:
         L.append("Normalised: " + "; ".join(norm[:4]) + (f" (+{len(norm) - 4})" if len(norm) > 4 else ""))
-    cands = [n.text() for n in r["notes"] if n.action in ("candidate", "incompatible", "not_rescaled")]
+    for old_n, new_n in (r.get("phase_renames") or {}).items():
+        where = [k for k, v in (r.get("renamed_in") or {}).items() if v.startswith(old_n + " ")]
+        L.append(f"Kept under a new name: {old_n} of {Path(r['B_original']).name} is {new_n} in Q (its model is "
+                 f"incompatible with A's {old_n}; decision 'rename'); B..B3's {old_n} is compared with Q's {new_n} as "
+                 f"the same phase" + (f", and {', '.join(where)} replotted in Q as a check" if where else ""))
+    cands = [n.text() for n in r["notes"] if n.action in ("candidate", "incompatible", "unmapped", "not_rescaled")]
     if cands:
         L.append("Not normalised: " + "; ".join(cands[:3]) + (f" (+{len(cands) - 3})" if len(cands) > 3 else ""))
     for st in r["steps"]:
