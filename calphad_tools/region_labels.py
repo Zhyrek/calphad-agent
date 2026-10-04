@@ -100,18 +100,22 @@ def label_axes(ax, recipe: Dict, *, lines=None, invariants=None, label_invariant
 def report_text(rep: Dict, ignored=()) -> str:
     """Short summary for the tool result: one line per kind, omitted labels as one line (count + names)."""
     labs = rep["labels"]
-    reg = [lab["text"] for lab in labs if lab["kind"] == "region" and not lab.get("outside")]
+    reg = [lab["text"] for lab in labs if lab["kind"] == "region" and not (lab.get("outside") or lab.get("leader")
+                                                                         or lab.get("below"))]
     out_ = [lab["text"] for lab in labs if lab["kind"] == "compound"]
     moved = [lab["text"] for lab in labs if lab["kind"] == "region" and lab.get("outside")]
     lead = [lab["text"] for lab in labs if lab.get("leader")]
+    below = [lab["text"] for lab in labs if lab.get("below")]
     inv = [lab["text"] for lab in labs if lab["kind"] == "invariant"]
     out = [f"phase labels ({len(reg)}): " + ", ".join(reg)]
     if out_:
         out.append("stoichiometric phases named outside the plot: " + ", ".join(out_))
     if moved:
         out.append("too small inside, named at the edge instead: " + ", ".join(moved))
+    if below:
+        out.append("too small inside, named right below its field: " + ", ".join(below))
     if lead:
-        out.append("inside the triangle, named with a leader line: " + ", ".join(lead))
+        out.append("too small inside, named with a leader line: " + ", ".join(lead))
     if inv:
         out.append("invariant temperatures: " + ", ".join(inv))
     unconf = [lab["text"] for lab in labs if lab["verified"] is None and lab["kind"] != "invariant"]

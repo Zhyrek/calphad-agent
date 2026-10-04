@@ -125,16 +125,21 @@ def is_leader(t):
     return bool((getattr(t, "_calphad_label", None) or {}).get("leader"))
 
 
+def is_below(t):
+    return bool((getattr(t, "_calphad_label", None) or {}).get("below"))
+
+
 def in_region(t):
-    """A label written inside its own region (not outside the plot, no leader line)."""
-    return not is_outside(t) and not is_leader(t)
+    """A label written inside its own region (not outside the plot, not below its field, no leader line)."""
+    return not is_outside(t) and not is_leader(t) and not is_below(t)
 
 
 def label_anchor(t):
     """Where a label claims its phases are: its position, or the point it was checked at for a name outside the
     plot or a leader label."""
     lab = t._calphad_label
-    return tuple(lab["at"]) if (lab.get("outside") or lab.get("leader")) else tuple(t.get_position())
+    return tuple(lab["at"]) if (lab.get("outside") or lab.get("leader") or lab.get("below")) \
+        else tuple(t.get_position())
 
 
 def check_anchors(ax):
@@ -208,7 +213,7 @@ def grow(q, d):
 
 
 def ternary(ax):
-    return ax._calphad_diagram["recipe"]["kind"] == "ternary"
+    return (getattr(ax, "_calphad_diagram", None) or {}).get("recipe", {}).get("kind") == "ternary"
 
 
 def in_plot(ax, pts, tol=0.5):
@@ -236,7 +241,9 @@ def check_layout(fig, ax, min_fs=MIN_FS):
         if is_outside(t):
             assert not in_plot(ax, p, tol=-0.5).any(), s
         elif is_leader(t):
-            assert ternary(ax) and len(t._calphad_label["key"]) == 1 and t.arrow_patch is not None, s
+            assert len(t._calphad_label["key"]) == 1 and t.arrow_patch is not None, s   # single phases only
+        elif is_below(t):
+            assert in_plot(ax, p).all() and t.get_rotation() == 60 and not ternary(ax), s
         else:
             assert in_plot(ax, p).all(), s
             assert not isinstance(t, Annotation), s                     # no leader lines
@@ -913,4 +920,114 @@ def test_label_ternary_compounds_and_leaders_synthetic():
     remove_label(tau)
     assert not find_labels(ax, "TAU") and not any(ln.get_gid() == DOT_PREFIX + "phase_label:TAU"
                                                   for ln in ax.get_lines())
+    plt.close(fig)
+
+
+def _fenb_c14_range(tmp_path):
+    """FeNb-90Hua-LB with C14 given a range (Fe on the Nb site, G(C14_LAVES,FE:FE) as the merged A1 database of
+    staged_merge has it): a thin C14 field at X(Nb) 0.32-0.333 down to the bottom of the plot."""
+    src = (ROOT / "examples/tdbs/FeNb-90Hua-LB.tdb").read_text()
+    assert " CONST C14_LAVES : FE : NB : !" in src
+    src = src.replace(" CONST C14_LAVES : FE : NB : !", " CONST C14_LAVES : FE : FE,NB : !")
+    src = src.replace(" PAR  G(C14_LAVES,FE:NB),,", " PAR  G(C14_LAVES,FE:FE),,              +3*GHSERFE+44130;,,"
+                      "                        N 12Liu !\n PAR  G(C14_LAVES,FE:NB),,")
+    p = tmp_path / "FeNb-C14range.tdb"
+    p.write_text(src)
+    return p
+
+
+def test_binary_thin_field_reaching_the_bottom(tb, tmp_path):
+    """Fe-Nb with a non-stoichiometric C14 (the user's trigger): its field is too thin for a label inside and too
+    thin to be a region of the plot near the bottom, but it reaches the bottom of the plot: named below the x axis
+    at its composition (60°), like the line compound of the original database; show_code draws the same."""
+    tdb = _fenb_c14_range(tmp_path)
+    text, images = call(tb, "map_phase_diagram", {"tdb": str(tdb), "elements": ["FE", "NB"], "tmin": 300,
+                                                  "tmax": 3000, "temperature_unit": "C", "formats": [],
+                                                  "output_prefix": "fenb_c14range"})
+    fig, ax = stored(images[0])
+    assert not ax._calphad_diagram["regions"]["compounds"]          # no longer a stoichiometric phase
+    c14 = [t for t in labels_of(ax, ("phase_label:",)) if t.get_text() == "C14"]
+    assert len(c14) == 1, text
+    t = c14[0]
+    assert t._calphad_label["kind"] == "region" and "C14" not in omitted_line(text)[1]
+    if is_outside(t):
+        assert t._calphad_label["outside"] == "bottom" and t.get_rotation() == 60 and 0.315 < t.xy[0] < 0.34
+        assert "named at the edge instead: " in text and "C14" in text.split("named at the edge instead: ")[1]
+    assert check_anchors(ax) >= 8
+    check_layout(fig, ax)
+    assert check_clearance(fig, ax) >= 2.0
+    # the original database: C14 a line compound, named the same way
+    text0, images0 = call(tb, "map_phase_diagram", {"tdb": "FeNb-90Hua-LB.tdb", "elements": ["FE", "NB"],
+                                                    "tmin": 300, "tmax": 3000, "temperature_unit": "C",
+                                                    "formats": [], "output_prefix": "fenb_orig"})
+    fig0, ax0 = stored(images0[0])
+    t0 = next(t for t in labels_of(ax0, ("phase_label:",)) if t.get_text() == "C14")
+    assert t0._calphad_label["kind"] == "compound" and t0._calphad_label["outside"] == "bottom"
+    assert abs(t0.xy[0] - 1 / 3) < 1e-6 and t0.get_rotation() == 60
+    # show_code
+    from calphad_tools import codegen
+    cells, ctx = codegen.build_cells(tb, images[0])
+    script = codegen.to_script(tb, cells, ctx)
+    assert "calphad_tools" not in script
+    d = tmp_path / "fenb_code"
+    d.mkdir()
+    (d / "gen.py").write_text(script + LABEL_DUMP)
+    run = subprocess.run([sys.executable, "-W", "ignore", "gen.py"], cwd=d, capture_output=True, text=True,
+                         timeout=900, env={**os.environ, "MPLBACKEND": "Agg"})
+    assert run.returncode == 0, run.stderr[-3000:]
+    import json
+    art = json.loads((d / "art.json").read_text())
+    want = {t.get_gid(): [t.get_text(), t._calphad_label.get("outside"), bool(t._calphad_label.get("leader"))]
+            for t in labels_of(ax)}
+    assert art["labels"] == want, (art["labels"], want)
+
+
+def test_binary_thin_field_ending_mid_figure_synthetic():
+    """Binary single phases that end above the bottom of the plot, too thin inside: σ is named right below its
+    lowest point, inside the axes (60°, starting ~2 pt below that point, clear of the lines below); μ has data points
+    right below it, so it gets a leader label; a terminal phase with no room stays omitted."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from calphad_tools.label_place import label_diagram
+    fig, ax = plt.subplots(figsize=(7.2, 5.4))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(300, 1300)
+    ax.set_xlabel("Mole fraction B")
+    sig = [[0.40, 600], [0.404, 600], [0.404, 1000], [0.40, 1000]]          # thin sigma field, 600-1000
+    mu = [[0.70, 700], [0.704, 700], [0.704, 1100], [0.70, 1100]]           # thin mu field, 700-1100
+    term = [[0.0, 900], [0.004, 900], [0.004, 1200], [0.0, 1200]]           # thin terminal field (left side)
+    polys = [{"key": ("FCC_A1", "SIGMA"), "xy": [[0.2, 600], [0.40, 600], [0.40, 1000], [0.2, 1000]]},
+             {"key": ("BCC_A2", "SIGMA"), "xy": [[0.404, 600], [0.6, 600], [0.6, 1000], [0.404, 1000]]},
+             {"key": ("MU_PHASE", "BCC_A2"), "xy": [[0.704, 700], [0.9, 700], [0.9, 1100], [0.704, 1100]]}]
+    for pl in polys + [{"xy": q} for q in (sig, mu, term)]:
+        q = np.array(pl["xy"] + pl["xy"][:1])
+        ax.plot(q[:, 0], q[:, 1], color="k", lw=1.25)
+    ax.plot([0.2, 0.6], [600, 600], color="k", lw=1.25)                     # the line sigma ends on
+    xs, ys = np.meshgrid(np.linspace(0.6, 0.72, 13), np.linspace(400, 690, 12))
+    ax.scatter(xs.ravel(), ys.ravel(), s=12, color="k")                     # data right below mu
+    regions = {"polygons": polys, "compounds": [], "invariants": [],
+               "phase_points": {"SIGMA": sig, "MU_PHASE": mu, "HCP_A3": term}}
+    rep = label_diagram(ax, regions, None, None, kind="binary", elements=["A", "B"], T_unit="C")
+    got = {lab["text"]: lab for lab in rep["labels"]}
+    assert got["σ"].get("below") and got["σ"]["rotation"] == 60, got
+    assert got["μ"].get("leader"), got
+    assert "HCP" not in got and "HCP" in [sk["label"] for sk in rep["skipped"]]     # terminal: no room, omitted
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    f = fig.dpi / 72
+    t = next(t for t in ax.texts if t.get_text() == "σ")
+    q = text_rect(t, r)
+    end = ax.transData.transform((0.402, 600))
+    assert q[:, 1].max() < end[1] - 1.5 * f and q[:, 1].max() > end[1] - 6 * f      # starts ~2 pt below the end
+    assert np.hypot(*(q[np.argmax(q[:, 1])] - end)) < 12 * f                       # right at the end point
+    assert in_plot(ax, q).all()
+    assert q[:, 0].mean() < end[0] and q[:, 1].mean() < end[1]                     # runs down and away (left)
+    pts = ax.collections[0].get_offset_transform().transform(ax.collections[0].get_offsets())
+    for u, v in pts:
+        assert not point_in_rect(q, u, v, 3 * f)
+    m = next(t for t in ax.texts if t.get_text() == "μ")
+    assert m.arrow_patch is not None and np.allclose(m.xy, m._calphad_label["at"])
+    for u, v in pts:
+        assert not point_in_rect(text_rect(m, r), u, v, 3 * f)
     plt.close(fig)

@@ -336,14 +336,22 @@ added, and the labels avoid those points.
   legend and other labels, with a `label_style.margin` (default 2.5 pt) all round. In a skinny region it is turned
   (along the region, or in 15° steps) or made smaller, down to `label_style.min_fontsize` (default 8 pt).
   Two- and three-phase fields that still don't fit are left out; the result text lists them on one line.
-* **Single-phase fields that don't fit inside** are named at the edge, like stoichiometric phases (below). In a
-  ternary, that is any phase whose field touches an edge (it exists in that binary): at the middle of its contact
-  with the edge, or of the longer contact if it touches two. In a binary, only intermediate phases are named this
-  way, below the x axis at their mid composition. The liquid and the end-member solid solutions never are.
-* **Ternary-only phases** are fields that touch no edge, and ternary compounds inside the triangle. When they don't
-  fit inside, the label goes in the nearest free space (inside the triangle on a free area, else just outside it).
-  A thin leader line runs from the label to the field, with a dot at a point compound. These are never left out,
-  and this is the only use of leader lines.
+* **Single-phase fields that don't fit inside** each get a place of their own, one region at a time (a second field
+  of a phase that is named elsewhere too). This includes fields too thin to be a region of the plot at all.
+  * *Ternary:* a field that touches an edge (the phase exists in that binary) is named beyond that edge, like a
+    stoichiometric phase (below). The name sits at the middle of its contact with the edge, or of the longer
+    contact if it touches two.
+  * *Binary:* a field that reaches the bottom of the plot is named below the x axis at its composition there, at
+    60°. Example: a C14 with a narrow range.
+  * *Binary:* a field that ends higher up is named right below its lowest point, inside the axes. The text is at
+    60° with no box; it starts about 2 pt below that point and runs down and away, only where it crosses no line
+    or other label.
+  * The liquid and the end-member solid solutions are never named below the x axis.
+* **Leader lines** are the last resort for single phases. They are used for ternary-only phases (fields that touch
+  no edge, and ternary compounds inside the triangle), and for intermediate binary phases with no room below their
+  field. The label goes in the nearest free space; inside a ternary that means a free area of the triangle, else
+  just outside it. A thin line runs from the label to the field, with a dot at a point compound. These are never
+  left out. An end-member phase that finds no place stays omitted, and the result text says so.
 * **Stoichiometric phases** (binary line compounds, ternary point or line compounds on an edge) are never named
   inside the plot. Their name goes outside, right at their composition: below the x axis of a binary (text at
   60°), or beyond the nearest edge of a ternary (60° at the bottom edge, ±30° — square to the edge — at the slanted

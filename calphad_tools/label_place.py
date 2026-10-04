@@ -12,9 +12,11 @@ per cell):
    text box, grown by ``margin`` (2.5 pt) all round, fits, from ``fontsize`` down to ``min_fontsize`` (default 8
    pt), horizontal or turned (along a skinny region, or any multiple of 15 degrees when that gives a clearly larger
    label).  Two- and three-phase fields that do not fit are left out (reported).  A single-phase field that does
-   not fit (or is too thin to be a region at all) is named outside the plot like a stoichiometric phase (5.) when
-   it reaches an edge - in a binary only intermediate phases, never the liquid or an end-member phase; a
-   ternary-only field gets a label in the nearest free space with a thin leader line (never left out);
+   not fit (or is too thin to be a region at all), each region on its own: ternary - named beyond the edge it
+   touches, like a stoichiometric phase (5.); binary - below the x axis at its composition if it reaches the
+   bottom of the plot (never the liquid or an end-member phase), else right below its lowest point inside the
+   axes (60 degrees, where that crosses no line); failing that (and for ternary-only fields) a label in the nearest
+   free space with a thin leader line - intermediate phases are never left out;
 4. binary invariant temperatures (no reaction types) go right above or right below their line, inside the
    adjacent region, from ``invariant_fontsize`` down to ``min_fontsize``, or are left out;
 5. stoichiometric phases (binary line compounds, ternary point / line compounds) are never named inside their
@@ -804,11 +806,16 @@ def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Option
     name_of = lambda key: region_label(key, elements, phase_labels, liquids)      # noqa: E731
     edges, ticks = _edges(ax, kind)
     items, leaders = _compound_items(ax, kind, regions.get("compounds") or [], edges, check, report, name_of)
-    more_items, more_leaders = _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, grid,
-                                                   {it["key"] for it in items + leaders}, name_of)
+    more_items, more_leaders, below = _single_phase_items(ax, kind, R, edges, report, check, liquids, regions,
+                                                          grid, {it["key"] for it in items + leaders}, name_of)
     _label_outside(ax, kind, items + more_items, edges, ticks, st, meas, renderer, gid_for, record)
     for sk in report["skipped"]:
         sk.pop("_region", None)
+    for it in _place_below(ax, R, below, st, meas, renderer, walls, obst, placed, gid_for, record):
+        if it["terminal"]:                              # no room below it: an end-member phase stays omitted
+            report["skipped"].append({"label": it["s"], "reason": small})
+        else:                                           # an intermediate phase: leader label
+            more_leaders.append({**it, "target": it["probe"], "dot": False})
     if leaders or more_leaders:
         for t in ax.texts:                              # the names outside are obstacles for leader labels
             if _is_ours(t) and (getattr(t, "_calphad_label", None) or {}).get("outside"):
@@ -962,7 +969,7 @@ def _is_terminal(key, grid, pts_data, xlim, tol: float = 2e-3) -> bool:
         xs = np.unique(np.round(xy[:, 0], 12))
         for x_end in (xs.min(), xs.max()):
             sel = np.isclose(xy[:, 0], x_end) & (keys >= 0)
-            if any(key[0] in table[k] for k in np.unique(keys[sel])):
+            if any(table[k] == tuple(key) for k in np.unique(keys[sel])):     # stable alone there
                 return True
     return False
 
@@ -973,10 +980,13 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
     all (only their boundary points, ``regions["phase_points"]``, are known).  Each region is handled on its own:
     a second region of a phase that is named elsewhere still gets its own name.
 
-    Binary: an intermediate phase is named below the x axis at its mid composition; the liquid and terminal
-    (end-member) phases never are.  Ternary: a field touching an edge (the phase exists in that binary) is named
+    Binary: a field reaching the bottom of the plot is named below the x axis at its composition there (not an
+    end-member phase); a field ending above it is named right below its lowest point, inside the axes (``below``
+    items, placed by :func:`_place_below`; failing that an intermediate phase gets a leader label); the liquid never
+    gets either.  Ternary: a field touching an edge (the phase exists in that binary) is named
     beyond that edge, at the middle of its contact (the longer one); a field inside the triangle gets a leader
-    label.  Returns (edge items, leader items); the report's omitted list keeps only what got nowhere."""
+    label.  Returns (edge items, leader items, below items); the report's omitted list keeps only what got
+    nowhere."""
     ppp = R.ppp
     inv = ax.transData.inverted()
     named = {tuple(t._calphad_label["key"]) for t in ax.texts if _is_ours(t) and hasattr(t, "_calphad_label")
@@ -1017,17 +1027,31 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
             to_mid = np.array([1 / 3, 1 / 3]) - c
             c = c + 2e-3 * to_mid / max(np.linalg.norm(to_mid), 1e-12)
         cands.append((key, name_of(key), pts, (float(c[0]), float(c[1])), None))
-    edge_items, leaders = [], []
+    edge_items, leaders, below = [], [], []
     for key, s, pts, probe, sk in cands:
         if sk is None and (key in named or key in taken):
             continue                                    # boundary points only, and the phase is named already
-        best = None
+        best, low = None, None
         if kind == "binary":
-            if key[0] in liquids or is_liquid_name(key[0]) or \
-                    _is_terminal(key, grid, inv.transform(pts), ax.get_xlim()):
-                continue                                # never the liquid or an end-member phase
-            x0, x1 = pts[:, 0].min(), pts[:, 0].max()
-            best = (x1 - x0, "bottom", np.array([(x0 + x1) / 2, edges["bottom"][0][1]]))
+            if key[0] in liquids or is_liquid_name(key[0]):
+                continue                                # never the liquid
+            data = inv.transform(pts)
+            terminal = _is_terminal(key, grid, data, ax.get_xlim())
+            pp = np.asarray((regions.get("phase_points") or {}).get(key[0], []), float).reshape(-1, 2)
+            if len(pp):                                 # the field below its cells, too thin for the raster there
+                tol = 3.0 * ppp * abs(np.diff(ax.get_xlim())[0]) / max(R.W * R.s, 1.0)
+                sel = (pp[:, 0] >= data[:, 0].min() - tol) & (pp[:, 0] <= data[:, 0].max() + tol) & \
+                    (pp[:, 1] <= data[:, 1].max())
+                data = np.vstack([data, pp[sel]])
+            ys = ax.transData.transform(data)[:, 1]
+            low_y = ys.min()
+            if low_y - R.y0 < reach_pt * ppp:           # reaches the bottom of the plot: name it below the axis
+                if terminal:
+                    continue                            # never an end-member phase outside
+                xm = float(np.mean(ax.transData.transform(data[ys - low_y < 3.0 * ppp])[:, 0]))
+                best = (0.0, "bottom", np.array([xm, edges["bottom"][0][1]]))
+            else:                                       # ends above it: right below its lowest point (or leader)
+                low = tuple(float(v) for v in data[int(np.argmin(ys))])
         else:
             for edge, (e0, e1, n) in edges.items():
                 u = (e1 - e0) / np.linalg.norm(e1 - e0)
@@ -1044,6 +1068,10 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
         if sk is not None:                              # each region on its own (a second field of a phase too)
             report["skipped"].remove(sk)
         taken = taken | {key}
+        if low is not None:
+            below.append({"key": key, "s": s, "end": low, "terminal": terminal, "ok": ok, "kind": "region",
+                          "probe": probe})
+            continue
         if best is None:                                # a ternary-only field inside the triangle: leader line
             leaders.append({"key": key, "s": s, "target": probe, "dot": False, "ok": ok, "kind": "region",
                             "probe": probe})
@@ -1052,7 +1080,66 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
         xy = (float(inv.transform(P)[0]), 0.0) if kind == "binary" else _on_edge(ax, edge, P)
         edge_items.append({"key": key, "s": s, "edge": edge, "P": np.asarray(P, float), "xy": xy, "probe": probe,
                            "ok": ok, "kind": "region"})
-    return edge_items, leaders
+    return edge_items, leaders, below
+
+
+def _place_below(ax, R, items, st, meas, renderer, walls, obst, placed, gid_for, record) -> List[Dict]:
+    """Binary single-phase fields that end above the bottom of the plot and have no room inside: the name goes
+    right below the field's lowest point, inside the axes, in the style of the names below the x axis (60°, no
+    box): it starts 2 pt below that point and runs down and away from it.  Only where the text crosses no drawn
+    line, data point or label, keeping ``margin`` (the line the field ends on, above the text, is exempt from the
+    margin).  Returns the items that found no room."""
+    failed = []
+    if not items:
+        return failed
+    inv = ax.transData.inverted()
+    rot, ha = EDGE_TEXT["bottom"]
+    a = math.radians(rot + 180.0)
+    d = np.array([math.cos(a), math.sin(a)])            # from the anchor along the text
+    e = np.array([-d[1], d[0]])
+    n = np.array([0.0, -1.0])
+    nd = float(n @ d)
+    row_y = R.y0 + (np.arange(R.H) + 0.5) * R.s
+    mg = st["margin"]
+
+    def corners(A, w, h, pad):
+        c, s_ = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+        out = []
+        for u, v in ((-w - pad, -h / 2 - pad), (pad, -h / 2 - pad), (pad, h / 2 + pad), (-w - pad, h / 2 + pad)):
+            out.append((A[0] + (u * c - v * s_) * R.ppp, A[1] + (u * s_ + v * c) * R.ppp))   # ha right: text at u<0
+        return np.array(out)
+    for it in items:
+        E = ax.transData.transform(it["end"])
+        done = False
+        for fs in _sizes(st["fontsize"], st["min_fontsize"]):
+            w, h = meas.size(it["s"], fs)
+            A = E + (2.0 + h / 2 * abs(float(n @ e))) / nd * d * R.ppp     # top corner 2 pt below the end point
+            body = corners(A, w, h, 0.0)
+            lo_x, hi_x = R.x0 + R.ppp, R.x0 + R.W * R.s - R.ppp
+            lo_y, hi_y = R.y0 + R.ppp, R.y0 + R.H * R.s - R.ppp
+            if body[:, 0].min() < lo_x or body[:, 0].max() > hi_x or body[:, 1].min() < lo_y or \
+                    body[:, 1].max() > hi_y:
+                continue                                # not inside the axes
+            hard = walls | obst | placed
+            if (R.poly(body) & hard).any():
+                continue
+            top = body[:, 1].max()
+            lines_below = walls & (row_y < top)[:, None]    # the line the field ends on is right above: exempt
+            if (R.poly(corners(A, w, h, mg)) & (lines_below | obst | placed)).any():
+                continue
+            xy = tuple(float(v) for v in inv.transform(A))
+            t = ax.text(xy[0], xy[1], it["s"], fontsize=fs, color=st["color"], ha=ha, va="center", rotation=rot,
+                        rotation_mode="anchor", family=st["family"], fontweight=st["fontweight"], zorder=6)
+            t.set_gid(gid_for("phase_label:", ".".join(it["key"])))
+            t._calphad_label = {"kind": it["kind"], "key": list(it["key"]), "below": True,
+                                "at": [float(v) for v in it["probe"]], "end": [float(v) for v in it["end"]]}
+            _mark_text(R, placed, t, renderer)
+            record(t, it["kind"], it["key"], it["probe"], fs, rot, it["ok"], below=True, text_xy=list(xy))
+            done = True
+            break
+        if not done:
+            failed.append(it)
+    return failed
 
 
 def _free_spot(R: Raster, blocked: np.ndarray, hard: np.ndarray, w: float, h: float, target_px,
