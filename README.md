@@ -86,7 +86,7 @@ base_url = "https://YOUR-LLM-HOST/v1"   # your custom URL
 api_key  = ""                           # your key, or leave empty and use api_key_env
 api_key_env = "SOL_API_KEY"             # NAME of the environment variable that holds the key
 model    = "gpt-5.6-sol"                # exactly the name your endpoint expects
-api      = "chat"                       # or "responses" if your host serves /v1/responses
+api      = "responses"                  # or "chat" if your host has no /v1/responses
 vision   = true                         # false if the endpoint rejects images
 
 [agent]
@@ -104,7 +104,7 @@ Most of each request is fixed overhead: about 9k tokens of tool descriptions (23
 
 Other settings you may need:
 
-* `api`: `"chat"` (/chat/completions, streamed) or `"responses"` (/responses, not streamed, so no mid-stream disconnects). Both use the same rate pacing and retry a cut-off answer with more output room. For one run, `CALPHAD_LLM_API=responses ./start-agent.sh` overrides the file; compare with `/usage`.
+* `api`: `"responses"` (default; /responses, not streamed, so no mid-stream disconnects) or `"chat"` (/chat/completions, streamed; for hosts without /responses). Both use the same rate pacing and retry a cut-off answer with more output room. For one run, `CALPHAD_LLM_API=chat ./start-agent.sh` overrides the file; compare with `/usage`.
 * Key lookup order: `CALPHAD_LLM_API_KEY`, then `api_key`, then the variable named by `api_key_env`, then `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. The key never appears in problem reports or session logs.
 * `reasoning_effort`: set it to `""` if your gateway rejects the parameter. The client also drops it automatically when the gateway returns a 400.
 * `extra_headers`: for gateways that want custom auth headers.
@@ -339,9 +339,15 @@ added, and the labels avoid those points.
   Two- and three-phase fields that still don't fit are left out; the result text lists them on one line.
 * **Single-phase fields that don't fit inside** each get a place of their own, one region at a time (a second field
   of a phase that is named elsewhere too). This includes fields too thin to be a region of the plot at all.
-  * *Ternary:* a field that touches an edge (the phase exists in that binary) is named beyond that edge, like a
-    stoichiometric phase (below). The name sits at the middle of its contact with the edge, or of the longer
-    contact if it touches two.
+  * *Ternary, at a corner:* a field that reaches a pure-element corner (the phase is stable for that element) is
+    named at the corner, outside the triangle, at 30°.
+    * Bottom-left: just above the left axis's 0.0. Bottom-right: above or right of the bottom axis's 1.0. Top:
+      to the right of the corner.
+    * The name stays clear of tick labels (none is hidden), the bold corner names, the axis titles and the other
+      labels. The result text says e.g. "named at its corner: BCC (Cr), L (Al)".
+  * *Ternary, at an edge:* a field that touches an edge but no corner (the phase exists in that binary) is named
+    beyond that edge, like a stoichiometric phase (below). The name sits at the middle of its contact with the
+    edge, or of the longer contact if it touches two.
   * *Binary:* a field that reaches the bottom of the plot is named below the x axis at its composition there, at
     60°. Example: a C14 with a narrow range.
   * *Binary:* a field that ends higher up is named right below its lowest point, inside the axes. The text is at
@@ -369,6 +375,10 @@ added, and the labels avoid those points.
   SVG only names it, so the program that opens the SVG needs the font installed. On a Mac, use the PDF: SVG import
   can be unreliable there, and Illustrator, Inkscape and Preview all edit the PDF text. `formats` gives SVG/PDF for
   unlabelled diagrams too.
+* **Subscripts.** Formula digits are real subscripts: Al₃Ni₂ is typeset (matplotlib mathtext) in the PNG and the
+  PDF. In the SVG, each name is still one `<text>`, and the digits are subscript runs written the way Inkscape writes
+  them: `<tspan style="font-size:65%;baseline-shift:sub">3</tspan>`. Editing tools and the result text use the
+  Unicode name (`relabel {text: "Al₃Ni₂"}`).
 * **Standalone code.** `show_code` reproduces the labels without the toolkit: the script contains copies of the
   three label modules.
 

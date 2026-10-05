@@ -3829,7 +3829,7 @@ class OpWriter:
         op = o.op
         body = []
         if op.get("new_text") is not None:
-            body.append(f"t.set_text({str(op['new_text'])!r})")
+            body.append(f"set_name(t, {str(op['new_text'])!r})   # subscript digits typeset")
         for k in ("fontsize", "color", "rotation", "fontweight"):
             if k in op:
                 body.append(f"t.set_{k}({lit(op[k])})")
@@ -3961,14 +3961,18 @@ def gen_make_plot(args: Dict, ctx: Ctx) -> str:
 
 
 def _emit_save(w: OpWriter, ctx: Ctx, out: str, formats, opts: Dict) -> None:
+    from .codegen_calc import names_in_script
     name = ctx.out_name(out, Path(out).name)
     w.emit(f"fig.savefig(OUT / {name!r}, {kwargs(opts)})")
     for ext in formats or []:
         ext = ext.lower().lstrip(".")
         p = str(Path(out).with_suffix("." + ext))
         if p != out:
-            line = f"fig.savefig(OUT / {ctx.out_name(p, Path(p).name)!r}, {kwargs(opts)})"
-            if ext in ("pdf", "svg", "eps"):     # text stays text (editable in Inkscape / Illustrator)
+            name_p = ctx.out_name(p, Path(p).name)
+            line = f"fig.savefig(OUT / {name_p!r}, {kwargs(opts)})"
+            if ext in ("pdf", "svg", "eps") and names_in_script(ctx):   # + Inkscape subscripts in the SVG
+                line = f"save_vector(fig, OUT / {name_p!r}, {kwargs(opts)})"
+            elif ext in ("pdf", "svg", "eps"):     # text stays text (editable in Inkscape / Illustrator)
                 line = ("with plt.rc_context({'svg.fonttype': 'none', 'pdf.fonttype': 42, 'ps.fonttype': 42}):\n"
                         "    " + line)
             w.emit(line)

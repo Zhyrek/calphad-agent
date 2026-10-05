@@ -93,6 +93,9 @@ def label_axes(ax, recipe: Dict, *, lines=None, invariants=None, label_invariant
                             invariants=label_invariants, T_unit=recipe.get("T_unit", "K"), style=style)
     rep["seconds"] = round(time.time() - t0, 1)
     rep["equilibrium_checks"] = n_checks[0]
+    for lab in rep["labels"]:              # the element at a corner (orientation: any element can be there)
+        if lab.get("corner") is not None:
+            lab["corner_element"] = str(recipe["elements"][lab["corner"]]).capitalize()
     rep["text"] = report_text(rep, ignored)
     return rep
 
@@ -103,13 +106,18 @@ def report_text(rep: Dict, ignored=()) -> str:
     reg = [lab["text"] for lab in labs if lab["kind"] == "region" and not (lab.get("outside") or lab.get("leader")
                                                                          or lab.get("below"))]
     out_ = [lab["text"] for lab in labs if lab["kind"] == "compound"]
-    moved = [lab["text"] for lab in labs if lab["kind"] == "region" and lab.get("outside")]
+    moved = [lab["text"] for lab in labs if lab["kind"] == "region" and lab.get("outside")
+             and lab.get("corner") is None]
+    at_corner = [f"{lab['text']} ({lab.get('corner_element', lab['corner'])})" for lab in labs
+                 if lab.get("corner") is not None]
     lead = [lab["text"] for lab in labs if lab.get("leader")]
     below = [lab["text"] for lab in labs if lab.get("below")]
     inv = [lab["text"] for lab in labs if lab["kind"] == "invariant"]
     out = [f"phase labels ({len(reg)}): " + ", ".join(reg)]
     if out_:
         out.append("stoichiometric phases named outside the plot: " + ", ".join(out_))
+    if at_corner:
+        out.append("named at its corner: " + ", ".join(at_corner))
     if moved:
         out.append("too small inside, named at the edge instead: " + ", ".join(moved))
     if below:
@@ -192,10 +200,11 @@ def _op_delete(ctx: OpContext):
 @register_op("relabel", "relabel {id | text, new_text, fontsize, color, rotation, fontweight}: reword/restyle a "
              "phase/invariant label", group="annotate")
 def _op_relabel(ctx: OpContext):
+    from .phase_names import set_name
     op = ctx.op
     for t in _targets(ctx):
         if op.get("new_text") is not None:
-            t.set_text(str(op["new_text"]))
+            set_name(t, str(op["new_text"]))
         for k in ("fontsize", "color", "rotation", "fontweight"):
             if k in op:
                 getattr(t, f"set_{k}")(op[k])

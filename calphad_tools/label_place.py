@@ -12,7 +12,8 @@ per cell):
    text box, grown by ``margin`` (2.5 pt) all round, fits, from ``fontsize`` down to ``min_fontsize`` (default 8
    pt), horizontal or turned (along a skinny region, or any multiple of 15 degrees when that gives a clearly larger
    label).  Two- and three-phase fields that do not fit are left out (reported).  A single-phase field that does
-   not fit (or is too thin to be a region at all), each region on its own: ternary - named beyond the edge it
+   not fit (or is too thin to be a region at all), each region on its own: ternary - at its corner if it reaches a
+   pure-element corner (outside the triangle, 30 degrees, clear of every tick label), else beyond the edge it
    touches, like a stoichiometric phase (5.); binary - below the x axis at its composition if it reaches the
    bottom of the plot (never the liquid or an end-member phase), else right below its lowest point inside the
    axes (60 degrees, where that crosses no line); failing that (and for ternary-only fields) a label in the nearest
@@ -27,7 +28,9 @@ per cell):
 6. every position is confirmed with ``key_at`` (an equilibrium calculation) before the label is drawn.
 
 Each label is one Text artist (``gid`` "phase_label:<PHASES>" / "invariant_label:<T>"), so it stays one editable
-text object in SVG (``svg.fonttype = 'none'``) and PDF (``pdf.fonttype = 42``): see :func:`save_vector`.
+text object in SVG (``svg.fonttype = 'none'``) and PDF (``pdf.fonttype = 42``): see :func:`save_vector`.  Names
+with subscripts (Al₃Ni₂) are drawn with mathtext subscripts (``phase_names.set_name``; the Unicode name stays on the
+text as ``_calphad_plain``); the SVG gets Inkscape subscript tspans instead (``phase_names.save_vector``).
 """
 from __future__ import annotations
 
@@ -40,7 +43,7 @@ import matplotlib.artist
 import numpy as np
 import matplotlib.path as mpath
 
-from .phase_names import is_liquid_name, region_label
+from .phase_names import is_liquid_name, plain_text, region_label, save_vector, set_name, to_mathtext  # noqa: F401
 
 FONT_FAMILY = ["DejaVu Sans", "Helvetica", "Arial", "sans-serif"]
 LABEL_PREFIXES = ("phase_label:", "invariant_label:")
@@ -63,12 +66,6 @@ EDGE_TEXT = {"bottom": (60.0, "right"), "left": (-30.0, "right"), "right": (30.0
 def vector_rc() -> Dict:
     """rcParams that keep text as text in SVG / PDF / EPS output (editable in Inkscape / Illustrator)."""
     return {"svg.fonttype": "none", "pdf.fonttype": 42, "ps.fonttype": 42}
-
-
-def save_vector(fig, path, **kw):
-    """fig.savefig with text kept as text objects."""
-    with matplotlib.rc_context(vector_rc()):
-        return fig.savefig(path, **kw)
 
 
 def _token(s: str) -> str:
@@ -484,7 +481,8 @@ class _Measure:
     def size(self, s: str, fs: float) -> Tuple[float, float]:
         """(width, height) in points of unrotated text at font size fs, including the background padding."""
         if s not in self.cache:
-            t = self.ax.text(0, 0, s, fontsize=10.0, family=self.st["family"], fontweight=self.st["fontweight"],
+            t = self.ax.text(0, 0, to_mathtext(s), fontsize=10.0, family=self.st["family"],   # as drawn
+                             fontweight=self.st["fontweight"],
                              transform=None)
             e = t.get_window_extent(self.r)
             t.remove()
@@ -500,7 +498,7 @@ def _draw(ax, s, xy, fs, rot, style, gid, info, color=None):
     if style["background"]:
         kw["bbox"] = {"boxstyle": "square,pad=0.15", "facecolor": "white", "edgecolor": "none",
                       "alpha": style["background_alpha"]}
-    t = ax.text(xy[0], xy[1], s, **kw)
+    t = set_name(ax.text(xy[0], xy[1], s, **kw), s)
     t.set_gid(gid)
     t._calphad_label = dict(info)
     return t
@@ -691,7 +689,7 @@ def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Option
         return (key[0] in got) if contains else (tuple(got) == tuple(key))
 
     def record(t, kind_, key, xy, fs, rot, verified, **extra):
-        report["labels"].append({"text": t.get_text(), "gid": t.get_gid(), "kind": kind_, "key": list(key),
+        report["labels"].append({"text": plain_text(t), "gid": t.get_gid(), "kind": kind_, "key": list(key),
                                  "x": xy[0], "y": xy[1], "fontsize": fs, "rotation": rot, "verified": verified,
                                  **extra})
 
@@ -806,9 +804,10 @@ def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Option
     name_of = lambda key: region_label(key, elements, phase_labels, liquids)      # noqa: E731
     edges, ticks = _edges(ax, kind)
     items, leaders = _compound_items(ax, kind, regions.get("compounds") or [], edges, check, report, name_of)
-    more_items, more_leaders, below = _single_phase_items(ax, kind, R, edges, report, check, liquids, regions,
-                                                          grid, {it["key"] for it in items + leaders}, name_of)
+    more_items, more_leaders, below, corner_items = _single_phase_items(
+        ax, kind, R, edges, report, check, liquids, regions, grid, {it["key"] for it in items + leaders}, name_of)
     _label_outside(ax, kind, items + more_items, edges, ticks, st, meas, renderer, gid_for, record)
+    _place_corners(ax, corner_items, st, meas, renderer, gid_for, record)
     for sk in report["skipped"]:
         sk.pop("_region", None)
     for it in _place_below(ax, R, below, st, meas, renderer, walls, obst, placed, gid_for, record):
@@ -1027,11 +1026,13 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
             to_mid = np.array([1 / 3, 1 / 3]) - c
             c = c + 2e-3 * to_mid / max(np.linalg.norm(to_mid), 1e-12)
         cands.append((key, name_of(key), pts, (float(c[0]), float(c[1])), None))
-    edge_items, leaders, below = [], [], []
+    edge_items, leaders, below, corner_items = [], [], [], []
+    corners_px = ax.transData.transform(CORNERS) if kind == "ternary" else None
+    side = float(np.linalg.norm(corners_px[1] - corners_px[0])) if kind == "ternary" else 1.0
     for key, s, pts, probe, sk in cands:
         if sk is None and (key in named or key in taken):
             continue                                    # boundary points only, and the phase is named already
-        best, low = None, None
+        best, low, corner = None, None, None
         if kind == "binary":
             if key[0] in liquids or is_liquid_name(key[0]):
                 continue                                # never the liquid
@@ -1053,6 +1054,7 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
             else:                                       # ends above it: right below its lowest point (or leader)
                 low = tuple(float(v) for v in data[int(np.argmin(ys))])
         else:
+            corner = _corner_of(key, pts, corners_px, side, ppp, reach_pt + R.res, check)
             for edge, (e0, e1, n) in edges.items():
                 u = (e1 - e0) / np.linalg.norm(e1 - e0)
                 near = np.abs((pts - e0) @ n) / ppp < reach_pt + R.res
@@ -1072,6 +1074,10 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
             below.append({"key": key, "s": s, "end": low, "terminal": terminal, "ok": ok, "kind": "region",
                           "probe": probe})
             continue
+        if corner is not None:                          # stable for the pure element: named at its corner
+            corner_items.append({"key": key, "s": s, "corner": corner, "ok": ok, "kind": "region",
+                                 "probe": probe})
+            continue
         if best is None:                                # a ternary-only field inside the triangle: leader line
             leaders.append({"key": key, "s": s, "target": probe, "dot": False, "ok": ok, "kind": "region",
                             "probe": probe})
@@ -1080,7 +1086,104 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
         xy = (float(inv.transform(P)[0]), 0.0) if kind == "binary" else _on_edge(ax, edge, P)
         edge_items.append({"key": key, "s": s, "edge": edge, "P": np.asarray(P, float), "xy": xy, "probe": probe,
                            "ok": ok, "kind": "region"})
-    return edge_items, leaders, below
+    return edge_items, leaders, below, corner_items
+
+
+CORNERS = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]     # ternary corners in data: bottom-left, bottom-right, top
+CORNER_ROT = 30.0                                   # names at a corner
+
+
+def _seg_dist(pts: np.ndarray, tri_px: np.ndarray) -> np.ndarray:
+    """Distance (px) of points to the outline of a triangle."""
+    out = np.full(len(pts), np.inf)
+    for a, b in ((tri_px[0], tri_px[1]), (tri_px[1], tri_px[2]), (tri_px[2], tri_px[0])):
+        ab = b - a
+        t = np.clip(((pts - a) @ ab) / (ab @ ab), 0.0, 1.0)
+        out = np.minimum(out, np.hypot(*(pts - (a + t[:, None] * ab)).T))
+    return out
+
+
+def _corner_of(key, pts, corners_px, side, ppp, reach, check) -> Optional[int]:
+    """The corner (0 bottom-left, 1 bottom-right, 2 top) a single-phase field reaches - the phase is stable for
+    that pure element - or None.  Its cells reach the corner, or (a field known only by its boundary points, or
+    cut short by the raster) an equilibrium a hair inside a nearby corner gives exactly this phase."""
+    d = np.hypot(*(pts[:, None, :] - corners_px[None, :, :]).transpose(2, 0, 1)) / ppp     # (n, 3) pt
+    near = d.min(axis=0)
+    k = int(np.argmin(near))
+    if near[k] < reach + 2.0:
+        return k
+    for k in np.argsort(near):
+        if near[k] > 0.3 * side / ppp:                  # nowhere near this corner
+            break
+        c = np.asarray(CORNERS[int(k)], float)
+        probe = c + 2e-3 * (np.array([1 / 3, 1 / 3]) - c) / np.linalg.norm(np.array([1 / 3, 1 / 3]) - c)
+        if check(key, tuple(float(v) for v in probe)) is True:
+            return int(k)
+    return None
+
+
+def _place_corners(ax, items, st, meas, renderer, gid_for, record, step_pt: float = 1.0, reach_pt: float = 70.0,
+                   gap_pt: float = 1.5):
+    """Phases stable for a pure element, too small inside: named outside the triangle next to their corner, at
+    30° - bottom-left: above the left axis's 0.0; bottom-right: above / right of the bottom axis's 1.0; top: to the
+    right of the corner.  The name goes to the nearest spot clear of every tick label (none is hidden), the bold
+    corner names, the axis titles and the other labels."""
+    if not items:
+        return
+    from matplotlib.text import Text
+    fig = ax.figure
+    fig.canvas.draw()
+    ppp = fig.dpi / 72.0
+    c_px = ax.transData.transform(CORNERS)
+    tri = mpath.Path(np.vstack([c_px, c_px[:1]]), closed=True)
+    obst = []
+    for t in list(ax.get_xticklabels()) + list(ax.get_yticklabels()) + [ax.xaxis.label, ax.yaxis.label, ax.title] \
+            + list(ax.texts):
+        if isinstance(t, Text) and t.get_visible() and t.get_text().strip():
+            obst.append(text_corners(t, renderer, gap_pt * ppp))
+    fs = st["fontsize"]
+    a = math.radians(CORNER_ROT)
+    u, v = np.array([math.cos(a), math.sin(a)]), np.array([-math.sin(a), math.cos(a)])
+    for it in items:
+        k = it["corner"]
+        C = c_px[k]
+        w, h = meas.size(it["s"], fs)
+        hw, hh = w / 2 * ppp, h / 2 * ppp
+        offs = np.arange(-reach_pt, reach_pt + step_pt, step_pt) * ppp
+        gx, gy = np.meshgrid(offs, offs)
+        cand = np.column_stack([gx.ravel(), gy.ravel()])
+        if k == 0:                                      # above the left axis's 0.0, left of the triangle
+            cand = cand[(cand[:, 1] > 0) & (cand[:, 0] < 0)]
+        elif k == 1:                                    # above / right of the bottom axis's 1.0
+            cand = cand[(cand[:, 0] > 0) & (cand[:, 1] > -hh)]
+        else:                                           # beside the top corner, on the right
+            cand = cand[cand[:, 0] > 0]
+        cand = cand[np.argsort(np.hypot(cand[:, 0], cand[:, 1]))]
+        best = None
+        for off in cand:
+            ctr = C + off
+            q = np.array([ctr + su * hw * u + sv * hh * v for su, sv in ((-1, -1), (1, -1), (1, 1), (-1, 1))])
+            ring = np.vstack([q, (q + np.roll(q, -1, axis=0)) / 2])
+            if tri.contains_points(ring).any() or _seg_dist(ring, c_px).min() < 2 * gap_pt * ppp:
+                continue                                # outside the triangle (with a gap)
+            if any(np.hypot(*(ctr - p.mean(axis=0))) < 400 * ppp and quads_overlap(q, p) for p in obst):
+                continue
+            best = off
+            break
+        if best is None:
+            best = np.array([0.0, 12.0 * ppp]) if k != 1 else np.array([12.0 * ppp, 12.0 * ppp])
+        xy = CORNERS[k]
+        t = ax.annotate(it["s"], xy=xy, xycoords="data", xytext=tuple(float(x) / ppp for x in best),
+                        textcoords="offset points", fontsize=fs, color=st["color"], ha="center", va="center",
+                        rotation=CORNER_ROT, rotation_mode="anchor", family=st["family"],
+                        fontweight=st["fontweight"], zorder=6, annotation_clip=False)
+        set_name(t, it["s"])
+        t.set_gid(gid_for("phase_label:", ".".join(it["key"])))
+        t._calphad_label = {"kind": it["kind"], "key": list(it["key"]), "outside": "corner", "corner": int(k),
+                            "at": [float(x) for x in it["probe"]]}
+        record(t, it["kind"], it["key"], it["probe"], fs, CORNER_ROT, it["ok"], outside="corner", corner=int(k),
+               edge_xy=list(xy))
+        obst.append(text_corners(t, renderer, gap_pt * ppp))
 
 
 def _place_below(ax, R, items, st, meas, renderer, walls, obst, placed, gid_for, record) -> List[Dict]:
@@ -1130,6 +1233,7 @@ def _place_below(ax, R, items, st, meas, renderer, walls, obst, placed, gid_for,
             xy = tuple(float(v) for v in inv.transform(A))
             t = ax.text(xy[0], xy[1], it["s"], fontsize=fs, color=st["color"], ha=ha, va="center", rotation=rot,
                         rotation_mode="anchor", family=st["family"], fontweight=st["fontweight"], zorder=6)
+            set_name(t, it["s"])
             t.set_gid(gid_for("phase_label:", ".".join(it["key"])))
             t._calphad_label = {"kind": it["kind"], "key": list(it["key"]), "below": True,
                                 "at": [float(v) for v in it["probe"]], "end": [float(v) for v in it["end"]]}
@@ -1215,6 +1319,7 @@ def _place_leaders(ax, R, items, st, meas, renderer, inside, inner, walls, obst,
                         fontweight=st["fontweight"], zorder=6, annotation_clip=False,
                         arrowprops={"arrowstyle": "-", "lw": 0.5, "color": LEADER_COLOR, "shrinkA": 1.5,
                                     "shrinkB": 2.0 if it["dot"] else 0.0})
+        set_name(t, it["s"])
         t.set_gid(gid)
         t._calphad_label = {"kind": it["kind"], "key": list(it["key"]), "leader": True,
                             "at": [float(v) for v in it["probe"]]}
@@ -1265,6 +1370,7 @@ def _label_outside(ax, kind, items, edges, ticks, st, meas, renderer, gid_for, r
                 t = ax.annotate(it["s"], xy=xy, xycoords=("data", "axes fraction"), **kw)
             else:
                 t = ax.annotate(it["s"], xy=xy, xycoords="data", **kw)
+            set_name(t, it["s"])
             t.set_gid(gid_for("phase_label:", ".".join(it["key"])))
             t._calphad_label = {"kind": it["kind"], "key": list(it["key"]), "outside": edge,
                                 "at": [float(v) for v in it["probe"]]}
@@ -1298,8 +1404,9 @@ class TickLabelHider(matplotlib.artist.Artist):
         ax = self.axes
         if ax is None:
             return
-        quads = [text_corners(t, renderer) for t in ax.texts
-                 if t.get_visible() and _is_ours(t) and (getattr(t, "_calphad_label", None) or {}).get("outside")]
+        quads = [text_corners(t, renderer) for t in ax.texts         # (names at a corner never hide a tick)
+                 if t.get_visible() and _is_ours(t)
+                 and (getattr(t, "_calphad_label", None) or {}).get("outside") not in (None, "corner")]
         pad = self.margin * ax.figure.dpi / 72.0
         for axis in (ax.xaxis, ax.yaxis):
             try:
@@ -1377,8 +1484,8 @@ def find_labels(ax, id: Optional[str] = None, text: Optional[str] = None) -> Lis
         return hits
     if text is not None:
         want = str(text).strip()
-        hits = [t for t in labs if t.get_text() == want]
-        return hits or [t for t in labs if t.get_text().replace(" ", "").lower() == want.replace(" ", "").lower()]
+        hits = [t for t in labs if plain_text(t) == want or t.get_text() == want]
+        return hits or [t for t in labs if plain_text(t).replace(" ", "").lower() == want.replace(" ", "").lower()]
     return labs
 
 

@@ -21,6 +21,7 @@ alternative A12 / A13 can be set per call through ``overrides``. HIGH_SIGMA is w
 """
 from __future__ import annotations
 
+import os
 import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -289,4 +290,88 @@ def prettify_legend(ax, elements: Optional[Sequence[str]] = None,
     title = leg.get_title().get_text()
     if title:
         kw.update(title=title, title_fontsize=leg.get_title().get_fontsize())
-    ax.legend(handles, list(seen), **kw)
+    leg = ax.legend(handles, [to_mathtext(lab) for lab in seen], **kw)
+    for t, lab in zip(leg.get_texts(), seen):
+        if to_mathtext(lab) != lab:
+            t._calphad_plain = lab
+
+
+# ---------------------------------------------------------------------------------------------------------
+# subscripts on figures: typeset in PNG / PDF (mathtext), Inkscape-native in SVG
+# ---------------------------------------------------------------------------------------------------------
+SUB_DIGITS = "₀₁₂₃₄₅₆₇₈₉"
+_SUB_RUN = re.compile(f"[{SUB_DIGITS}]+")
+_UNSUB = str.maketrans(SUB_DIGITS, "0123456789")
+SVG_SUB_STYLE = "font-size:65%;baseline-shift:sub"       # what Inkscape writes for a subscript
+
+
+def to_mathtext(s: str) -> str:
+    """Display name with Unicode subscript digits -> matplotlib text with real subscripts: 'Al₃Ni₂' ->
+    'Al$_\\mathregular{3}$Ni$_\\mathregular{2}$' (only the digits are math, in the text font; the rest - Greek,
+    '+', '-LT', spaces - stays plain text).  A text without subscript digits is returned unchanged (no mathtext)."""
+    s = str(s)
+    if not _SUB_RUN.search(s):
+        return s
+    out, pos = [], 0
+    for m in _SUB_RUN.finditer(s):
+        out.append(s[pos:m.start()].replace("$", r"\$"))
+        out.append(r"$_\mathregular{" + m.group().translate(_UNSUB) + "}$")
+        pos = m.end()
+    out.append(s[pos:].replace("$", r"\$"))
+    return "".join(out)
+
+
+def set_name(t, s: str):
+    """Show a (phase) name on a Text with typeset subscripts; the plain (Unicode) name stays on the text as
+    ``_calphad_plain`` (what editing tools and the SVG output use).  Returns the text."""
+    m = to_mathtext(s)
+    t.set_text(m)
+    t._calphad_plain = s if m != s else None
+    return t
+
+
+def plain_text(t) -> str:
+    """The name a text shows, in Unicode (Al₃Ni₂), whether drawn as mathtext or not."""
+    return getattr(t, "_calphad_plain", None) or t.get_text()
+
+
+def svg_subscripts(svg: str) -> str:
+    """Inkscape-native subscripts in an SVG written with svg.fonttype 'none': in every <text>, each run of Unicode
+    subscript digits becomes <tspan style="font-size:65%;baseline-shift:sub">24</tspan>.  The <text> keeps its
+    x / y, anchor, transform, font and id: one editable text object per label."""
+    def fix(m):
+        head, body, tail = m.group(1), m.group(2), m.group(3)
+        if "<" in body or not _SUB_RUN.search(body):
+            return m.group(0)
+        body = _SUB_RUN.sub(lambda r: f'<tspan style="{SVG_SUB_STYLE}">{r.group().translate(_UNSUB)}</tspan>', body)
+        return head + body + tail
+    return re.sub(r"(<text\b[^>]*>)(.*?)(</text>)", fix, svg, flags=re.S)
+
+
+def save_vector(fig, path, **kw):
+    """fig.savefig with text kept as text (svg.fonttype 'none', Type 42 fonts in PDF / EPS).  SVG: names drawn with
+    mathtext subscripts are written as one <text> each, with Inkscape subscript tspans (see svg_subscripts);
+    PNG / PDF and the figure itself keep the typeset form."""
+    import matplotlib
+    from matplotlib.text import Text
+    rc = {"svg.fonttype": "none", "pdf.fonttype": 42, "ps.fonttype": 42}
+    svg = str(path).lower().endswith(".svg") or str(kw.get("format", "")).lower() == "svg"
+    swapped = []
+    if svg:
+        for t in fig.findobj(Text):
+            plain = getattr(t, "_calphad_plain", None)
+            if plain:
+                swapped.append((t, t.get_text()))
+                t.set_text(plain)
+    try:
+        with matplotlib.rc_context(rc):
+            res = fig.savefig(path, **kw)
+    finally:
+        for t, m in swapped:
+            t.set_text(m)
+    if svg and swapped and isinstance(path, (str, os.PathLike)):     # (a file-like target is left as written)
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(svg_subscripts(text))
+    return res

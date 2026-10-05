@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from calphad_tools.phase_names import plain_text as name   # the name a text shows (Al₃Ni₂)
+
 ROOT = Path(__file__).resolve().parents[1]
 KELVIN = 273.15
 
@@ -107,9 +109,9 @@ def check_anchors(ax):
             warnings.simplefilter("ignore")
             got = key_at(db, rec, info, x, y)
         if lab["kind"] == "compound":
-            assert got and lab["key"][0] in got, (t.get_text(), got)
+            assert got and lab["key"][0] in got, (name(t), got)
         else:
-            assert got == tuple(lab["key"]), (t.get_text(), (x, y), got)
+            assert got == tuple(lab["key"]), (name(t), (x, y), got)
         n += 1
     return n
 
@@ -139,7 +141,7 @@ def point_in_rect(p, u, v, pad=0.0):
 
 
 def label_pos(ax, text):
-    t = next(t for t in labels_of(ax) if t.get_text() == text)
+    t = next(t for t in labels_of(ax) if name(t) == text)
     return t.get_position()
 
 
@@ -161,7 +163,8 @@ _json.dump({"lines": [[_np.asarray(l.get_xdata(), float).tolist(), _np.asarray(l
                     if type(c).__name__ == "PathCollection"],
             "segs": [_np.asarray(s, float).tolist() for c in _ax.collections if isinstance(c, _LC)
                      for s in c.get_segments()],
-            "texts": [t.get_text() for t in _ax.texts], "xlabel": _ax.get_xlabel()}, open("art.json", "w"))
+            "texts": [getattr(t, "_calphad_plain", None) or t.get_text() for t in _ax.texts],
+            "xlabel": _ax.get_xlabel()}, open("art.json", "w"))
 '''
     (d / "gen.py").write_text(script + dump)
     r = subprocess.run([sys.executable, "-W", "ignore", "gen.py"], cwd=d, capture_output=True, text=True, timeout=900)
@@ -296,7 +299,7 @@ def test_ternary_permutations(fecrni):
         cx = corner_xy(ax)
         r = ax.figure.canvas.get_renderer()
         got = {t.get_gid(): t for t in ax.texts if (t.get_gid() or "").startswith("corner_label:")}
-        assert sorted(t.get_text() for t in got.values()) == sorted(want)
+        assert sorted(name(t) for t in got.values()) == sorted(want)
         for corner, el in zip(("bl", "br", "top"), want):
             t = got[f"corner_label:{el.upper()}"]
             e = t.get_window_extent(r)
@@ -335,6 +338,11 @@ def test_ternary_permutations(fecrni):
     for tri in ia:
         assert any(np.allclose(tri, t2, atol=0.02) for t2 in ib), tri
     assert check_anchors(axa) >= 4      # labels of the Fe-bottom-right diagram (thin fields: no room for 8 pt)
+    # BCC, stable for pure Cr and pure Fe at 800 °C: named at those corners (top, bottom-right) in this orientation
+    corner = {(name(t), t._calphad_label.get("corner")) for t in labels_of(axa, ("phase_label:",))
+              if t._calphad_label.get("outside") == "corner"}
+    assert corner == {("BCC", 2), ("BCC", 1)}, corner
+    assert "named at its corner: " in ta and "BCC (Cr)" in ta and "BCC (Fe)" in ta
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -403,7 +411,7 @@ def test_zpf_ternary_follows(tb, zpf_dirs, tmp_path):
     for t in labels_of(ax):
         p = text_rect(t, r)
         for u, v in px:
-            assert not point_in_rect(p, u, v, 5.0 / 2 * fig.dpi / 72), (t.get_text(), u, v)
+            assert not point_in_rect(p, u, v, 5.0 / 2 * fig.dpi / 72), (name(t), u, v)
     assert check_anchors(ax) >= 4
     # the same figure from show_code
     script, art, _ = run_script(tb, imgs[0], tmp_path, "tern_data")
@@ -551,7 +559,7 @@ def test_overview_element_order(tb, tmp_path):
                                                  "temperatures_c": [1000], "element_order": ["FE", "CR", "NI"],
                                                  "output_pptx": "tern_ord.pptx"})
     fig, ax = stored(Path(imgs[0]).parent / "CoCrFeNiV_Choi2019_FE-CR-NI_1000C.png")
-    gids = {t.get_gid(): t.get_text() for t in ax.texts if (t.get_gid() or "").startswith("corner_label:")}
+    gids = {t.get_gid(): name(t) for t in ax.texts if (t.get_gid() or "").startswith("corner_label:")}
     assert gids == {"corner_label:FE": "Fe", "corner_label:CR": "Cr", "corner_label:NI": "Ni"}
     assert ax.get_title().startswith("Fe–Cr–Ni")
     with pytest.raises(ValueError, match="match no subsystem"):

@@ -16,6 +16,8 @@ import matplotlib.colors as mcolors
 import numpy as np
 import pytest
 
+from calphad_tools.phase_names import plain_text as name   # the name a text shows (Al₃Ni₂)
+
 ROOT = Path(__file__).resolve().parents[1]
 KELVIN = 273.15
 BLACK = "#000000"
@@ -109,9 +111,9 @@ def check_anchors(ax):
             warnings.simplefilter("ignore")
             got = key_at(db, rec, info, x, y)
         if lab["kind"] == "compound":
-            assert got and lab["key"][0] in got, (t.get_text(), got)
+            assert got and lab["key"][0] in got, (name(t), got)
         else:
-            assert got == tuple(lab["key"]), (t.get_text(), (x, y), got)
+            assert got == tuple(lab["key"]), (name(t), (x, y), got)
         n += 1
     return n
 
@@ -133,7 +135,7 @@ def test_binary_shaded_default(tb):
     assert inv and abs(inv[0].get_ydata()[0] - 1344.70) < 0.2
     # labels instead of a legend: on by default, in black (also the invariant temperature)
     labs = labels_of(ax)
-    texts = {t.get_text() for t in labs}
+    texts = {name(t) for t in labs}
     assert {"L", "BCC", "FCC", "L+BCC", "BCC+FCC", "1345 °C"} <= texts, texts
     assert all(mcolors.to_hex(t.get_color()) == BLACK for t in labs)
     assert all(t.get_zorder() > max(c.get_zorder() for c in fills(ax)) for t in labs)   # fills never hide labels
@@ -168,9 +170,9 @@ def test_ternary_shaded(tb):
     assert any(ALICEBLUE in facecolors(c) for c in fills(ax)) and ax.get_legend() is None   # two-phase fields
     _assert_fill_matches_fields(ax, Path(imgs[0]))
     assert tuple(fig.get_size_inches()) == (7.0, 6.0)
-    assert {t.get_text() for t in ax.texts if (t.get_gid() or "").startswith("corner_label:")} == {"Co", "Cr", "Ni"}
+    assert {name(t) for t in ax.texts if (t.get_gid() or "").startswith("corner_label:")} == {"Co", "Cr", "Ni"}
     assert ax.get_xlabel() == "Mole fraction Cr" and ax.get_title().startswith("Co-Cr-Ni   1000 °C")
-    texts = {t.get_text() for t in labels_of(ax)}
+    texts = {name(t) for t in labels_of(ax)}
     assert {"FCC", "BCC", "BCC+σ", "FCC+σ"} <= texts, texts
     # the tie-triangle is too thin for an 8 pt label at 1000 °C: left out (no leader line), and said so
     assert "BCC+FCC+σ" in texts or re.search(r"omitted \d+ \(no room for 8 pt\): .*BCC\+FCC\+σ", text), text
@@ -208,7 +210,7 @@ def test_isopleth_shaded_names_lines(tb):
     fig, ax = stored(imgs[0])
     assert all(mcolors.to_hex(ln.get_color()) == BLACK and ln.get_linewidth() == 1.25 for ln in plain_lines(ax))
     assert ax.get_legend() is None
-    names = [t.get_text() for t in ax.texts if (t.get_gid() or "").startswith("line_label:")]
+    names = [name(t) for t in ax.texts if (t.get_gid() or "").startswith("line_label:")]
     assert names and set(names) <= {"L", "BCC", "FCC", "σ"}, names
     assert_ticks_in(ax)
 
@@ -225,7 +227,7 @@ def test_color_style_is_the_old_look(tmp_path):
     assert {phase_color("LIQUID"), phase_color("FCC_A1"), phase_color("BCC_A2"), INVARIANT_COLOR} <= cols
     assert any(type(c).__name__ == "LineCollection" for c in ax.collections)            # tie-lines
     assert not fills(ax)
-    assert [t.get_text() for t in ax.get_legend().get_texts()] == ["BCC_A2", "FCC_A1", "LIQUID"]
+    assert [name(t) for t in ax.get_legend().get_texts()] == ["BCC_A2", "FCC_A1", "LIQUID"]
     assert not labels_of(ax) and not Path(imgs[0]).with_suffix(".svg").exists()
     assert ax.get_title() == "Cr-Ni"
     # an explicit style beats the configured default
@@ -252,7 +254,7 @@ def test_overviews_shaded(tb):
     assert_shaded_binary(ax)
     assert ax.get_title() == "Cr–Ni" and ax.get_xlabel() == "Mole fraction Ni"
     assert ax.get_ylabel() == "Temperature (°C)" and np.allclose(ax.get_ylim(), (800, 1800))
-    assert {"L", "BCC", "FCC", "BCC+FCC"} <= {t.get_text() for t in labels_of(ax)}
+    assert {"L", "BCC", "FCC", "BCC+FCC"} <= {name(t) for t in labels_of(ax)}
     assert png.with_suffix(".svg").exists() and png.with_suffix(".pdf").exists()
     text, imgs = call(tb, "plot_all_ternaries", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["CO", "CR", "NI"],
                                                  "temperatures_c": [1200], "output_pptx": "tern_style.pptx"})
@@ -280,12 +282,12 @@ def test_plot_diagram_with_data_shaded(tb, tmp_path):
     data = [ln for ln in ax.get_lines() if ln not in plain_lines(ax)]
     assert data and any(mcolors.to_hex(ln.get_color()) != BLACK for ln in data)      # markers keep phase colours
     leg = ax.get_legend()
-    texts = [t.get_text() for t in leg.get_texts()]
+    texts = [name(t) for t in leg.get_texts()]
     assert texts and not {"LIQUID", "FCC_A1", "BCC_A2"} & set(texts)                # data references only
     fig.canvas.draw()
     lb, axb = leg.get_window_extent(), ax.get_window_extent()
     assert axb.x0 - 1 <= lb.x0 and lb.x1 <= axb.x1 + 1                              # inside the axes
-    assert {"L", "BCC+FCC", "1345 °C"} <= {t.get_text() for t in labels_of(ax)}       # labels on by default
+    assert {"L", "BCC+FCC", "1345 °C"} <= {name(t) for t in labels_of(ax)}       # labels on by default
     assert ax.get_xlabel() == "Mole fraction Ni" and ax.get_title().startswith("Cr–Ni")
     assert_ticks_in(ax)
     assert Path(imgs[0]).with_suffix(".svg").exists()
@@ -308,7 +310,8 @@ def _style_of(fig):
                         if type(c).__name__ in ("PolyCollection", "FillBetweenPolyCollection")
                         for f in c.get_facecolor()})
         ticks = [a.xaxis.get_tick_params(which=w).get("direction") for w in ("major", "minor")]
-        labels = sorted({t.get_text() for t in a.texts if (t.get_gid() or "").startswith("phase_label:")})
+        labels = sorted({getattr(t, "_calphad_plain", None) or t.get_text() for t in a.texts
+                         if (t.get_gid() or "").startswith("phase_label:")})
         out.append({"lines": [list(x) for x in lines], "fills": fills, "legend": a.get_legend() is not None,
                     "ticks": ticks, "labels": labels,
                     "tielines": any(type(c).__name__ == "LineCollection" for c in a.collections)})

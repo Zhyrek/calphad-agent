@@ -1010,7 +1010,10 @@ def register(tb) -> None:
                 raise ValueError(f"unsupported format {ext}")
             p = str(Path(out_png).with_suffix("." + ext))
             if p != out_png:
-                with matplotlib.rc_context(VECTOR_RC if ext in ("pdf", "svg", "eps") else {}):
+                if ext in ("pdf", "svg", "eps"):     # text stays text; Inkscape subscripts in the SVG
+                    from .phase_names import save_vector
+                    save_vector(fig, p, **opts)
+                else:
                     fig.savefig(p, **opts)
                 files.append(p)
         return files

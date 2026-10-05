@@ -651,8 +651,16 @@ def _vector_saves(ctx: Ctx, png: str, fmts) -> str:
         out.append(f"    fig.savefig(OUT / {ctx.out_name(p, Path(p).name)!r}, dpi=150, bbox_inches='tight')")
     if not out:
         return ""
+    if names_in_script(ctx):        # phase names drawn: subscripts typeset, Inkscape subscripts in the SVG
+        return ("# text stays text (one editable object per label); SVG subscripts as Inkscape writes them\n"
+                + "\n".join("save_vector(fig, " + o.strip()[len("fig.savefig("):] for o in out) + "\n")
     return (f"with plt.rc_context({VECTOR_RC_CODE}):   # text stays text (one editable object per label)\n"
             + "\n".join(out) + "\n")
+
+
+def names_in_script(ctx: Ctx) -> bool:
+    """phase_names (set_name, save_vector ...) is copied into this script."""
+    return bool(ctx.__dict__.get("_label_helpers") or ctx.__dict__.get("_phase_names"))
 
 
 # ---------------------------------------------------------------------------------------------------------
