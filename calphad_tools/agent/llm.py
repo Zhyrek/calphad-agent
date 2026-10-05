@@ -505,6 +505,10 @@ class OpenAIResponsesBackend(Backend):
         self._images: List = []
         self.tool_defs = [{"type": "function", "name": t.name, "description": t.description,
                            "parameters": t.parameters} for t in tools]
+        self.cur_max = self._start_max()             # raised only when an answer is cut off
+
+    def _start_max(self) -> int:
+        return max(256, min(int(self.cfg.max_output_tokens), int(getattr(self.cfg, "initial_output_tokens", 6000))))
 
     def add_user(self, text, images=None):
         content = [{"type": "input_text", "text": text}]
@@ -532,8 +536,7 @@ class OpenAIResponsesBackend(Backend):
 
     def step(self, on_text=None):
         kw = dict(model=self.cfg.model, instructions=self.system, input=self.input, tools=self.tool_defs,
-                  max_output_tokens=min(int(self.cfg.max_output_tokens),
-                                        int(getattr(self.cfg, "initial_output_tokens", 6000))), store=False)
+                  max_output_tokens=self.cur_max, store=False)
         if self.cfg.reasoning_effort:
             kw["reasoning"] = {"effort": self.cfg.reasoning_effort}
             kw["include"] = ["reasoning.encrypted_content"]
@@ -557,6 +560,14 @@ class OpenAIResponsesBackend(Backend):
                 resp = self.guard.run(call, est)
             else:
                 raise
+        cap = max(int(self.cfg.max_output_tokens), self._start_max())
+        reason = getattr(getattr(resp, "incomplete_details", None), "reason", None)
+        if resp.status == "incomplete" and reason == "max_output_tokens" and self.cur_max < cap:
+            # cut off at the (deliberately small) output reservation: drop this answer, ask again with more room
+            self.cur_max = min(cap, self.cur_max * 2)
+            self.guard.notify(f"answer cut off - asking again with up to {self.cur_max:,} output tokens")
+            return self.step(on_text)
+        self.cur_max = self._start_max()
         self._forget_images()
         text, calls = "", []
         for item in resp.output:

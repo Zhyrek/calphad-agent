@@ -4,7 +4,7 @@ Looked up in this order (later wins):
   1. built-in defaults
   2. ~/.config/calphad_tools/config.toml
   3. ./calphad_agent.toml   (or the file given with --config)
-  4. environment variables: CALPHAD_LLM_PROVIDER, CALPHAD_LLM_BASE_URL, CALPHAD_LLM_MODEL,
+  4. environment variables: CALPHAD_LLM_PROVIDER, CALPHAD_LLM_BASE_URL, CALPHAD_LLM_MODEL, CALPHAD_LLM_API,
      CALPHAD_LLM_API_KEY.  If no key is set, the key is read from the variable named by
      ``api_key_env``, then from OPENAI_API_KEY / ANTHROPIC_API_KEY.
 """
@@ -118,6 +118,11 @@ def load_config(path: Optional[str] = None, profile: Optional[str] = None) -> Co
         cfg.llm.base_url = env["CALPHAD_LLM_BASE_URL"]
     if env.get("CALPHAD_LLM_MODEL"):
         cfg.llm.model = env["CALPHAD_LLM_MODEL"]
+    if env.get("CALPHAD_LLM_API"):                  # "chat" | "responses" (OpenAI-compatible endpoints)
+        api = env["CALPHAD_LLM_API"].strip().lower()
+        if api not in ("chat", "responses"):
+            raise ValueError(f"CALPHAD_LLM_API must be 'chat' or 'responses', not {api!r}")
+        cfg.llm.api = api
     if env.get("CALPHAD_LLM_API_KEY"):
         cfg.llm.api_key = env["CALPHAD_LLM_API_KEY"]
     if env.get("CALPHAD_LLM_API_KEY_ENV"):

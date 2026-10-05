@@ -104,6 +104,7 @@ Most of each request is fixed overhead: about 9k tokens of tool descriptions (23
 
 Other settings you may need:
 
+* `api`: `"chat"` (/chat/completions, streamed) or `"responses"` (/responses, not streamed, so no mid-stream disconnects). Both use the same rate pacing and retry a cut-off answer with more output room. For one run, `CALPHAD_LLM_API=responses ./start-agent.sh` overrides the file; compare with `/usage`.
 * Key lookup order: `CALPHAD_LLM_API_KEY`, then `api_key`, then the variable named by `api_key_env`, then `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. The key never appears in problem reports or session logs.
 * `reasoning_effort`: set it to `""` if your gateway rejects the parameter. The client also drops it automatically when the gateway returns a 400.
 * `extra_headers`: for gateways that want custom auth headers.

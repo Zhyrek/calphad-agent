@@ -35,3 +35,15 @@ def test_profile_can_name_its_own_env(tmp_path, monkeypatch):
     cfg = load_config(str(_cfg(tmp_path, '[llm]\napi_key_env = "X"\n[profiles.p]\napi_key_env = "OTHER_KEY"\n')),
                       profile="p")
     assert cfg.llm.api_key == "sk-other"
+
+
+def test_api_mode_env_override(tmp_path, monkeypatch):
+    from calphad_tools.agent.config import load_config
+    import pytest as _pytest
+    cfg_file = tmp_path / "calphad_agent.toml"
+    cfg_file.write_text('[llm]\nprovider = "openai"\nmodel = "m"\napi = "chat"\n')
+    monkeypatch.setenv("CALPHAD_LLM_API", "Responses")
+    assert load_config(str(cfg_file)).llm.api == "responses"
+    monkeypatch.setenv("CALPHAD_LLM_API", "rest")
+    with _pytest.raises(ValueError):
+        load_config(str(cfg_file))

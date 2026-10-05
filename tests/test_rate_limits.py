@@ -224,3 +224,68 @@ def test_transient_errors_retried_but_not_forever():
     with pytest.raises(Conn):
         g2.run(lambda: (_ for _ in ()).throw(Conn("down")))
     assert len(g2.slept) == 2
+
+
+def _serve_responses(replies, bodies):
+    """A tiny /v1/responses endpoint: returns the queued replies in order and records the request bodies."""
+    import json as _json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            bodies.append(_json.loads(self.rfile.read(n)))
+            data = _json.dumps(replies.pop(0)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def _response(status, output, reason=None):
+    r = {"id": "resp_1", "object": "response", "created_at": 0, "model": "m", "status": status,
+         "output": output, "parallel_tool_calls": True, "tool_choice": "auto", "tools": [],
+         "usage": {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110,
+                   "input_tokens_details": {"cached_tokens": 64}, "output_tokens_details": {"reasoning_tokens": 5}}}
+    if reason:
+        r["incomplete_details"] = {"reason": reason}
+    return r
+
+
+def test_responses_backend_asks_again_when_cut_off():
+    """api = "responses": an answer stopped by max_output_tokens is dropped and requested again with twice the
+    output room (as the chat backend does); the cut-off output is not kept in the conversation."""
+    from calphad_tools.agent.llm import OpenAIResponsesBackend
+    cut = _response("incomplete", [{"type": "reasoning", "id": "rs_1", "summary": [],
+                                     "encrypted_content": "enc-cut"}], reason="max_output_tokens")
+    done = _response("completed", [
+        {"type": "reasoning", "id": "rs_2", "summary": [], "encrypted_content": "enc-ok"},
+        {"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+         "content": [{"type": "output_text", "text": "pong", "annotations": []}]}])
+    bodies = []
+    srv = _serve_responses([cut, done], bodies)
+    try:
+        cfg = LLMConfig(base_url=f"http://127.0.0.1:{srv.server_port}/v1", api_key="k", model="m", api="responses",
+                        reasoning_effort="medium", initial_output_tokens=6000, max_output_tokens=16000)
+        b = OpenAIResponsesBackend(cfg, "system prompt", [])
+        said = []
+        b.guard.notify = said.append
+        b.add_user("ping")
+        res = b.step()
+    finally:
+        srv.shutdown()
+    assert res.text == "pong" and res.usage["cached"] == 64
+    assert [x["max_output_tokens"] for x in bodies] == [6000, 12000]
+    assert bodies[0]["store"] is False and bodies[0]["include"] == ["reasoning.encrypted_content"]
+    assert any("answer cut off" in s for s in said)
+    kept = [i.get("encrypted_content") for i in b.input if i.get("type") == "reasoning"]
+    assert kept == ["enc-ok"]                               # the cut-off answer was not kept
+    assert b.cur_max == 6000                                # back to the small reservation for the next step
