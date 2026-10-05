@@ -149,6 +149,12 @@ class _Line:
             return 0.0
         return float(sum(np.hypot(*np.diff(self.uv[:, k], axis=0).T).sum() for k in (0, 1)))
 
+    def max_step(self) -> float:
+        """Largest step of either boundary between consecutive tie-lines (normalized coordinates)."""
+        if self.n < 2:
+            return 0.0
+        return float(max(np.hypot(*np.diff(self.uv[:, k], axis=0).T).max() for k in (0, 1)))
+
     def sig(self):
         """End points (T, both phase compositions in either order): equal for a line traced twice exactly."""
         return tuple(sorted((round(float(self.T[i]), 3),) + tuple(sorted(tuple(np.round(self.X[i, k], 5))
@@ -384,6 +390,8 @@ def _dedupe(ctx: _Ctx, strategy, rep: Dict) -> None:
     order = sorted((i for i, L in enumerate(lines) if L is not None and not L.degenerate),
                    key=lambda i: (lines[i].length(), lines[i].n, -i))
     for pos, i in enumerate(order):                  # shortest first: is it part of a longer (or equal) line?
+        if i in drop:
+            continue
         A = lines[i]
         for j in order[pos + 1:]:
             if j in drop:
@@ -391,13 +399,18 @@ def _dedupe(ctx: _Ctx, strategy, rep: Dict) -> None:
             B = lines[j]
             if not (set(A.keys) & set(B.keys)) or not _covers(A, B):
                 continue
-            drop.add(i)
+            mutual = _covers(B, A)
+            if mutual and A.max_step() < 0.8 * B.max_step():
+                A, B, i_drop = B, A, j                      # the same trace twice: keep the finer-sampled one
+            else:
+                i_drop = i
+            drop.add(i_drop)
             if A.sig() == B.sig():
                 rep["exact_duplicates"] += 1
             else:       # a repeat of the same trace, or a shorter / trimmed partial one
                 rep["duplicates"].append({"phases": _phase_text(A.key), "points": A.n, "kept_points": B.n,
                                           "trimmed": bool(getattr(A.z, "_mc_trimmed", False)),
-                                          "partial": not _covers(B, A),
+                                          "partial": not mutual,
                                           "new": bool(rep.get("_phase") == "repair")})
             break
     if drop:

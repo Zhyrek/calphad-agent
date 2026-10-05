@@ -360,3 +360,88 @@ def test_report_text_ternary_missing_area():
            "unchecked": 0}
     text = report_text(rep, {"kind": "ternary", "elements": ["CO", "NI", "V"]})
     assert "FCC_A1+SIGMA boundary missing around X(NI)=0.10–0.20, X(V)=0.30–0.40 - repaired" in text
+
+
+# ---------------------------------------------------------------------------------------------------------
+# two-phase fills follow the checked lines (diagram_style._fill_tielines / fill_betweenx)
+# ---------------------------------------------------------------------------------------------------------
+def test_fill_tielines_fan_and_breaks():
+    """A fan of tie-lines (one boundary jumps, the other hardly moves) is one filled polygon; a line that restarts
+    elsewhere (both boundaries jump) or ends paired the wrong way round are not filled across."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from calphad_tools.diagram_style import _fill_tielines
+    fig, ax = plt.subplots()
+    # Cr-Al-Ni 750 °C, BCC + B2 near the Cr corner (the trace that left a white band before the fix)
+    a = np.array([[0.001, 0.003], [0.002, 0.001], [0.003, 0.001], [0.006, 0.001], [0.032, 0.0], [0.192, 0.0],
+                  [0.268, 0.0]])
+    b = np.array([[0.419, 0.545], [0.439, 0.531], [0.459, 0.518], [0.479, 0.506], [0.499, 0.497], [0.519, 0.469],
+                  [0.533, 0.452]])
+    _fill_tielines(ax, a, b)
+    assert [len(p.vertices) for p in ax.collections[-1].get_paths()] == [2 * len(a) + 1]
+    a2 = np.array([[0, 0], [0.01, 0], [0.02, 0], [0.5, 0.3], [0.51, 0.3]], float)
+    _fill_tielines(ax, a2, a2 + [0, 0.1])
+    assert len(ax.collections[-1].get_paths()) == 2                      # restart: two runs
+    a3 = np.array([[0, 0], [0.01, 0], [0.02, 0.1], [0.03, 0]], float)
+    b3 = np.array([[0, 0.1], [0.01, 0.1], [0.02, 0.0], [0.03, 0.1]], float)
+    _fill_tielines(ax, a3, b3)
+    assert [len(p.vertices) for p in ax.collections[-1].get_paths()] == [5]   # only the untwisted pair
+    plt.close(fig)
+
+
+FILL_CASES = {
+    "Cr-Al-Ni 750 C": ("AlCoCrNi_Liu2016.tdb", {"elements": ["CR", "AL", "NI"], "temperature": 750,
+                                                 "temperature_unit": "C"}),
+    "Co-Cr-Ni 1000 C": ("CoCrFeNiV_Choi2019.tdb", {"elements": ["CO", "CR", "NI"], "temperature": 1000,
+                                                    "temperature_unit": "C"}),
+    "Fe-Ni": ("FeNi-00Ans-2SL.tdb", {"elements": ["FE", "NI"], "tmin": 573, "tmax": 1973}),
+}
+
+
+@pytest.mark.parametrize("case", list(FILL_CASES))
+def test_two_phase_fills_cover_the_checked_lines(tb, case):
+    """With the check on, the light-blue fill covers the area between every pair of consecutive tie-lines of
+    every two-phase line (no white bands, as a dropped duplicate trace once left in Cr-Al-Ni 750 °C)."""
+    import matplotlib.path as mpath
+    from calphad_tools.figures import load_figure
+    tdb, args = FILL_CASES[case]
+    _, imgs = call(tb, "map_phase_diagram", {"tdb": tdb, **args, "label_regions": False, "formats": [],
+                                             "output_prefix": "fill_" + case.split()[0]})
+    fig = load_figure(imgs[0])
+    ax = fig.axes[0]
+    paths = [mpath.Path(p.vertices) for c in ax.collections
+             if type(c).__name__ in ("PolyCollection", "FillBetweenPolyCollection") for p in c.get_paths()]
+    stem = str(Path(imgs[0]).with_suffix(""))
+    ties = rows(stem + "_tielines.csv")
+    els = [e.upper() for e in args["elements"]]
+    ternary = len(els) == 3
+
+    def xy(r, k):
+        if ternary:
+            return float(r[f"X{k}({els[1]})"]), float(r[f"X{k}({els[2]})"])
+        return float(r[f"X{k}({els[1]})"]), float(r["T_K"])
+    by_line = {}
+    for r in ties:
+        by_line.setdefault(r["line"], []).append(r)
+    scale = np.array([1.0, 1.0]) if ternary else np.array([1.0, 1400.0])
+    n_quads, missed = 0, []
+    for ln, rs in by_line.items():
+        rs.sort(key=lambda r: int(r["point"]))
+        A = np.array([xy(r, 1) for r in rs]) / scale
+        B = np.array([xy(r, 2) for r in rs]) / scale
+        if len(A) < 2 or np.abs(A - B).max() < 1e-4:
+            continue
+        sa, sb = np.hypot(*np.diff(A, axis=0).T), np.hypot(*np.diff(B, axis=0).T)
+        med = np.median(np.maximum(sa, sb)[np.maximum(sa, sb) > 0])
+        for i in range(len(A) - 1):
+            q = np.array([A[i], A[i + 1], B[i + 1], B[i]])
+            area = 0.5 * abs(np.dot(q[:, 0], np.roll(q[:, 1], 1)) - np.dot(q[:, 1], np.roll(q[:, 0], 1)))
+            if min(sa[i], sb[i]) > 6 * med or np.hypot(*(A[i] - B[i])) < 2e-3 or area < 1e-7:
+                continue                                    # a restart / a vanishing tie-line / a field along an edge
+            c = (A[i] + A[i + 1] + B[i] + B[i + 1]) / 4 * scale
+            n_quads += 1
+            if not any(p.contains_point(c) for p in paths):
+                missed.append((ln, i, tuple(np.round(c, 4))))
+    assert n_quads > 20
+    assert len(missed) <= max(1, 0.01 * n_quads), missed

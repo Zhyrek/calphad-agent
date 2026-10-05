@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .phase_names import set_name
+
 STYLES = ("shaded", "color")
 LINE_COLOR = "k"                 # binary / isopleth / T-MU boundaries and invariant lines (shaded)
 LINE_WIDTH = 1.25
@@ -81,14 +83,31 @@ def draw_shaded(ax, boundaries, invariants, kind="binary", tiny=1e-3):
         ax.plot(p[:, 0], p[:, 1], color=color, lw=lw, ls="-", solid_capstyle="butt", zorder=2.5)
 
 
+def _crossing(p1, p2, q1, q2) -> np.ndarray:
+    """Segments p1-p2 and q1-q2 (arrays of points) cross at an interior point of both."""
+    def orient(a, b, c):
+        return (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])
+    d1, d2 = orient(q1, q2, p1), orient(q1, q2, p2)
+    d3, d4 = orient(p1, p2, q1), orient(p1, p2, q2)
+    return (d1 * d2 < 0) & (d3 * d4 < 0)
+
+
 def _fill_tielines(ax, a, b, jump=6.0):
     """Fill a ternary two-phase field: a[i] - b[i] are the ends of consecutive tie-lines.  The field is filled as
-    one polygon per continuous run (no seams); the run is split where either boundary jumps (a step longer than
-    ``jump`` x the median step, e.g. a line that restarts elsewhere) so no area outside the field is covered."""
+    one polygon per continuous run (no seams).  A run is split only where the quadrilateral between two consecutive
+    tie-lines is not part of the field: both boundaries jump (each step longer than ``jump`` x the median step, e.g.
+    a line that restarts elsewhere), the two tie-lines cross, or the quadrilateral is twisted (ends paired the wrong
+    way round).  One boundary moving far while the other hardly moves is a fan of tie-lines (e.g. from a corner),
+    which is filled."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
     ok = np.isfinite(a).all(1) & np.isfinite(b).all(1)
-    step = np.maximum(np.hypot(*np.diff(a, axis=0).T), np.hypot(*np.diff(b, axis=0).T))
+    sa, sb = np.hypot(*np.diff(a, axis=0).T), np.hypot(*np.diff(b, axis=0).T)
+    step = np.maximum(sa, sb)
     med = np.median(step[step > 0]) if (step > 0).any() else 0.0
-    brk = ~(ok[:-1] & ok[1:]) | (step > jump * med if med > 0 else np.zeros_like(step, bool))
+    restart = np.minimum(sa, sb) > jump * med if med > 0 else np.zeros_like(step, bool)
+    with np.errstate(invalid="ignore"):
+        bad = _crossing(a[:-1], b[:-1], a[1:], b[1:]) | _crossing(a[:-1], a[1:], b[:-1], b[1:])
+    brk = ~(ok[:-1] & ok[1:]) | restart | bad
     from matplotlib.collections import PolyCollection
     polys, start = [], 0
     for i in list(np.nonzero(brk)[0]) + [len(a) - 1]:
@@ -152,7 +171,8 @@ def line_labels(ax, items, fontsize=7.0, color=LABEL_COLOR):
                    for q, t in placed):
                 break                                       # same name right next to it: once is enough
             placed.append((r, text))
-            ax.text(xy[i, 0], xy[i, 1], text, fontsize=fontsize, color=color, ha="center", va="center", zorder=6,
-                    bbox={"boxstyle": "square,pad=0.1", "facecolor": "white", "edgecolor": "none", "alpha": 0.85},
-                    gid=f"line_label:{k}")
+            set_name(ax.text(xy[i, 0], xy[i, 1], text, fontsize=fontsize, color=color, ha="center", va="center",
+                             zorder=6, gid=f"line_label:{k}",
+                             bbox={"boxstyle": "square,pad=0.1", "facecolor": "white", "edgecolor": "none",
+                                   "alpha": 0.85}), text)          # subscript digits typeset
             break
