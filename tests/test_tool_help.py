@@ -62,6 +62,7 @@ def test_agent_looks_up_then_uses_a_short_tool(tmp_path):
     try:
         cfg = load_config(str(tmp_path / "none.toml"))
         cfg.llm.base_url, cfg.llm.api_key = "http://127.0.0.1:8851/v1", "x"
+        cfg.llm.api = "chat"                # this test checks /chat/completions request formats
         cfg.agent.workdir, cfg.agent.output_dir = str(ROOT / "examples"), str(tmp_path / "out")
         out = Agent(cfg, UI(), interactive=False).run_turn("Fe-18Cr-8Ni wt% to at%?")
     finally:

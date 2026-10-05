@@ -169,6 +169,7 @@ def test_agent_loop_with_fake_openai(tmp_path):
     try:
         cfg = load_config(str(tmp_path / "none.toml"))
         cfg.llm.base_url, cfg.llm.api_key = "http://127.0.0.1:8798/v1", "x"
+        cfg.llm.api = "chat"                # this test checks /chat/completions request formats
         cfg.agent.workdir, cfg.agent.output_dir = str(ROOT / "examples"), str(tmp_path / "out")
         out = Agent(cfg, AutoUI()).run_turn("hi")
     finally:
@@ -228,6 +229,7 @@ def test_auto_verify_gate(tmp_path):
     try:
         cfg = load_config(str(tmp_path / "none.toml"))
         cfg.llm.base_url, cfg.llm.api_key = "http://127.0.0.1:8797/v1", "x"
+        cfg.llm.api = "chat"                # this test checks /chat/completions request formats
         cfg.agent.workdir, cfg.agent.output_dir = str(ROOT / "examples"), str(tmp_path / "out")
         cfg.agent.python_tool = "auto_verify"
         agent = Agent(cfg, NoHumanUI(), interactive=False)
@@ -368,6 +370,7 @@ def test_tool_only_mode_offers_everything_but_python(tmp_path):
     try:
         cfg = load_config(str(tmp_path / "none.toml"))
         cfg.llm.base_url, cfg.llm.api_key = "http://127.0.0.1:8795/v1", "x"
+        cfg.llm.api = "chat"                # this test checks /chat/completions request formats
         cfg.agent.workdir, cfg.agent.output_dir = str(ROOT / "examples"), str(tmp_path / "out")
         cfg.agent.python_tool = "off"
         agent = Agent(cfg, NoHumanUI(), interactive=False)

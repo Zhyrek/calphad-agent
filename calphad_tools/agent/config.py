@@ -28,7 +28,7 @@ class LLMConfig:
     api_key: str = ""
     api_key_env: str = ""             # name of an environment variable holding the key (used if api_key is empty)
     model: str = "gpt-5.6-sol"
-    api: str = "chat"                 # openai only: "chat" (/chat/completions) | "responses" (/responses)
+    api: str = "responses"            # openai only: "responses" (/responses) | "chat" (/chat/completions)
     reasoning_effort: str = "medium"  # "" to omit (non-reasoning models)
     max_output_tokens: int = 16000    # ceiling for one answer
     initial_output_tokens: int = 6000 # what each request reserves (Azure counts it against the TPM limit up
@@ -150,7 +150,7 @@ base_url = "https://YOUR-LLM-HOST/v1"     # <-- custom URL of your hosted model
 api_key  = ""                             # <-- your key (or set CALPHAD_LLM_API_KEY)
 api_key_env = ""                          # or: the NAME of an env variable holding the key, e.g. "SOL_API_KEY"
 model    = "gpt-5.6-sol"                  # model name exactly as your endpoint expects it
-api      = "chat"                         # "chat" = /chat/completions ; "responses" = /responses
+api      = "responses"                    # "responses" = /responses ; "chat" = /chat/completions (hosts without /responses)
 reasoning_effort = "medium"               # low | medium | high ; "" if the endpoint rejects it
 max_output_tokens = 16000                 # ceiling; each request reserves initial_output_tokens (6000)
 vision = true                             # let the model look at the plots it makes

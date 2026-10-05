@@ -1,4 +1,4 @@
-"""A tiny scripted OpenAI-compatible /v1/chat/completions server for offline testing.
+"""A tiny scripted OpenAI-compatible /v1/chat/completions + /v1/responses server for offline testing.
 
 It replays tool calls from a JSON script: each time the conversation ends with a
 user message (or tool results), the next scripted step is returned.  A step is
@@ -34,6 +34,8 @@ def make_handler(steps, log_path):
                 state["i"] += 1
             if self.path.split("?")[0].endswith("/messages"):
                 return self._anthropic(body, step)
+            if self.path.split("?")[0].endswith("/responses"):
+                return self._responses(body, step)
             if not self.path.endswith("/chat/completions"):
                 self.send_response(404)
                 self.end_headers()
@@ -72,6 +74,31 @@ def make_handler(steps, log_path):
                     "choices": [{"index": 0, "finish_reason": finish,
                                  "message": {"role": "assistant", "content": text, "tool_calls": calls or None}}],
                     "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+            data = json.dumps(resp).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        # ---- OpenAI Responses API (the default api style) ----
+        def _responses(self, body, step):
+            text = step.get("text")
+            if step.get("echo_last_tool"):
+                outs = [i for i in body.get("input", []) if i.get("type") == "function_call_output"]
+                text = (text or "") + (outs[-1]["output"][:300] if outs else "")
+            out = [{"type": "reasoning", "id": f"rs_{state['i']}", "summary": [], "encrypted_content": "enc"}]
+            if text:
+                out.append({"type": "message", "id": f"msg_{state['i']}", "role": "assistant", "status": "completed",
+                            "content": [{"type": "output_text", "text": text, "annotations": []}]})
+            for k, c in enumerate(step.get("tool_calls", [])):
+                out.append({"type": "function_call", "id": f"fc_{state['i']}_{k}", "call_id": f"call_{state['i']}_{k}",
+                            "name": c["name"], "arguments": json.dumps(c["arguments"]), "status": "completed"})
+            resp = {"id": "resp_x", "object": "response", "created_at": int(time.time()), "model": body.get("model"),
+                    "status": "completed", "output": out, "parallel_tool_calls": True, "tool_choice": "auto",
+                    "tools": [], "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
+                                           "input_tokens_details": {"cached_tokens": 0},
+                                           "output_tokens_details": {"reasoning_tokens": 0}}}
             data = json.dumps(resp).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
