@@ -20,13 +20,14 @@ class Fake429(Exception):
 
 def guard(**kw):
     """A guard with a fake clock: sleeping advances it (no real waiting in the tests)."""
-    g = RateGuard(LLMConfig(**kw))
+    g = RateGuard(LLMConfig(**{"rate_limit_mode": "polite", **kw}))   # these tests: the polite pacing
     g.slept, g.said, g.now = [], [], 1000.0
 
     def sleep(s):
         g.slept.append(s)
         g.now += s
-    g.sleep, g.clock, g.notify = sleep, (lambda: g.now), g.said.append
+    g.sleep, g.clock = sleep, (lambda: g.now)
+    g.notify = lambda m, key=None: g.said.append(m)
     return g
 
 
@@ -115,7 +116,7 @@ def test_chat_backend_resends_identical_request_with_cache_key():
         b = OpenAIChatBackend(cfg, "system prompt", [])
         b.guard.sleep = lambda s: None
         said = []
-        b.guard.notify = said.append
+        b.guard.notify = lambda m, key=None: said.append(m)
         b.add_user("ping")
         res = b.step()
     finally:
@@ -123,7 +124,7 @@ def test_chat_backend_resends_identical_request_with_cache_key():
     assert res.text == "pong" and res.usage["cached"] == 1408
     first, second = state["bodies"]
     assert first == second and first["prompt_cache_key"] == "calphad-agent-abc"
-    assert any("rate limit reached" in s for s in said)
+    assert any("rate limit (429) - resending within" in s for s in said)    # default: aggressive
 
 
 def test_images_shown_once_and_plots_not_attached(tmp_path):
@@ -197,7 +198,7 @@ def test_stream_cut_mid_answer_is_requested_again():
         b = OpenAIChatBackend(cfg, "system", [])
         b.guard.sleep = lambda s: None
         said = []
-        b.guard.notify = said.append
+        b.guard.notify = lambda m, key=None: said.append(m)
         b.add_user("hi")
         res = b.step(on_text=lambda t: None)
     finally:
@@ -277,7 +278,7 @@ def test_responses_backend_asks_again_when_cut_off():
                         reasoning_effort="medium", initial_output_tokens=6000, max_output_tokens=16000)
         b = OpenAIResponsesBackend(cfg, "system prompt", [])
         said = []
-        b.guard.notify = said.append
+        b.guard.notify = lambda m, key=None: said.append(m)
         b.add_user("ping")
         res = b.step()
     finally:
@@ -289,3 +290,56 @@ def test_responses_backend_asks_again_when_cut_off():
     kept = [i.get("encrypted_content") for i in b.input if i.get("type") == "reasoning"]
     assert kept == ["enc-ok"]                               # the cut-off answer was not kept
     assert b.cur_max == 6000                                # back to the small reservation for the next step
+
+
+
+def test_aggressive_retries_fast_without_self_pacing():
+    """Default ("aggressive"): a shared quota goes to whoever asks first - every 429 is resent within
+    rate_limit_retry_cap_s (Retry-After capped too), nothing is learned or paced, the retries share one status
+    line (same key, a running count), and only the total wait ends the attempts."""
+    g = guard(rate_limit_mode="aggressive")
+    keys = []
+    g.notify = lambda m, key=None: (g.said.append(m), keys.append(key))
+    calls = []
+
+    def fn():
+        calls.append(1)
+        if len(calls) < 12:                                  # more than max_retries (8) refusals
+            raise Fake429()                                  # with "retry after 7 seconds"
+        return "ok"
+    g.sent = [(g.now, 30000)]
+    g.header_remaining, g.header_reset, g.header_time = 10, 50.0, g.now   # "almost nothing left this minute"
+    assert g.run(fn, est=20000) == "ok" and len(calls) == 12
+    assert len(g.slept) == 11 and max(g.slept) <= 5.0 and min(g.slept) > 0     # capped, no 50 s reset wait
+    assert g.learned_tpm is None and g.budget() == 0                           # no self-pacing
+    assert len(set(keys)) == 1 and keys[0]                                     # one replaceable status line
+    assert "retry ×11" in g.said[-1] and "resending within 5 s" in g.said[-1]
+    # the next request's retries start a new line
+    calls.clear()
+    g.run(fn, est=100)
+    assert len(set(keys)) == 2
+
+
+def test_aggressive_still_gives_up_after_the_total_wait():
+    g = guard(rate_limit_mode="aggressive", rate_limit_max_wait_s=20.0)
+    g.notify = lambda m, key=None: g.said.append(m)
+
+    def fn():
+        raise Fake429()
+    import pytest as _pytest
+    from calphad_tools.agent.llm import RateLimitGiveUp
+    with _pytest.raises(RateLimitGiveUp):
+        g.run(fn, est=100)
+    assert sum(g.slept) <= 20.0 and len(g.slept) >= 4
+
+
+def test_cli_progress_rewrites_repeated_key(capsys, monkeypatch):
+    from calphad_tools.agent.cli import TerminalUI
+    import sys as _sys
+    ui = TerminalUI.__new__(TerminalUI)
+    monkeypatch.setattr(_sys.stdout, "isatty", lambda: True, raising=False)
+    ui.progress("rate limit (429) - retry ×1", key="rate_limit:1")
+    ui.progress("rate limit (429) - retry ×2", key="rate_limit:1")
+    ui.progress("something else")
+    out = capsys.readouterr().out
+    assert out.count("\x1b[1A\x1b[2K") == 1 and "retry ×2" in out and "something else" in out

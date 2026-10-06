@@ -140,7 +140,8 @@ def submit(tb, label: str, target: str, kwargs: Dict[str, Any], *, status_hook: 
     _write_json(d / "status.json", {"job_id": job_id, "label": label, "state": "queued", "pid": None,
                                     "created": spec["created"], "start": None, "end": None, "message": "queued",
                                     "frac": None, "metrics": {}, "n_progress": 0})
-    env = dict(os.environ)
+    from .hashseed import child_env
+    env = child_env()                           # PYTHONHASHSEED=0 unless set (reproducible mapping)
     env["CALPHAD_FIGSTORE"] = spec["figstore"]
     env["PYTHONUNBUFFERED"] = "1"
     root_pkg = str(Path(__file__).resolve().parents[1])

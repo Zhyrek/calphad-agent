@@ -39,8 +39,15 @@ class TerminalUI(UI):
         print(f"\n{YEL}{title}{RST}\n{DIM}{textwrap.indent(body, '  | ')}{RST}")
         return input(f"{YEL}run it? [y/N] {RST}").strip().lower() in ("y", "yes")
 
-    def progress(self, msg):
-        print(f"{DIM}  … {msg}{RST}", flush=True)
+    _last_key = None
+
+    def progress(self, msg, key=None):
+        # a repeated key (e.g. rate-limit retries) rewrites the previous status line instead of adding one
+        if key is not None and key == self._last_key and sys.stdout.isatty():
+            print(f"\x1b[1A\x1b[2K{DIM}  … {msg}{RST}", flush=True)
+        else:
+            print(f"{DIM}  … {msg}{RST}", flush=True)
+        self._last_key = key
 
     def notice(self, kind, text):
         if kind == "report":
@@ -160,6 +167,8 @@ def run_terminal(cfg, once: Optional[str] = None, allow_python: bool = False) ->
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    from ..hashseed import reexec_with_seed
+    reexec_with_seed("calphad_tools.agent.cli", argv)    # PYTHONHASHSEED=0 unless set: reproducible mapping
     ap = argparse.ArgumentParser(description="Chat with pycalphad / CALPHAD tools through an LLM.")
     ap.add_argument("--config", help="config TOML (default ./calphad_agent.toml)")
     ap.add_argument("--init-config", action="store_true", help="write an example calphad_agent.toml and exit")

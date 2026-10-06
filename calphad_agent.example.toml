@@ -30,3 +30,5 @@ output_dir = "calphad_outputs"            # plots, decks, datasets are written h
 python_tool = "ask"                       # ask | auto | off : may the model run arbitrary Python?
 max_tool_rounds = 40
 diagram_style = "shaded"                  # phase diagrams: shaded (black lines, filled two-phase fields) | color
+save_notebooks = true                     # <figure>.ipynb next to every phase diagram: pycalphad code that
+                                          # regenerates all of its files (PNG/SVG/PDF, CSVs, JSON)

@@ -50,6 +50,14 @@ def sig_explicit(fn) -> bool:
         return False
 
 
+def _add_line(text: str, line: str) -> str:
+    """A hook's line in a tool result: just before the "Files:" list if there is one, else at the end."""
+    if "\nFiles:\n" in text:
+        head, _, rest = text.partition("\nFiles:\n")
+        return f"{head}\n{line}\nFiles:\n{rest}"
+    return text.rstrip("\n") + "\n" + line.replace("all files below", "all files of this call")
+
+
 def _summary(desc: str, n: int = 170) -> str:
     """First sentence of a tool description (the compact form the model sees)."""
     m = re.match(r"(.+?[.!?])(\s|$)", desc.strip(), re.S)
@@ -88,7 +96,8 @@ class UI:
     def confirm(self, title: str, body: str) -> bool:
         raise NotImplementedError
 
-    def progress(self, msg: str) -> None:
+    def progress(self, msg: str, key: Optional[str] = None) -> None:
+        """A status line; consecutive messages with the same key replace each other (e.g. rate-limit retries)."""
         pass
 
     def notice(self, kind: str, text: str) -> None:
@@ -117,7 +126,8 @@ UNIT = {"type": "string", "enum": ["K", "C"], "description": "Temperature unit o
 
 class ToolBox:
     def __init__(self, workdir: str, output_dir: str, ui: UI, python_tool: str = "ask",
-                 max_chars: int = 20000, llm_cfg=None, interactive: bool = True, diagram_style: str = "shaded"):
+                 max_chars: int = 20000, llm_cfg=None, interactive: bool = True, diagram_style: str = "shaded",
+                 save_notebooks: bool = True):
         self.workdir = Path(workdir).resolve()
         self.out = (self.workdir / output_dir).resolve()
         self.out.mkdir(parents=True, exist_ok=True)
@@ -134,6 +144,10 @@ class ToolBox:
         self.tools: Dict[str, Tool] = {}
         self.call_log: List[Dict[str, Any]] = []      # every tool call this session (provenance / export)
         self.call_listeners: List[Callable[[Dict[str, Any]], None]] = []
+        # after a successful call (already in call_log): (record, call number) -> extra line for the result text
+        # (e.g. the reproduction notebook saved next to a phase diagram, see codegen); run before the listeners
+        self.result_hooks: List[Callable[[Dict[str, Any], int], Optional[str]]] = []
+        self.save_notebooks = bool(save_notebooks)    # auto-saved reproduction notebooks (config save_notebooks)
         self._register_all()
 
     # ------------------------------------------------------------------ utils
@@ -296,6 +310,16 @@ class ToolBox:
                # full text kept for failures (tracebacks) and short results - problem reports need it
                "result_full": text if (err or len(text) <= 20000) else None}
         self.call_log.append(rec)
+        if not err:
+            for hook in self.result_hooks:
+                try:
+                    extra = hook(rec, len(self.call_log))
+                except Exception:  # noqa: BLE001 - hooks must never break a tool call
+                    extra = None
+                if extra:
+                    text = _add_line(text, extra)
+            rec["result_preview"] = text[:500]
+            rec["result_full"] = text if len(text) <= 20000 else None
         for fn in self.call_listeners:
             try:
                 fn(rec)

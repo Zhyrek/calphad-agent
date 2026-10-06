@@ -885,8 +885,8 @@ TASKS: List[Tuple[str, List[str]]] = [
      ["check_tdb"]),
     ("session history, provenance of an output, reproducible script / notebook export",
      ["session_log", "provenance", "export_session"]),
-    ("standalone pycalphad/matplotlib code behind a specific figure or result (paste into Jupyter)",
-     ["show_code"]),
+    ("standalone pycalphad/matplotlib code behind a specific figure or result, as a Jupyter notebook (every phase "
+     "diagram already has <png name>.ipynb next to it that regenerates all its files)", ["show_code"]),
     ("every phase of an element system across databases: sublattice models, constituents per site, model "
      "type, magnetic/order-disorder settings (phase x database table)", ["phase_inventory"]),
     ("statistics of an element system: how many binaries/ternaries, which are assessed in which database and "

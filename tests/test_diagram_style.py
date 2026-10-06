@@ -320,15 +320,21 @@ def _style_of(fig):
 exec(STYLE_DUMP)  # noqa: S102 - same extraction in the test and in the generated script
 
 
-def _run_show_code(tb, png, tmp_path):
+def _run_show_code(tb, png, tmp_path, subsystem=False):
+    """subsystem: an overview - dump the first subsystem's diagram (its cell closes it; the final `fig` is the
+    stitched grid image)."""
     from calphad_tools import codegen
     cells, ctx = codegen.build_cells(tb, png)
     assert all(c.standalone for c in cells), [(c.title, c.note) for c in cells]
     script = codegen.to_script(tb, cells, ctx)
     assert "calphad_tools" not in script and "def draw_shaded" in script
+    dumped = "fig"
+    if subsystem:
+        script = "diagram_figures = []\n" + script.replace("\nplt.close(fig)\n", "\ndiagram_figures.append(fig)\n")
+        dumped = "diagram_figures[0]"
     d = tmp_path / "run"
     d.mkdir(exist_ok=True)
-    (d / "gen.py").write_text(script + STYLE_DUMP + "\n_json.dump(_style_of(fig), open('style.json', 'w'))\n")
+    (d / "gen.py").write_text(script + STYLE_DUMP + f"\n_json.dump(_style_of({dumped}), open('style.json', 'w'))\n")
     r = subprocess.run([sys.executable, "-W", "ignore", "gen.py"], cwd=d, capture_output=True, text=True, timeout=1800)
     assert r.returncode == 0, r.stderr[-4000:]
     return json.loads((d / "style.json").read_text()), d / "standalone_outputs"
@@ -351,7 +357,7 @@ def test_show_code_reproduces_shaded_binary(tb, tmp_path):
 def test_show_code_reproduces_shaded_ternary_overview(tb, tmp_path):
     text, imgs = call(tb, "plot_all_ternaries", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["CO", "CR", "NI"],
                                                  "temperatures_c": [1000], "output_pptx": "tern_code.pptx"})
-    got, out = _run_show_code(tb, imgs[0], tmp_path)
+    got, out = _run_show_code(tb, imgs[0], tmp_path, subsystem=True)
     single = next(Path(imgs[0]).parent.glob("CoCrFeNiV_Choi2019_CO-CR-NI_1000C.png"))
     want = _style_of(stored(single)[0])
     assert got[0]["lines"] == want[0]["lines"] == [[GREY, 1.0, "-"]]

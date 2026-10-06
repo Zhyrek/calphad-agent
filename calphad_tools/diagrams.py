@@ -251,9 +251,11 @@ def run_tasks(tasks: List[Dict], n_workers: Optional[int] = None, timeout: float
     say = progress or (lambda s: None)
 
     def spawn() -> Dict:
+        from .hashseed import for_children
         parent, child = ctx.Pipe()
         proc = ctx.Process(target=_worker_loop, args=(child,), daemon=True)
-        proc.start()
+        with for_children():           # PYTHONHASHSEED=0 unless the user set one: reproducible mapping
+            proc.start()
         child.close()
         return {"proc": proc, "conn": parent, "task": None, "t0": 0.0, "seen": set(), "ready": False,
                 "born": time.time()}
@@ -395,17 +397,12 @@ def _shaded_binary_task(tdb, a, b, out_png, tmin_c, tmax_c, x_step, t_step, excl
                 check_mapping=check_mapping)
 
 
-def all_binaries(tdb: str, output_pptx: str = "binaries.pptx", tmin_c: float = 100.0,
-                 tmax_c: float = 3000.0, out_dir: Optional[str] = None, n_workers: Optional[int] = None,
-                 timeout: float = 900.0, per_slide: int = 6, x_step: float = 0.02, t_step: float = 10.0,
-                 individual_slides: bool = False, exclude_phases=None, elements=None,
-                 progress: Optional[Callable[[str], None]] = None, element_order=None, orientation=None,
-                 style: str = "shaded", formats: Optional[Sequence[str]] = None,
-                 check_mapping: str = "auto") -> Dict:
-    """element_order: earlier elements on the left of every binary; orientation: per-system overrides
-    {"CR-FE": ["FE", "CR"] | "CR" (right element)} (see orientation.subsystem_order); default alphabetical.
-    style: "shaded" (map_phase_diagram in the shaded style with phase-region labels, its CSV/JSON data and SVG+PDF
-    next to each PNG unless formats says otherwise) or "color" (pycalphad binplot, one colour per phase)."""
+def binary_tasks(tdb: str, output_pptx: str, tmin_c: float = 100.0, tmax_c: float = 3000.0, *,
+                 out_dir: Optional[str] = None, timeout: float = 900.0, x_step: float = 0.02, t_step: float = 10.0,
+                 exclude_phases=None, elements=None, element_order=None, orientation=None, style: str = "shaded",
+                 formats: Optional[Sequence[str]] = None, check_mapping: str = "auto"):
+    """The worker tasks of all_binaries (one per subsystem; also used by its show_code generator) ->
+    (tasks, out_dir, elements, pairs).  Nothing is computed or written."""
     from .diagram_style import check_style
     from .orientation import check_overrides, subsystem_order
     style = check_style(style)
@@ -416,7 +413,6 @@ def all_binaries(tdb: str, output_pptx: str = "binaries.pptx", tmin_c: float = 1
     pairs = [tuple(subsystem_order(p, element_order, orientation)) for p in pairs]
     stem = Path(tdb).stem
     out_dir = Path(out_dir or Path(output_pptx).with_suffix("").as_posix() + "_png")
-    out_dir.mkdir(parents=True, exist_ok=True)
     if style == "shaded":
         tasks = [{"name": f"{a}-{b}", "kind": "map",
                   "kwargs": _shaded_binary_task(tdb, a, b, str(out_dir / f"{stem}_{a}-{b}.png"), tmin_c, tmax_c,
@@ -430,6 +426,27 @@ def all_binaries(tdb: str, output_pptx: str = "binaries.pptx", tmin_c: float = 1
                                  tmin_c=tmin_c, tmax_c=tmax_c, x_step=x_step, t_step=t_step,
                                  exclude_phases=exclude_phases, keep_order=True, check_mapping=check_mapping)}
                  for a, b in pairs]
+    return tasks, out_dir, els, pairs
+
+
+def all_binaries(tdb: str, output_pptx: str = "binaries.pptx", tmin_c: float = 100.0,
+                 tmax_c: float = 3000.0, out_dir: Optional[str] = None, n_workers: Optional[int] = None,
+                 timeout: float = 900.0, per_slide: int = 6, x_step: float = 0.02, t_step: float = 10.0,
+                 individual_slides: bool = False, exclude_phases=None, elements=None,
+                 progress: Optional[Callable[[str], None]] = None, element_order=None, orientation=None,
+                 style: str = "shaded", formats: Optional[Sequence[str]] = None,
+                 check_mapping: str = "auto") -> Dict:
+    """element_order: earlier elements on the left of every binary; orientation: per-system overrides
+    {"CR-FE": ["FE", "CR"] | "CR" (right element)} (see orientation.subsystem_order); default alphabetical.
+    style: "shaded" (map_phase_diagram in the shaded style with phase-region labels, its CSV/JSON data and SVG+PDF
+    next to each PNG unless formats says otherwise) or "color" (pycalphad binplot, one colour per phase)."""
+    tasks, out_dir, els, pairs = binary_tasks(tdb, output_pptx, tmin_c, tmax_c, out_dir=out_dir, timeout=timeout,
+                                              x_step=x_step, t_step=t_step, exclude_phases=exclude_phases,
+                                              elements=elements, element_order=element_order,
+                                              orientation=orientation, style=style, formats=formats,
+                                              check_mapping=check_mapping)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(tdb).stem
     results = run_tasks(tasks, n_workers=n_workers, timeout=timeout, progress=progress)
     prs = pu.new_presentation()
     pu.add_title_slide(prs, f"Binary phase diagrams: {Path(tdb).name}",
@@ -450,18 +467,12 @@ def all_binaries(tdb: str, output_pptx: str = "binaries.pptx", tmin_c: float = 1
     return {"pptx": output_pptx, "grid_images": grids, "systems": [asdict(r) for r in results]}
 
 
-def all_ternaries(tdb: str, temperatures_c: Sequence[float], output_pptx: str = "ternaries.pptx",
-                  out_dir: Optional[str] = None, n_workers: Optional[int] = None, timeout: float = 1800.0,
-                  per_slide: int = 6, step: float = 0.02, individual_slides: bool = False,
-                  exclude_phases=None, elements=None, units: str = "C",
-                  progress: Optional[Callable[[str], None]] = None, element_order=None, orientation=None,
-                  style: str = "shaded", formats: Optional[Sequence[str]] = None,
-                  check_mapping: str = "auto") -> Dict:
-    """element_order: earlier elements go bottom-left, then bottom-right, then top; orientation: per-system
-    overrides {"CR-FE-NI": {"left": .., "right": .., "top": ..} | [bottom-left, bottom-right, top]}.
-    style: "shaded" (map_phase_diagram: grey boundaries and tie-triangles, no tie-lines, phase-region labels
-    instead of a legend; SVG+PDF next to each PNG unless formats says otherwise) or "color" (pycalphad ternplot,
-    one colour per phase)."""
+def ternary_tasks(tdb: str, temperatures_c: Sequence[float], output_pptx: str, *, out_dir: Optional[str] = None,
+                  timeout: float = 1800.0, step: float = 0.02, exclude_phases=None, elements=None, units: str = "C",
+                  element_order=None, orientation=None, style: str = "shaded",
+                  formats: Optional[Sequence[str]] = None, check_mapping: str = "auto"):
+    """The worker tasks of all_ternaries (one per subsystem and temperature; also used by its show_code
+    generator) -> (tasks, out_dir, elements, triples).  Nothing is computed or written."""
     from .diagram_style import check_style
     from .orientation import check_overrides, subsystem_order
     style = check_style(style)
@@ -474,7 +485,6 @@ def all_ternaries(tdb: str, temperatures_c: Sequence[float], output_pptx: str = 
     triples = [tuple(subsystem_order(t, element_order, orientation)) for t in triples]
     stem = Path(tdb).stem
     out_dir = Path(out_dir or Path(output_pptx).with_suffix("").as_posix() + "_png")
-    out_dir.mkdir(parents=True, exist_ok=True)
     u = "°C" if units.upper() == "C" else "K"
     tasks = []
     for T in temperatures_c:
@@ -494,6 +504,28 @@ def all_ternaries(tdb: str, temperatures_c: Sequence[float], output_pptx: str = 
                               "kwargs": dict(tdb=str(tdb), elements=list(tri), temperature=T, units=units,
                                              out_png=png, step=step, exclude_phases=exclude_phases,
                                              keep_order=True, check_mapping=check_mapping)})
+    return tasks, out_dir, els, triples
+
+
+def all_ternaries(tdb: str, temperatures_c: Sequence[float], output_pptx: str = "ternaries.pptx",
+                  out_dir: Optional[str] = None, n_workers: Optional[int] = None, timeout: float = 1800.0,
+                  per_slide: int = 6, step: float = 0.02, individual_slides: bool = False,
+                  exclude_phases=None, elements=None, units: str = "C",
+                  progress: Optional[Callable[[str], None]] = None, element_order=None, orientation=None,
+                  style: str = "shaded", formats: Optional[Sequence[str]] = None,
+                  check_mapping: str = "auto") -> Dict:
+    """element_order: earlier elements go bottom-left, then bottom-right, then top; orientation: per-system
+    overrides {"CR-FE-NI": {"left": .., "right": .., "top": ..} | [bottom-left, bottom-right, top]}.
+    style: "shaded" (map_phase_diagram: grey boundaries and tie-triangles, no tie-lines, phase-region labels
+    instead of a legend; SVG+PDF next to each PNG unless formats says otherwise) or "color" (pycalphad ternplot,
+    one colour per phase)."""
+    tasks, out_dir, els, triples = ternary_tasks(tdb, temperatures_c, output_pptx, out_dir=out_dir, timeout=timeout,
+                                                 step=step, exclude_phases=exclude_phases, elements=elements,
+                                                 units=units, element_order=element_order, orientation=orientation,
+                                                 style=style, formats=formats, check_mapping=check_mapping)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(tdb).stem
+    u = "°C" if units.upper() == "C" else "K"
     results = run_tasks(tasks, n_workers=n_workers, timeout=timeout, progress=progress)
     prs = pu.new_presentation()
     pu.add_title_slide(prs, f"Ternary isothermal sections: {Path(tdb).name}",

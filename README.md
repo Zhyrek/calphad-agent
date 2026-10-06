@@ -94,7 +94,7 @@ workdir     = "examples"                # folder with your TDBs and data
 python_tool = "auto_verify"             # ask | auto_verify | off
 ```
 
-**Rate limits and token use.** On a 429 ("exceeded token rate limit"), the agent waits as long as the endpoint asks, shows it in the UI, and resends the *same* request. By default (`tokens_per_minute = "auto"`) it also sets its own pace from that first limit: about 80% of what it sent in the last minute. After that it spaces its requests to stay below the limit for the rest of the session, tightening further if it's still limited. Set `tokens_per_minute` to your deployment's quota to pace from the start, or to 0 to disable pacing.
+**Rate limits and token use.** On a 429 ("exceeded token rate limit") the agent resends the *same* request. By default (`rate_limit_mode = "aggressive"`) it asks again within `rate_limit_retry_cap_s` (5 s, with a little jitter; a longer Retry-After is capped too) and never slows itself down: on a quota shared by many keys, the tokens go to whoever asks first. The retries of one request share one status line, e.g. "rate limit (429) - resending within 5 s (retry ×6, 21 s so far)". It gives up after `rate_limit_max_wait_s` (300 s) in total. `rate_limit_mode = "polite"` restores the old behaviour for a quota of your own: wait as long as the endpoint asks and, with `tokens_per_minute = "auto"`, learn a pace from the first limit (about 80% of the last minute) and stay below it. A fixed `tokens_per_minute` paces in both modes; 0 disables pacing.
 
 The conversation is append-only, and each conversation sends one `prompt_cache_key`, so repeated requests reuse the provider's prompt cache. That makes them cheaper and faster. Whether cached tokens also count toward your TPM quota is up to the provider. `/usage` and the web header show input tokens, the cached share, and the current pace.
 
@@ -635,12 +635,31 @@ To use a bundle, give the zip or folder to Claude Code: *"fix the problem in cal
 * `rerun_call` repeats a call with some arguments changed.
 * After a restart, both fall back to the previous session's log.
 
-`show_code` takes any output (image, CSV, or call number from `session_log`) and returns standalone Python using only pycalphad, numpy, pandas, scipy and matplotlib. Paste it into Jupyter as a record of how the result was made.
+`show_code` takes any output (image, CSV, or call number from `session_log`) and returns standalone Python using only pycalphad, numpy, pandas, scipy and matplotlib, as a Jupyter notebook: a record of how the result was made.
 
 * It follows the chain back: for an edited figure you get the phase-diagram cell, then the edit cell.
 * It also works for outputs from earlier sessions, via the provenance records.
 * A step with no standalone equivalent is reproduced through the toolkit and clearly labelled.
-* Formats: a copy-paste cell, a `.py`, or `format: "notebook"` for an `.ipynb`.
+* Formats: `format: "notebook"` (default) writes `code/<name>_standalone.ipynb` and the same code as `code/<name>_standalone.py`; `"script"` / `"cell"` write only the `.py`.
+
+**A notebook next to every phase diagram.** Each call that draws a phase diagram also saves `<name>.ipynb` next to its PNG, e.g. `map_NI-CR_CrNi-06Hal.ipynb` beside `map_NI-CR_CrNi-06Hal.png`. The reply has one extra line, `notebook: <path> (regenerates all files below)`. Run it top to bottom and it writes the same files to `standalone_outputs/` next to it: PNG, SVG and PDF (editable text, Inkscape subscripts), the boundary, tie-line and invariant CSVs (isopleths: ZPF-line and invariant CSVs), and the summary JSON (same keys; run times and paths are the new run's).
+
+| Tool | Notebook |
+|---|---|
+| `map_phase_diagram` (binary, ternary, isopleth; T–μ via the toolkit) | `<png stem>.ipynb` next to the PNG |
+| `plot_diagram_with_data` | next to its PNG |
+| `plot_all_binaries` / `plot_all_ternaries` | `<deck>.ipynb` next to the deck: one cell per subsystem (all its files), then the grid images and the deck |
+| `edit_figure` on a phase diagram (also `label_phase_regions`, `move_label`, `delete_label`, `relabel`) | next to the edited PNG, with the diagram cell first; an edit in place refreshes it |
+
+The notebook is generated from the call log only (nothing is recomputed, about 0.05 s). If generating it fails, the tool's result is unchanged and one warning line is logged. Turn it off with `save_notebooks = false` under `[agent]`.
+
+**Same lines on every run (hash seed).** pycalphad's mapping visits sets of phases in an order that depends on Python's hash seed (`PYTHONHASHSEED`, random per process unless set). So two runs can trace a few lines differently, for example an extra short segment or a line traced from its other end. The boundaries and invariants agree either way. The toolkit therefore runs with `PYTHONHASHSEED=0` unless you set one:
+
+* `start-agent.sh` / `start-agent.bat` set it;
+* `calphad-agent` and `calphad-tools` re-run themselves once at start-up with it when it is unset. An interpreter cannot change its own seed, and single diagrams are mapped in the agent's own process. On Windows the command runs as a child process instead;
+* diagram worker processes (`plot_all_*`) and background jobs get it too, also when the toolkit is used as a library.
+
+Each diagram's JSON and provenance record the seed (`"hash_seed": "0"`, or `"random"`). The notebook's first cell compares it with the kernel's. If they differ, it prints how to get identical files: `PYTHONHASHSEED=0 jupyter lab`, or `run_with_recorded_seed()`, which runs the notebook's code in a fresh Python with that seed. The results are valid either way.
 
 **Tools with standalone code:**
 
@@ -653,7 +672,7 @@ To use a bundle, give the zip or folder to Claude Code: *"fix the problem in cal
 
 **Falls back to the toolkit:** T–μ diagrams, wildcard site fractions `Y(...*...)`, extracting a subsystem with `write_database`, animation sweeps and `.mp4`, and `digitize_setup`.
 
-**Checks:** the tests run each generated script in a clean process and compare it with the tool's own output: CSVs to a relative tolerance of 1e-6, and figure artists (lines, collections, texts, limits, labels). Phase diagrams are compared point by point (within 0.02; invariants within 0.5 K), because pycalphad's mapping order varies with Python's hash seed.
+**Checks:** the tests run each generated script in a clean process and compare it with the tool's own output: CSVs to a relative tolerance of 1e-6, and figure artists (lines, collections, texts, limits, labels). Phase diagrams are compared point by point (within 0.02; invariants within 0.5 K), because pycalphad's mapping order varies with Python's hash seed. `tests/test_notebooks.py` runs the auto-saved notebooks (Cr-Ni, Co-Cr-Ni at 1000 °C, an isopleth) and checks that they write the same set of files with equivalent content. With `PYTHONHASHSEED=0` the CSVs match exactly.
 
 `equilibrium_property_plot` accepts all of these quantities:
 

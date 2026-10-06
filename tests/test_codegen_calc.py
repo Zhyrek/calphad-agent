@@ -404,25 +404,42 @@ def test_fit_data_models(tb, tmp_path):
 # ---------------------------------------------------------------------------------------------------------
 # diagram overviews and ESPEI plots
 # ---------------------------------------------------------------------------------------------------------
+def _overview_files_match(png_dir: Path, out: Path, stems, xcol=None):
+    """Every subsystem the tool computed is recomputed by the code (map_phase_diagram per subsystem): the same
+    files, and boundaries on the same curves (the code runs with a random hash seed here)."""
+    for stem in stems:
+        for suffix in (".png", ".svg", ".pdf", ".json", "_boundaries.csv", "_tielines.csv", "_invariants.csv"):
+            assert (out / (stem + suffix)).exists(), stem + suffix
+        info = json.loads((png_dir / (stem + ".json")).read_text())
+        x = xcol or info["orientation"]["x_axis"]
+        a, b = [pd.read_csv(d / f"{stem}_boundaries.csv") for d in (png_dir, out)]
+        if info["kind"] == "binary":
+            boundaries_near(a, b, x)
+        else:                   # ternary: (x, y) mole fractions, unscaled
+            y = info["orientation"]["y_axis"]
+            assert set(a.phase) == set(b.phase)
+            for ph in set(a.phase):
+                pa, pb = a[a.phase == ph][[x, y]].to_numpy(), b[b.phase == ph][[x, y]].to_numpy()
+                points_near(pa, pb, tol=0.02, mapping=True)
+                points_near(pb, pa, tol=0.02, mapping=True)
+        ia, ib = [pd.read_csv(d / f"{stem}_invariants.csv") for d in (png_dir, out)]
+        assert np.allclose(sorted(ia.T_K.unique()), sorted(ib.T_K.unique()), atol=0.5)
+
+
 def test_plot_all_binaries_and_ternaries(tb, tmp_path):
     _, imgs = call(tb, "plot_all_binaries", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["CO", "CR", "NI"],
                                              "tmin_c": 800, "tmax_c": 1800})
-    out, _, art = run(standalone(tb, imgs[0]), tmp_path)
-    assert (out / Path(imgs[0]).name).exists()
-    # each subplot has the curves of the tool's individual diagram (both in °C: shaded style, map_phase_diagram)
-    single = sorted(Path(imgs[0]).parent.glob("CoCrFeNiV_Choi2019_*-*.png"))
-    assert len(single) == 3 and len(art) == 4                     # 3 diagrams + 1 empty cell of the 2x2 grid
-    for png, ga in zip(single, art):
-        ta = tool_artists(png)[0]
-        tpts = np.array(line_points(ta))
-        points_near(line_points(ga), tpts, scale=(1, 1000), tol=0.02, mapping=True)
-        points_near(tpts, line_points(ga), scale=(1, 1000), tol=0.02, mapping=True)
+    out, _, _ = run(standalone(tb, imgs[0]), tmp_path, dump=False)
+    png_dir = Path(imgs[0]).parent
+    assert (out / Path(imgs[0]).name).exists() and (out / "binaries_CoCrFeNiV_Choi2019.pptx").exists()
+    single = sorted(png_dir.glob("CoCrFeNiV_Choi2019_*-*.png"))
+    assert len(single) == 3
+    _overview_files_match(png_dir, out, [p.stem for p in single])
     _, imgs = call(tb, "plot_all_ternaries", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["CO", "CR", "NI"],
                                               "temperatures_c": [1200]})
-    out, _, art = run(standalone(tb, imgs[0]), tmp_path)
-    assert (out / Path(imgs[0]).name).exists()
-    single = next(Path(imgs[0]).parent.glob("CoCrFeNiV_Choi2019_CO-CR-NI_1200C.png"))
-    points_near(line_points(art[0]), line_points(tool_artists(single)[0]), tol=0.01, mapping=True)
+    out, _, _ = run(standalone(tb, imgs[0]), tmp_path, dump=False)
+    assert (out / Path(imgs[0]).name).exists() and (out / "ternaries_CoCrFeNiV_Choi2019.pptx").exists()
+    _overview_files_match(Path(imgs[0]).parent, out, ["CoCrFeNiV_Choi2019_CO-CR-NI_1200C"])
 
 
 def test_espei_plots(tb, tmp_path):
@@ -435,6 +452,7 @@ def test_espei_plots(tb, tmp_path):
                                                                                               "datasets"),
                                                   "tdb": "CrNi-06Hal.tdb", "tmin": 1000, "tmax": 1800,
                                                   "temperature_unit": "C"})
+    assert Path(imgs[0]).with_suffix(".ipynb").exists()            # auto-saved reproduction notebook
     out, _, art = run(standalone(tb, imgs[0]), tmp_path)
     ta = tool_artists(imgs[0])[0]
     tpts = np.array(line_points(ta) + ta["pts"]) - [0, KELVIN]

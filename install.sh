@@ -126,6 +126,8 @@ cat > "$HERE/start-agent.sh" <<EOF
 # ./start-agent.sh --terminal for the terminal version.
 cd "$HERE"
 . "$HERE/pycalphad-agent-env.sh"
+# fixed hash seed: pycalphad's mapping traces the same lines on every run (keeps a PYTHONHASHSEED you set)
+export PYTHONHASHSEED="\${PYTHONHASHSEED:-0}"
 if [ "\${1:-}" = "--terminal" ]; then shift; exec calphad-agent "\$@"; fi
 exec calphad-agent --web "\$@"
 EOF

@@ -554,7 +554,9 @@ def test_overview_element_order(tb, tmp_path):
         fig, ax = stored(d / f"CoCrFeNiV_Choi2019_{stem}.png")
         assert ax.get_xlabel() == f"Mole fraction {xl}"
     script, art, _ = run_script(tb, imgs[0], tmp_path, "bin_ord")
-    assert "('FE', 'CR')" in script and "('NI', 'CR')" in script
+    # one cell per subsystem, each with the overview's element order (first = balance / left element)
+    assert "elements = ['FE', 'CR']" in script and "elements = ['NI', 'CR']" in script
+    assert "elements = ['FE', 'NI']" in script
     text, imgs = call(tb, "plot_all_ternaries", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["NI", "CR", "FE"],
                                                  "temperatures_c": [1000], "element_order": ["FE", "CR", "NI"],
                                                  "output_pptx": "tern_ord.pptx"})

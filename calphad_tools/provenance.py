@@ -138,8 +138,10 @@ def versions() -> Dict[str, str]:
 def environment() -> Dict[str, Any]:
     """Python/platform/package versions (no environment variables, no host/user names)."""
     import calphad_tools
+    from .hashseed import current
     return {"python": sys.version.split()[0], "implementation": platform.python_implementation(),
             "platform": platform.platform(), "machine": platform.machine(), "versions": versions(),
+            "hash_seed": current(),             # PYTHONHASHSEED in effect (pycalphad mapping depends on it)
             "calphad_tools_path": str(Path(calphad_tools.__file__).resolve().parent.parent)}
 
 
@@ -401,6 +403,7 @@ class Recorder:
         prov_base = {"session": self.session_id, "call_index": index, "time": rec.get("time"), "tool": rec["tool"],
                      "args": red_args, "inputs": inputs, "versions": self.env["versions"],
                      "python": self.env["python"], "platform": self.env["platform"],
+                     "hash_seed": self.env.get("hash_seed"),
                      "workdir": self.env["workdir"], "log": self.tb.rel(str(self.log_path))}
         outputs = []
         for k, p in sorted(fresh.items()):
@@ -517,7 +520,8 @@ def provenance_for(tb, file: str, rec: Optional[Recorder] = None) -> Optional[Di
             return {"file": p.name, "session": header.get("session", log.stem), "call_index": best["index"],
                     "time": best["time"], "tool": best["tool"], "args": best["args"], "inputs": best["inputs"],
                     "versions": header.get("versions"), "python": header.get("python"),
-                    "platform": header.get("platform"), "file_info": fi, "source": tb.rel(str(log))}
+                    "platform": header.get("platform"), "hash_seed": header.get("hash_seed"), "file_info": fi,
+                    "source": tb.rel(str(log))}
     return None
 
 

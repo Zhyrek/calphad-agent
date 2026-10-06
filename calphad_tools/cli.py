@@ -159,6 +159,8 @@ def cmd_espei_flux(a):
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    from .hashseed import reexec_with_seed
+    reexec_with_seed("calphad_tools.cli", argv)          # PYTHONHASHSEED=0 unless set: reproducible mapping
     ap = argparse.ArgumentParser(prog="calphad-tools", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)

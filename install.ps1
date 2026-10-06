@@ -56,6 +56,8 @@ if ($Yes) { & $Agent --setup --yes } else { & $Agent --setup }
 @echo off
 rem Starts the CALPHAD agent in the browser.  start-agent.bat --terminal for the terminal version.
 cd /d "$Here"
+rem fixed hash seed: pycalphad's mapping traces the same lines on every run (keeps a PYTHONHASHSEED you set)
+if not defined PYTHONHASHSEED set PYTHONHASHSEED=0
 rem The web UI opens your default browser by itself once it is ready (--no-browser to stop that).
 if "%1"=="--terminal" ( "$Agent" %2 %3 %4 %5 ) else ( "$Agent" --web %* )
 "@ | Set-Content -Encoding ASCII (Join-Path $Here "start-agent.bat")

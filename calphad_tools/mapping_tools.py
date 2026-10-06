@@ -399,6 +399,7 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
     from pycalphad import variables as v
     from pycalphad.mapping import BinaryStrategy, IsoplethStrategy, TernaryStrategy
     from .calc import get_db
+    from .hashseed import current as hashseed_current
     from . import diagram_style as ds
     from . import mapping_check as mc
     style = ds.check_style(style)
@@ -620,6 +621,7 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
                                                                 "(isopleths and T-MU diagrams are not)"},
         "regions": res["regions"], "invariants": res["invariants"], "files": files,
         "renamed_when_disordered": dict(lab.renamed), "style": style,
+        "hash_seed": hashseed_current(),    # PYTHONHASHSEED of the mapping (which lines get traced depends on it)
     }
     if kind == "isopleth":
         bal = [e for e in els if e != axis_el and e not in fixed][0]

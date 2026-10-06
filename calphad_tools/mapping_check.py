@@ -1240,6 +1240,9 @@ def check_and_repair(strategy, db, recipe: Dict, *, mode: str = "auto", grid: Op
                  "exact_duplicates": 0, "missing": [], "nodes_added": [], "nodes_unconfirmed": [],
                  "nodes_rejected": [], "lines_joined_to_nodes": 0, "unchecked": 0, "complete": True, "text": "",
                  "_nodes": []}
+    if mode != "off":           # always present, so the JSON has the same keys whatever this run had to fix
+        rep.update(points_added_by_equilibrium=0, degenerate_nodes_dropped=0, duplicate_nodes_dropped=0,
+                   nodes_checked=0, nodes_max_dG_J_per_mol=0.0)
     if mode == "off":
         rep["text"] = "mapping check: off (pycalphad's lines as traced)"
         rep["complete"] = False

@@ -38,7 +38,11 @@ class LLMConfig:
     extra_headers: Dict[str, str] = field(default_factory=dict)
     timeout: float = 600.0
     # rate limits and caching (append-only conversation; nothing here rewrites earlier messages)
-    max_retries: int = 8              # rate-limited (429) requests are resent after the wait the server asks for
+    rate_limit_mode: str = "aggressive"    # 429s: "aggressive" = resend within rate_limit_retry_cap_s, no self-pacing
+                                      # (a shared quota goes to whoever asks first) | "polite" = wait as long as the
+                                      # server asks, learn a pace and stay below it
+    rate_limit_retry_cap_s: float = 5.0    # aggressive: longest wait between 429 retries (also caps Retry-After)
+    max_retries: int = 8              # polite: rate-limited (429) requests are resent after the wait the server asks for
     rate_limit_max_wait_s: float = 300.0   # give up after waiting this long in total for one request
     transient_retries: int = 4        # dropped connections / timeouts / 5xx (incl. a stream cut mid-answer)
     tokens_per_minute: Any = "auto"   # pacing: a number (your deployment's TPM) | "auto": learn it from the first
@@ -70,6 +74,8 @@ class AgentConfig:
     report_max_input_mb: float = 5.0      # copy input files up to this size into problem reports
     diagram_style: str = "shaded"         # phase diagrams: shaded (black lines, filled two-phase fields, grey
                                           # ternaries, no legend) | color (colour per phase + legend)
+    save_notebooks: bool = True           # save <figure>.ipynb next to every phase diagram: standalone pycalphad
+                                          # code that regenerates all of its files (see show_code)
 
 
 @dataclass
@@ -154,8 +160,11 @@ api      = "responses"                    # "responses" = /responses ; "chat" = 
 reasoning_effort = "medium"               # low | medium | high ; "" if the endpoint rejects it
 max_output_tokens = 16000                 # ceiling; each request reserves initial_output_tokens (6000)
 vision = true                             # let the model look at the plots it makes
-tokens_per_minute = "auto"                # rate limits: "auto" learns a pace from the first 429 and stays below it;
-                                          # or your deployment's TPM quota (e.g. 150000); 0 = no pacing
+rate_limit_mode = "aggressive"            # 429s: resend within 5 s, no self-pacing (shared quotas: first come, first
+                                          # served) | "polite": wait as asked, learn a pace and stay below it
+# rate_limit_retry_cap_s = 5              # aggressive: longest wait between retries
+tokens_per_minute = "auto"                # polite mode: "auto" learns a pace from the first 429 and stays below it;
+                                          # or a fixed TPM (paces in both modes, e.g. 150000); 0 = no pacing
 # image_detail = "auto"                   # "low" = ~85 tokens per plot image (less detail, far fewer tokens)
 # extra_headers = { "X-Custom-Header" = "value" }
 # verify_ssl = true
@@ -180,4 +189,6 @@ python_tool = "ask"                       # may the model run arbitrary Python?
 # reviewer_model = ""                     # (under [llm]) optional different model for the review
 max_tool_rounds = 40
 diagram_style = "shaded"                  # phase diagrams: shaded (black lines, filled two-phase fields) | color
+save_notebooks = true                     # <figure>.ipynb next to every phase diagram: pycalphad code that
+                                          # regenerates all of its files (PNG/SVG/PDF, CSVs, JSON)
 '''

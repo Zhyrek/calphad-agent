@@ -35,8 +35,8 @@ class WebUI(UI):
     def confirm(self, title, body):
         return self._wait({"type": "confirm", "text": title, "code": body}) == "yes"
 
-    def progress(self, msg):
-        self.hub.emit({"type": "progress", "text": msg})
+    def progress(self, msg, key=None):
+        self.hub.emit({"type": "progress", "text": msg, **({"key": key} if key else {})})
 
     def notice(self, kind, text):
         if kind == "report":
@@ -130,7 +130,9 @@ function handle(e){
  else if(e.type==='tool_result'){const d=add('tool'+(e.error?' err':''),'<details><summary>'+(e.error?'✖ ':'✓ ')+esc(e.name)+'</summary>'+linkify(e.text)+'</details>');
    const stick=nearBottom();(e.images||[]).forEach(p=>{d.insertAdjacentHTML('beforeend','<a href="/file?path='+encodeURIComponent(p)+'" target="_blank"><img class="plot" src="/file?path='+encodeURIComponent(p)+'"></a>')});
    d.querySelectorAll('img').forEach(i=>i.onload=()=>{if(stick)bottom()})}
- else if(e.type==='progress'){const d=document.createElement('div');d.className='prog';d.textContent='… '+e.text;log.appendChild(d)}
+ else if(e.type==='progress'){const last=log.lastElementChild;
+   if(e.key&&last&&last.className==='prog'&&last.dataset.key===e.key){last.textContent='… '+e.text}
+   else{const d=document.createElement('div');d.className='prog';if(e.key)d.dataset.key=e.key;d.textContent='… '+e.text;log.appendChild(d)}}
  else if(e.type==='question'){const d=add('q',esc(e.text)+'<br>');(e.options||[]).forEach(o=>{const b=document.createElement('button');b.className='sec';b.textContent=o;b.onclick=()=>answer(e.qid,o,d);d.appendChild(b)});
    const i=document.createElement('input');i.placeholder='or type an answer + Enter';i.style.cssText='width:100%;margin-top:8px;padding:6px';i.onkeydown=ev=>{if(ev.key==='Enter')answer(e.qid,i.value,d)};d.appendChild(i)}
  else if(e.type==='confirm'){const d=add('q',esc(e.text)+'<pre>'+esc(e.code)+'</pre>');const y=document.createElement('button');y.textContent='Run';y.onclick=()=>answer(e.qid,'yes',d);

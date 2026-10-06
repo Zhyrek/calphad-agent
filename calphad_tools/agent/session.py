@@ -110,6 +110,14 @@ def _list_data_files(workdir: Path, limit: int = 40) -> str:
     return ", ".join(hits) or "(none found)"
 
 
+
+def _progress(ui, msg, key=None):
+    """ui.progress with a replace-key when the UI supports one (older / test UIs take only the message)."""
+    try:
+        ui.progress(msg, key=key)
+    except TypeError:
+        ui.progress(msg)
+
 class Agent:
     def __init__(self, cfg: Config, ui: UI, on_text: Optional[Callable[[str], None]] = None,
                  on_tool_start: Optional[Callable] = None, on_tool_end: Optional[Callable] = None,
@@ -123,7 +131,8 @@ class Agent:
         self.on_tool_end = on_tool_end or (lambda call, text, images, is_error: None)
         self.toolbox = ToolBox(cfg.agent.workdir, cfg.agent.output_dir, ui, cfg.agent.python_tool,
                                cfg.agent.max_tool_output_chars, llm_cfg=cfg.llm, interactive=interactive,
-                               diagram_style=cfg.agent.diagram_style)
+                               diagram_style=cfg.agent.diagram_style,
+                               save_notebooks=getattr(cfg.agent, "save_notebooks", True))
         self.turns: List = []
         self.session_start_turn = 0         # reports cover the turns since the last reset
         self.current_turn = None
@@ -148,7 +157,7 @@ class Agent:
                                                                               "compact")))
         guard = getattr(b, "guard", None)
         if guard is not None:
-            guard.notify = lambda m: self.ui.progress(m)
+            guard.notify = lambda m, key=None: _progress(self.ui, m, key)
         return b
 
     def usage_text(self) -> str:

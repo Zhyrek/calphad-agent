@@ -14,6 +14,7 @@ import base64
 import json
 import mimetypes
 import os
+import random
 import re
 import subprocess
 import tempfile
@@ -128,7 +129,7 @@ def _retry_after(e: Exception) -> Optional[float]:
 class RateGuard:
     def __init__(self, cfg: LLMConfig):
         self.cfg = cfg
-        self.notify: Callable[[str], None] = lambda msg: None
+        self.notify: Callable[..., None] = lambda msg, key=None: None   # key: repeated messages replace each other
         self.sent: List = []                     # (time, estimated tokens) of the last minute
         self.waited_total = 0.0
         self.learned_tpm: Optional[int] = None   # "auto": budget learned from the first 429
@@ -154,10 +155,15 @@ class RateGuard:
         except (TypeError, ValueError):
             pass
 
+    def aggressive(self) -> bool:
+        return str(getattr(self.cfg, "rate_limit_mode", "aggressive")).strip().lower() != "polite"
+
     def budget(self) -> int:
         v = self.cfg.tokens_per_minute
         if isinstance(v, str):
             if v.strip().lower() == "auto":
+                if self.aggressive():                 # shared quota: never hold back on our own
+                    return 0
                 if self.header_limit:                 # the endpoint told us its limit: stay just below it
                     return int(0.9 * min(self.header_limit, self.learned_tpm or self.header_limit))
                 return int(self.learned_tpm or 0)
@@ -168,6 +174,8 @@ class RateGuard:
         """First rate limit in "auto" mode: pace to ~80 % of what was sent in the last minute from now on."""
         if not (isinstance(self.cfg.tokens_per_minute, str) and self.cfg.tokens_per_minute.strip().lower() == "auto"):
             return
+        if self.aggressive():
+            return
         now = self.clock()
         used = sum(n for t, n in self.sent if now - t < 60) + est
         new = max(4000, int(0.8 * used))
@@ -177,8 +185,10 @@ class RateGuard:
                         f"set tokens_per_minute in calphad_agent.toml to fix a value)")
 
     def _pace(self, est: int) -> None:
-        # the endpoint said how much is left this minute: wait for its reset rather than be refused
-        if self.header_remaining is not None and self.header_reset and est > self.header_remaining:
+        # the endpoint said how much is left this minute: wait for its reset rather than be refused (polite only:
+        # on a shared quota the remaining count is everyone's, and waiting just hands the slot to someone else)
+        if (not self.aggressive() and self.header_remaining is not None and self.header_reset
+                and est > self.header_remaining):
             age = self.clock() - self.header_time
             wait = self.header_reset - age
             if 0 < wait < 90:
@@ -214,6 +224,8 @@ class RateGuard:
 
     def run(self, fn: Callable[[], Any], est: int = 0) -> Any:
         waited, attempt, flaky = 0.0, 0, 0
+        self._runs = getattr(self, "_runs", 0) + 1
+        key = f"rate_limit:{self._runs}"           # retries of this request share one status line
         while True:
             self._pace(est)
             try:
@@ -231,17 +243,33 @@ class RateGuard:
                 self._learn(est)
                 attempt += 1
                 wait = _retry_after(e)
-                wait = max(1.0, min(90.0, wait if wait is not None else 5.0 * 2 ** (attempt - 1)))
-                if attempt > int(self.cfg.max_retries) or waited + wait > float(self.cfg.rate_limit_max_wait_s):
+                if self.aggressive():
+                    # ask again quickly: Retry-After and the back-off are capped (a little jitter so retries from
+                    # many clients don't line up); only the total wait limits the attempts
+                    cap = max(0.2, float(getattr(self.cfg, "rate_limit_retry_cap_s", 5.0)))
+                    base = wait if wait is not None else 0.5 * 2 ** (attempt - 1)
+                    wait = min(cap, max(0.2, base)) * random.uniform(0.7, 1.0)
+                    too_many = False
+                else:
+                    wait = max(1.0, min(90.0, wait if wait is not None else 5.0 * 2 ** (attempt - 1)))
+                    too_many = attempt > int(self.cfg.max_retries)
+                if too_many or waited + wait > float(self.cfg.rate_limit_max_wait_s):
                     raise RateLimitGiveUp(
                         f"The model endpoint's rate limit (e.g. tokens per minute) was still exceeded after waiting "
                         f"{waited:.0f} s. Wait a minute and ask again, raise the deployment's TPM quota, or set "
                         f"tokens_per_minute in calphad_agent.toml to pace requests. ({str(e)[:300]})") from e
-                self.notify(f"rate limit reached - waiting {wait:.0f} s, then sending the same request again "
-                            f"(attempt {attempt}/{self.cfg.max_retries})")
+                if self.aggressive():
+                    self.notify(f"rate limit (429) - resending within {self._cap():.0f} s (retry ×{attempt}, "
+                                f"{waited + wait:.0f} s so far)", key=key)
+                else:
+                    self.notify(f"rate limit reached - waiting {wait:.0f} s, then sending the same request again "
+                                f"(attempt {attempt}/{self.cfg.max_retries})", key=key)
                 self.sleep(wait)
                 waited += wait
                 self.waited_total += wait
+
+    def _cap(self) -> float:
+        return max(0.2, float(getattr(self.cfg, "rate_limit_retry_cap_s", 5.0)))
 
 
 def _est_tokens(obj: Any) -> int:
