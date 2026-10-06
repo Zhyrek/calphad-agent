@@ -1090,7 +1090,7 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
 
 
 CORNERS = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]     # ternary corners in data: bottom-left, bottom-right, top
-CORNER_ROT = 30.0                                   # names at a corner
+CORNER_ROT = {0: -30.0, 1: 30.0, 2: 30.0}           # names at a corner: square to the nearest triangle side
 
 
 def _seg_dist(pts: np.ndarray, tri_px: np.ndarray) -> np.ndarray:
@@ -1125,8 +1125,9 @@ def _corner_of(key, pts, corners_px, side, ppp, reach, check) -> Optional[int]:
 def _place_corners(ax, items, st, meas, renderer, gid_for, record, step_pt: float = 1.0, reach_pt: float = 70.0,
                    gap_pt: float = 1.5):
     """Phases stable for a pure element, too small inside: named outside the triangle next to their corner, at
-    30° - bottom-left: above the left axis's 0.0; bottom-right: above / right of the bottom axis's 1.0; top: to the
-    right of the corner.  The name goes to the nearest spot clear of every tick label (none is hidden), the bold
+    ±30°, square to the nearest side (bottom-left -30° like the left-edge names, bottom-right and top +30°) -
+    bottom-left: above the left axis's 0.0; bottom-right: above / right of the bottom axis's 1.0; top: to the right
+    of the corner.  The name goes to the nearest spot clear of every tick label (none is hidden), the bold
     corner names, the axis titles and the other labels."""
     if not items:
         return
@@ -1142,10 +1143,11 @@ def _place_corners(ax, items, st, meas, renderer, gid_for, record, step_pt: floa
         if isinstance(t, Text) and t.get_visible() and t.get_text().strip():
             obst.append(text_corners(t, renderer, gap_pt * ppp))
     fs = st["fontsize"]
-    a = math.radians(CORNER_ROT)
-    u, v = np.array([math.cos(a), math.sin(a)]), np.array([-math.sin(a), math.cos(a)])
     for it in items:
         k = it["corner"]
+        rot = CORNER_ROT[int(k)]
+        a = math.radians(rot)
+        u, v = np.array([math.cos(a), math.sin(a)]), np.array([-math.sin(a), math.cos(a)])
         C = c_px[k]
         w, h = meas.size(it["s"], fs)
         hw, hh = w / 2 * ppp, h / 2 * ppp
@@ -1175,13 +1177,13 @@ def _place_corners(ax, items, st, meas, renderer, gid_for, record, step_pt: floa
         xy = CORNERS[k]
         t = ax.annotate(it["s"], xy=xy, xycoords="data", xytext=tuple(float(x) / ppp for x in best),
                         textcoords="offset points", fontsize=fs, color=st["color"], ha="center", va="center",
-                        rotation=CORNER_ROT, rotation_mode="anchor", family=st["family"],
+                        rotation=rot, rotation_mode="anchor", family=st["family"],
                         fontweight=st["fontweight"], zorder=6, annotation_clip=False)
         set_name(t, it["s"])
         t.set_gid(gid_for("phase_label:", ".".join(it["key"])))
         t._calphad_label = {"kind": it["kind"], "key": list(it["key"]), "outside": "corner", "corner": int(k),
                             "at": [float(x) for x in it["probe"]]}
-        record(t, it["kind"], it["key"], it["probe"], fs, CORNER_ROT, it["ok"], outside="corner", corner=int(k),
+        record(t, it["kind"], it["key"], it["probe"], fs, rot, it["ok"], outside="corner", corner=int(k),
                edge_xy=list(xy))
         obst.append(text_corners(t, renderer, gap_pt * ppp))
 

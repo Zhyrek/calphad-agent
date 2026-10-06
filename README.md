@@ -340,7 +340,7 @@ added, and the labels avoid those points.
 * **Single-phase fields that don't fit inside** each get a place of their own, one region at a time (a second field
   of a phase that is named elsewhere too). This includes fields too thin to be a region of the plot at all.
   * *Ternary, at a corner:* a field that reaches a pure-element corner (the phase is stable for that element) is
-    named at the corner, outside the triangle, at 30°.
+    named at the corner, outside the triangle, square to the nearest side: -30° at the bottom-left corner (like the left-edge names), +30° at the other two.
     * Bottom-left: just above the left axis's 0.0. Bottom-right: above or right of the bottom axis's 1.0. Top:
       to the right of the corner.
     * The name stays clear of tick labels (none is hidden), the bold corner names, the axis titles and the other

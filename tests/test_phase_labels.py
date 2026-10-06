@@ -424,7 +424,8 @@ def test_binary_crni(tb):
 
 def check_corner_names(fig, ax, want):
     """want {name: corner index (0 bottom-left, 1 bottom-right, 2 top)}: each name is at its corner, outside the
-    triangle, at 30°, never on an edge; it covers no tick label, no bold corner name, no axis title and no other
+    triangle, square to the nearest side (bottom-left -30° like the left-edge names, bottom-right and top +30°),
+    never on an edge; it covers no tick label, no bold corner name, no axis title and no other
     label, and hides no tick label (the left axis's 0.0 stays).  Returns {name: text}."""
     from matplotlib.text import Text
     fig.canvas.draw()
@@ -436,7 +437,8 @@ def check_corner_names(fig, ax, want):
         hits = [t for t in labels_of(ax, ("phase_label:",)) if name(t) == nm and t._calphad_label.get("corner") == k]
         assert len(hits) == 1, (nm, k, [(name(t), t._calphad_label) for t in labels_of(ax)])
         t = hits[0]
-        assert t._calphad_label["outside"] == "corner" and t.get_rotation() == 30 and t.get_bbox_patch() is None
+        assert t._calphad_label["outside"] == "corner" and t.get_bbox_patch() is None
+        assert t.get_rotation() == (330.0 if k == 0 else 30.0), (nm, k, t.get_rotation())   # -30° reads as 330
         q = text_rect(t, r)
         assert not in_plot(ax, q, tol=-0.5).any(), nm                   # outside the triangle
         assert np.hypot(*(q - c_px[k]).T).min() / f < 40, nm            # right next to its corner
