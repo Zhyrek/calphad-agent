@@ -557,8 +557,18 @@ def _diff_rows(step: Step) -> List[List[Any]]:
 def write_deck(steps: List[Step], plots, path: str, a_name: str, b_name: str, tol_T: float, fig_dir: Path,
                summary_note: str = "") -> Tuple[str, List[str]]:
     from . import pptx_utils as pu
-    from pptx.util import Inches
     prs = pu.new_presentation()
+    imgs = add_staged_slides(prs, steps, plots, a_name, b_name, tol_T, fig_dir, summary_note)
+    pu.save(prs, path)
+    return path, imgs
+
+
+def add_staged_slides(prs, steps: List[Step], plots, a_name: str, b_name: str, tol_T: float, fig_dir: Path,
+                      summary_note: str = "", prefix: str = "") -> List[str]:
+    """The staged-merge slides (summary, then per step a differences table and the changed diagrams) added to
+    ``prs``; ``prefix`` starts every title (combine_databases: "Step 2 · ").  Returns the comparison images."""
+    from . import pptx_utils as pu
+    from pptx.util import Inches
     from .pptx_utils import GridCell as C
     rows = []
     for st in steps:
@@ -581,7 +591,7 @@ def write_deck(steps: List[Step], plots, path: str, a_name: str, b_name: str, to
                      C(f"{len(mv)} of {max(st.n_compared(), len(mv))}" if st.changed_items else "—", align="c"),
                      C(shift, fill="differs" if failed else None, bold=bool(failed))])
     W = [1.15, 1.6, 4.35, 2.2, 1.6, 2.3]
-    pu.add_flow_table_slides(prs, f"Staged merge: {a_name} + {b_name}",
+    pu.add_flow_table_slides(prs, f"{prefix}Staged merge: {a_name} + {b_name}",
                              ["Step", "What", "Changed parameters / models", "Diagrams changed",
                               f"Invariants ΔT>{tol_T:g} K", "Largest shift"], rows, W, font_size=12,
                              subtitle=(summary_note or "A = base, B = added; each version compared with its "
@@ -593,7 +603,7 @@ def write_deck(steps: List[Step], plots, path: str, a_name: str, b_name: str, to
                                       span=4, muted=True)]]
         drows = fit_rows(drows, WD, 11, lambda k, st=st: [C(f"+{k} more rows: Excel sheet '{st.old}-{st.new}'",
                                                             span=4, muted=True)])
-        pu.add_flow_table_slides(prs, f"{st.title}: differences ({STEP_DESC.get(st.new, '')})",
+        pu.add_flow_table_slides(prs, f"{prefix}{st.title}: differences ({STEP_DESC.get(st.new, '')})",
                                  ["Kind", "Item", "Change", "Subsystems / type"], drows, WD, font_size=11,
                                  subtitle="numerically different parameters, phase-model changes and moved "
                                           "invariants only")
@@ -602,7 +612,7 @@ def write_deck(steps: List[Step], plots, path: str, a_name: str, b_name: str, to
             imgs.append(png)
             n_all = len(st.changed_items) + len(st.forced_items)
             n_shown = min(n_all, 4 + (2 if st.forced_items else 0))
-            pu.add_image_slide(prs, f"{st.title}: diagrams that changed"
+            pu.add_image_slide(prs, f"{prefix}{st.title}: diagrams that changed"
                                + ("" if not st.forced_items else
                                   " + renamed phase replotted as a check" if all(
                                       st.forced_phrase(it.name) == "replotted as a check" for it in st.forced_items)
@@ -612,12 +622,11 @@ def write_deck(steps: List[Step], plots, path: str, a_name: str, b_name: str, to
                                + (f"  (first {n_shown} of {n_all})" if n_all > n_shown else ""))
         else:
             s = pu._blank(prs)
-            pu.add_title(s, f"{st.title}: diagrams", None)
+            pu.add_title(s, f"{prefix}{st.title}: diagrams", None)
             pu._textbox(s, Inches(0.8), Inches(2.5), Inches(11.5), Inches(1.5),
                         "No binary or ternary changes: every parameter is numerically equal and every phase model "
                         "identical, so the diagrams are identical (not recomputed).", size=18)
-    pu.save(prs, path)
-    return path, imgs
+    return imgs
 
 
 def write_xlsx(steps: List[Step], plots, versions: Dict[str, Version], path: str, notes) -> str:

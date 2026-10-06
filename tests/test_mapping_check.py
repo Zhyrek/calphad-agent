@@ -332,10 +332,20 @@ def test_ceco_spurious_invariant_rejected(tb, tmp_path):
     out = Path(tb.out)
     check = json.loads((out / "ceco.json").read_text())["mapping_check"]
     rej = [n for n in check["nodes_rejected"] if abs(n["T_K"] - 1072) < 1]
-    assert rej and "CE5CO19" in rej[0]["phases"] and rej[0]["at_pure_element_transformation"]["X(CO)"] < 1e-3
-    assert check.get("duplicate_nodes_dropped", 0) >= 1
-    head = text.splitlines()[1]
-    assert "spurious invariant at 1072 K (BCC_A2+CE5CO19+LIQUID) rejected - not an equilibrium" in head, head
+    if not rej:
+        # pycalphad's tracing depends on the process's hash seed; in some processes it never builds the spurious
+        # node.  Then the raw mapping (check off) must not have it either - otherwise the check missed it.
+        call(tb, "map_phase_diagram", {"tdb": "CeCo-24Liu.tdb", "elements": ["CE", "CO"], "tmin": 500,
+                                       "tmax": 1900, "output_prefix": "ceco_raw", "formats": [],
+                                       "check_mapping": "off", "label_regions": False})
+        raw = _invariants(out / "ceco_raw_invariants.csv")
+        assert not [i for i in raw if 1065 <= i["T"] <= 1080 and min(i["x"]) < 0.05 and max(i["x"]) > 0.7], \
+            "pycalphad built the 1072 K node but the check did not reject it"
+    else:
+        assert "CE5CO19" in rej[0]["phases"] and rej[0]["at_pure_element_transformation"]["X(CO)"] < 1e-3
+        assert check.get("duplicate_nodes_dropped", 0) >= 1
+        head = text.splitlines()[1]
+        assert "spurious invariant at 1072 K (BCC_A2+CE5CO19+LIQUID) rejected - not an equilibrium" in head, head
     assert "1072" not in "".join(ln for ln in text.splitlines() if "invariant temperatures" in ln)
     _check_ceco_invariants(_invariants(out / "ceco_invariants.csv"))
     # the BCC + L boundaries still reach pure Ce at its melting point (they meet at X = 0, no invariant line)

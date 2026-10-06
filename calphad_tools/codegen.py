@@ -593,7 +593,7 @@ def _gen_calculate_equilibrium(args, ctx: Ctx) -> str:
 EXTENSION_MODULES = ["calphad_tools.codegen_calc", "calphad_tools.codegen_plot", "calphad_tools.codegen_espei",
                      "calphad_tools.codegen_params",
                      "calphad_tools.codegen_formats", "calphad_tools.codegen_compare", "calphad_tools.codegen_zpf",
-                     "calphad_tools.codegen_staged"]
+                     "calphad_tools.codegen_staged", "calphad_tools.codegen_combine"]
 
 
 def ensure_generators() -> None:

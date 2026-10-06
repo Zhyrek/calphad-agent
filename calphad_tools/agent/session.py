@@ -41,6 +41,8 @@ ask_user if unsure, then re-call with phase_map. Summarise the main differences 
 conflicts, show the user a compact list grouped by subsystem with the options and ask what they want \
 (ask_user if available, otherwise ask in your reply and stop). Only use policy "first"/"last" if the user \
 explicitly tells you to pick for them. Re-call merge_tdbs with the decisions until it is written.
+- "Combine these databases" (with provenance and proof): combine_databases. Ask the user ALL decisions it lists \
+at once, then re-call with decisions and decision_reasons ({{id: 'user: <their words>'}}, or 'agent: <why>').
 - Experimental data -> ESPEI: POP files -> convert_pop_to_zpf; DATAPLOT .exp -> parse_dataplot_exp then decide \
 which phases each dataset represents from titles/comments/the paper, confirm the mapping with the user if it \
 is not clear, then convert_dataplot_exp_to_zpf; CSV -> convert_csv_to_zpf; papers -> read_document / \

@@ -280,6 +280,24 @@ def _reviews(tb, since: str) -> List[Dict[str, Any]]:
     return out
 
 
+def _decisions(tb, turns: List[TurnRecord], text_ok: bool) -> List[Dict[str, Any]]:
+    """Decision-log entries tools recorded in the covered turns (combine_databases: who chose what, why).  They
+    quote phase / parameter names, so they follow the user's choice about tool-result text."""
+    rec = getattr(tb, "provenance", None)
+    if rec is None or not hasattr(rec, "decisions_of"):
+        return []
+    first = min(t.call_start for t in turns)
+    last = max((t.call_end if t.call_end is not None else len(tb.call_log)) for t in turns)
+    out = []
+    for d in rec.decisions_of(first, last):
+        if text_ok:
+            out.append({k: d.get(k) for k in ("call_index", "tool", "id", "step", "subject", "chosen", "who",
+                                              "reason", "evidence", "affected")})
+        else:
+            out.append({k: d.get(k) for k in ("call_index", "tool", "id", "who")} | {"text": "(withheld)"})
+    return out
+
+
 def write_report(agent, turn, reason: str, created_by: str, note: str = "",
                  diagnosis: Optional[Dict[str, Any]] = None, share: Optional[Dict[str, Any]] = None) -> str:
     """Write the report bundle; returns the zip path (the folder sits next to it).
@@ -352,6 +370,7 @@ def write_report(agent, turn, reason: str, created_by: str, note: str = "",
         "request": turns[-1].user, "final_answer": turns[-1].final, "assistant_texts": turns[-1].texts,
         "turn_error": turns[-1].error,
         "questions_to_user": questions,
+        "decisions": _decisions(tb, turns, text_ok),
         "python_reviews": _reviews(tb, turns[0].started),
         "llm": {"provider": llm.provider, "model": llm.model, "api": llm.api, "base_url": llm.base_url or "",
                 "profile": getattr(cfg, "profile", "") or ""},
@@ -414,6 +433,15 @@ def _markdown(d: Dict[str, Any], replay_note: str) -> str:
         L += ["## Questions the agent asked the user", ""]
         for q in d["questions_to_user"]:
             L += [f"- **Q:** {q['question']}", f"  **A:** {q['answer']}"]
+        L.append("")
+    if d.get("decisions"):
+        L += ["## Decisions recorded by tools (who chose, why)", ""]
+        for x in d["decisions"]:
+            if "text" in x:
+                L.append(f"- call {x['call_index']} `{x['id']}` ({x['who']}): {x['text']}")
+            else:
+                L.append(f"- call {x['call_index']} `{x['id']}` -> {x.get('chosen')} ({x.get('who')}: "
+                         f"{x.get('reason') or 'not given'})")
         L.append("")
     if d["python_reviews"]:
         L += ["## Safety reviews of generated Python", ""]

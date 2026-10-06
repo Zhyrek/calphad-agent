@@ -815,9 +815,8 @@ TASKS: List[Tuple[str, List[str]]] = [
     ("PowerPoint decks of ALL binaries / ALL ternary sections of a TDB", ["plot_all_binaries", "plot_all_ternaries"]),
     ("calculated binary diagram or ternary isotherm with experimental ESPEI datasets overlaid",
      ["plot_diagram_with_data"]),
-    ("which element goes on which side: right (binary, e.g. Cr on the right) / corners (ternary, e.g. Fe "
-     "bottom-right); element_order for decks; data follow: edit_figure composition_points places points by "
-     "composition; transform_data element_fractions turns digitized x columns into X(EL) columns",
+    ("which element goes on which side: right (binary) / corners (ternary); element_order for decks; edit_figure "
+     "composition_points places data by composition; transform_data element_fractions makes X(EL) columns",
      ["map_phase_diagram", "plot_diagram_with_data", "plot_all_binaries", "edit_figure", "transform_data"]),
     ("step calculation: phase fractions/compositions/properties vs T, P or X; transition temperatures",
      ["step_map", "equilibrium_property_plot"]),
@@ -832,8 +831,8 @@ TASKS: List[Tuple[str, List[str]]] = [
     ("add your own data points / lines / labels / arrows / shaded regions to an existing plot, recolour or restyle "
      "phases, change limits/scales/legend, export PDF/SVG (describe first, then edit)",
      ["describe_figure", "edit_figure"]),
-    ("new custom figure (multi-panel, any plot type: fits, statistics, heatmaps, ternary tricontour maps, stack "
-     "plots, bars, 3-D, secondary axes, journal presets) from inline data or files; op syntax: plot_ops_help",
+    ("new custom figure (multi-panel; fits, statistics, heatmaps, ternary tricontour, stack plots, bars, 3-D, "
+     "twin axes, journal presets) from inline data or files; op syntax: plot_ops_help",
      ["make_plot", "plot_ops_help"]),
     ("look at / reshape a data file (CSV/Excel/JSON/netCDF): columns, stats, group means, pivots, joins, unit "
      "conversions -> new table", ["inspect_data", "transform_data"]),
@@ -854,16 +853,16 @@ TASKS: List[Tuple[str, List[str]]] = [
     ("compare / merge TDBs (2-way full diff; N-way table for one element subsystem with inlined functions, "
      "formation energies, phase candidates -> phase_map on a second call)",
      ["compare_tdbs", "compare_system", "merge_tdbs"]),
-    ("can TDB B join base A (staged check, unary50, new end-members, what to replot); merge it step by step with "
-     "diagrams + invariant shifts per step", ["evaluate_compatibility", "staged_merge"]),
+    ("can TDB B join base A (staged check, unary50, new end-members); merge step by step with diagrams; N TDBs end "
+     "to end with decision log + validation", ["evaluate_compatibility", "staged_merge", "combine_databases"]),
     ("experimental data -> ESPEI datasets; ESPEI + Flux jobs",
      ["parse_dataplot_exp", "convert_dataplot_exp_to_zpf", "convert_pop_to_zpf", "convert_csv_to_zpf",
       "write_zpf_dataset", "check_espei_datasets", "make_phase_models", "generate_espei_flux_batch"]),
     ("extract data points / curves from a figure in a paper (PDF page or image; x-y axes or a composition "
      "triangle): calibrate from ticks/corners, then markers by colour/shape or lines by colour",
      ["digitize_setup", "digitize_points", "digitize_curve", "digitize_fix"]),
-    ("extract phase-diagram data from a figure into ESPEI ZPF datasets: phases from the region labels / legend on "
-     "the figure (paper names -> database names), tie-lines, invariants, binary and ternary; optional TDB check",
+    ("phase-diagram figure -> ESPEI ZPF datasets: phases from the figure's region labels / legend (paper -> "
+     "database names), tie-lines, invariants, binary and ternary; optional TDB check",
      ["digitize_setup", "digitize_points", "digitize_curve", "digitized_to_zpf", "check_espei_datasets",
       "plot_diagram_with_data"]),
     ("run ESPEI locally (check inputs, parameter generation, quick MCMC before a Flux run)",

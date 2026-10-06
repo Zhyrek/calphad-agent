@@ -196,7 +196,16 @@ def _check_note(check: Optional[Dict]) -> str:
     return "" if "no problems found" in t else t.replace("mapping check: ", "")
 
 
-_WORKERS: Dict[str, Callable] = {"binary": plot_binary, "ternary": plot_ternary, "map": map_diagram}
+def call_function(target: str, **kwargs) -> Dict:
+    """``module:function(**kwargs)`` in a worker (e.g. combine_databases' equilibrium grids); returns its dict."""
+    import importlib
+    mod, _, name = target.partition(":")
+    r = getattr(importlib.import_module(mod), name)(**kwargs)
+    return r if isinstance(r, dict) else {"result": r}
+
+
+_WORKERS: Dict[str, Callable] = {"binary": plot_binary, "ternary": plot_ternary, "map": map_diagram,
+                                 "call": call_function}
 
 
 def _run_one(kind: str, kwargs: Dict) -> Dict:

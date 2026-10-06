@@ -233,6 +233,7 @@ class Recorder:
         self.started = time.time()
         self.session_id = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
         self.log_path: Optional[Path] = None
+        self.decisions: List[Dict[str, Any]] = []       # decision-log entries tools recorded (combine_databases)
         llm = getattr(tb, "llm_cfg", None)
         self._secrets = _secret_values([str(getattr(llm, "api_key", "") or "")])
 
@@ -392,13 +393,7 @@ class Recorder:
         for k in list(inputs):                             # rewritten during the call -> an output, not an input
             if str((self.tb.workdir / k).resolve()) in fresh:
                 inputs.pop(k)
-        if self.log_path is None:
-            self.env = {"type": "header", "session": self.session_id, "started": _now_iso(self.started),
-                        "workdir": str(self.tb.workdir), "output_dir": str(self.tb.out),
-                        "output_dir_rel": self.tb.rel(str(self.tb.out)),
-                        "python_tool": getattr(self.tb, "python_tool", "off"), **environment()}
-            self.log_path = self._open_log()
-            self._append(self.env)
+        self._ensure_log()
         red_args = redact(args, self._secrets)
         prov_base = {"session": self.session_id, "call_index": index, "time": rec.get("time"), "tool": rec["tool"],
                      "args": red_args, "inputs": inputs, "versions": self.env["versions"],
@@ -423,6 +418,32 @@ class Recorder:
             entry["executed"] = bool(code) and code in getattr(self.tb, "py_history", [])
         self.records.append(entry)
         self._append(entry)
+
+    def _ensure_log(self) -> None:
+        if self.log_path is None:
+            self.env = {"type": "header", "session": self.session_id, "started": _now_iso(self.started),
+                        "workdir": str(self.tb.workdir), "output_dir": str(self.tb.out),
+                        "output_dir_rel": self.tb.rel(str(self.tb.out)),
+                        "python_tool": getattr(self.tb, "python_tool", "off"), **environment()}
+            self.log_path = self._open_log()
+            self._append(self.env)
+
+    def record_decisions(self, entries: List[Dict[str, Any]], tool: str) -> None:
+        """Decision-log entries a tool made (id, step, subject, options, chosen, who, reason, evidence, affected):
+        one {"type": "decision"} line each in the session log, tied to the call being made, and kept in memory for
+        package_feedback (problem reports) and show_code."""
+        with self.lock:
+            self._ensure_log()
+            index = len(self.tb.call_log) + 1          # the running call (it is logged when it returns)
+            for e in entries:
+                rec = {"type": "decision", "call_index": index, "tool": tool, "time": _now_iso(),
+                       **redact(jsonable(e), self._secrets)}
+                self.decisions.append(rec)
+                self._append(rec)
+
+    def decisions_of(self, first: int = 0, last: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Recorded decisions of calls first < index <= last (all by default)."""
+        return [d for d in self.decisions if first < int(d.get("call_index") or 0) <= (last or 10 ** 9)]
 
     # ---------------------------------------------------------------- queries
     def load(self, session: Optional[str]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
