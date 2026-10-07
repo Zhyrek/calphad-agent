@@ -79,6 +79,7 @@ class FluxSettings:
     mode: str = "per-job"                     # per-job | bundle
     job_prefix: str = "espei"
     worker_memory_limit: str = "0"            # dask worker --memory-limit
+    bank_flag: str = "--bank"                 # older flux-core without --bank: "--setattr=system.bank"
 
 
 def _abs(p: Optional[str], base: Path) -> Optional[str]:
@@ -147,7 +148,7 @@ def _directives(fs: FluxSettings, name: str, nodes: int, ncores: Optional[int], 
     if fs.queue:
         lines.append(f"#flux: -q {fs.queue}")
     if fs.bank:
-        lines.append(f"#flux: --bank={fs.bank}")
+        lines.append(f"#flux: {fs.bank_flag or '--bank'}={fs.bank}")
     lines.append(f"#flux: --output={name}.{{{{id}}}}.out")
     return lines
 
@@ -290,6 +291,48 @@ def generate(runs: Sequence[Run], flux: FluxSettings, out_dir: str, base_dir: Op
                 problems[f] = r_.stderr.strip()
     return {"out_dir": str(out), "files": written, "problems": problems, "mode": flux.mode,
             "submit": f"bash {out / 'submit_all.sh'}"}
+
+
+def write_per_job_run(run: Run, fs: FluxSettings, run_dir: str, base_dir: Optional[str] = None) -> Dict:
+    """One run in the per-job layout, written straight into ``run_dir`` (no campaign-level submit_all.sh):
+    espei_generate.yaml + gen.flux (when run.generate_parameters), espei_mcmc.yaml + mcmc.flux.  YAMLs are checked
+    against ESPEI's schema and scripts with ``bash -n``.  Returns {files, problems, scripts: {step: script},
+    output_prefix: {step: prefix}}."""
+    import subprocess
+    d = Path(run_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    base = Path(base_dir or os.getcwd())
+    files, problems, scripts, prefix = [], {}, {}, {}
+    if run.generate_parameters:
+        g = espei_yaml(run, None, None, None, "generate", base)
+        (d / "espei_generate.yaml").write_text(yaml.safe_dump(g, sort_keys=False))
+        err = validate_espei_yaml(g)
+        if err:
+            problems["espei_generate.yaml"] = err
+        _write_exec(d / "gen.flux", gen_script(fs, run))
+        files += [str(d / "espei_generate.yaml"), str(d / "gen.flux")]
+        scripts["generate"] = "gen.flux"
+        prefix["generate"] = f"{fs.job_prefix}-gen-{run.name}"
+        mcmc_db = "dft.tdb"
+    else:
+        if not run.input_db:
+            raise ValueError(f"run {run.name}: need input_db when generate_parameters is False")
+        mcmc_db = _abs(run.input_db, base)
+    m = espei_yaml(run, mcmc_db, str((d / "scheduler.json").resolve()), None, "mcmc", base)
+    (d / "espei_mcmc.yaml").write_text(yaml.safe_dump(m, sort_keys=False))
+    err = validate_espei_yaml(m)
+    if err:
+        problems["espei_mcmc.yaml"] = err
+    _write_exec(d / "mcmc.flux", mcmc_script(fs, run))
+    files += [str(d / "espei_mcmc.yaml"), str(d / "mcmc.flux")]
+    scripts["mcmc"] = "mcmc.flux"
+    prefix["mcmc"] = f"{fs.job_prefix}-mcmc-{run.name}"
+    for f in files:
+        if f.endswith(".flux"):
+            r_ = subprocess.run(["bash", "-n", f], capture_output=True, text=True)
+            if r_.returncode:
+                problems[Path(f).name] = r_.stderr.strip()
+    return {"files": files, "problems": problems, "scripts": scripts, "output_prefix": prefix}
 
 
 def _write_exec(p: Path, text: str) -> None:

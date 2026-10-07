@@ -107,9 +107,15 @@ say "Installing packages (a few minutes the first time)"
 "$VPY" -m pip install -e "$HERE" --quiet
 "$VPY" -c "import pycalphad, espei, calphad_tools; print('  pycalphad', pycalphad.__version__, '| ESPEI', espei.__version__, '| OK')"
 
-# 4. settings
+# 3b. a Flux scheduler here? (ESPEI optimisations are then submitted as batch jobs; probe only, nothing submitted)
+say "Checking for a Flux scheduler"
+"$VPY" -m calphad_tools.hpc || echo "  (the check failed; calphad-agent --check repeats it)"
+
+# 4. settings (on a Flux system the setup also asks for the Flux bank and queue)
 say "Settings"
 "$VENV/bin/calphad-agent" --setup $YES
+# Flux found but no bank/queue in the config yet (e.g. --yes): say what to set
+"$VPY" -m calphad_tools.hpc --remind-only --config "$HERE/calphad_agent.toml" || true
 
 # 5. the environment file (module + venv; sourced by the launcher and by generated batch scripts) and a launcher
 {
@@ -141,4 +147,4 @@ say "Done."
 echo "  Start it:            ./start-agent.sh          (opens http://127.0.0.1:8765 in your browser)"
 echo "  Terminal version:    ./start-agent.sh --terminal"
 echo "  Change settings:     edit calphad_agent.toml, or: pycalphad-agent-venv/bin/calphad-agent --setup"
-echo "  Test the connection: pycalphad-agent-venv/bin/calphad-agent --check"
+echo "  Test the connection: pycalphad-agent-venv/bin/calphad-agent --check   (also shows Flux / local)"

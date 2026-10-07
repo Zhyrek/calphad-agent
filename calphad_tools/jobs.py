@@ -22,8 +22,16 @@ The child runs in its own session / process group (survives the agent exiting, n
 stdin; :func:`stop` signals the whole group, e.g. dask workers).  Figures saved by jobs are editable like any
 other tool figure (the ``CALPHAD_FIGSTORE`` savefig hook is installed in the child).
 
-Tools: ``list_jobs``, ``job_status``, ``stop_job``, ``wait_job``.  A job may name a ``status_hook``
-(``module:function(tb, jobdir, spec, status) -> (text, images)``) that ``job_status`` calls for extra
+Flux-backed jobs (:func:`submit_flux`): batch jobs already submitted with ``flux batch`` (e.g. ESPEI generation ->
+MCMC chained with ``--dependency=afterok``) are registered the same way (``spec.json`` with ``backend: flux`` and the
+Flux job ids, scripts and commands).  There is no local process: ``status`` asks Flux (``flux jobs``; the job's
+eventlog for ids Flux no longer lists), a ``flux_hook`` reads progress from the run directory (ESPEI: iterations in
+``mcmc.log``, lnprob), ``stop`` runs ``flux cancel``, and a failed step reports the tail of its batch output file and
+Flux's exit status.  Records live on disk, so they survive an agent restart.
+
+Tools: ``list_jobs``, ``job_status``, ``stop_job``, ``wait_job`` (``until="done"``: keep waiting, with a progress
+line, until the job finishes - Ctrl-C / the web UI's "stop waiting" ends the wait, not the job).  A job may name a
+``status_hook`` (``module:function(tb, jobdir, spec, status) -> (text, images)``) that ``job_status`` calls for extra
 job-specific reporting (ESPEI MCMC: lnprob convergence plot).
 
 Provenance: ``spec.json`` records the submitting call; :func:`producer_for` maps any file a job produced
@@ -113,6 +121,27 @@ def job_dir(tb, job_id: str) -> Path:
 
 
 # --------------------------------------------------------------------------- submit
+def _new_job_dir(tb) -> Tuple[str, Path]:
+    root = jobs_root(tb)
+    root.mkdir(parents=True, exist_ok=True)
+    for _ in range(50):
+        job_id = time.strftime("%m%d-%H%M%S") + "-" + secrets.token_hex(2)
+        try:
+            (root / job_id).mkdir()
+            return job_id, root / job_id
+        except FileExistsError:
+            continue
+    raise RuntimeError("could not create a job directory")
+
+
+def _submitted_by(tb, tool: Optional[str], tool_args: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    prov = getattr(tb, "provenance", None)
+    pend = getattr(prov, "pending", None) or {}
+    call_log = getattr(tb, "call_log", [])
+    return {"session": getattr(prov, "session_id", None), "call_index": len(call_log) + 1,
+            "tool": tool or pend.get("tool"), "args": tool_args if tool_args is not None else pend.get("args")}
+
+
 def submit(tb, label: str, target: str, kwargs: Dict[str, Any], *, status_hook: Optional[str] = None,
            tool: Optional[str] = None, tool_args: Optional[Dict[str, Any]] = None,
            cwd: Optional[str] = None) -> str:
@@ -122,16 +151,8 @@ def submit(tb, label: str, target: str, kwargs: Dict[str, Any], *, status_hook: 
     ``tool``/``tool_args`` are not given, so show_code / provenance can map the job's files back to it."""
     if ":" not in target:
         raise ValueError("target must be 'module:function'")
-    root = jobs_root(tb)
-    root.mkdir(parents=True, exist_ok=True)
-    job_id = time.strftime("%m%d-%H%M%S") + "-" + secrets.token_hex(2)
-    d = root / job_id
-    d.mkdir()
-    prov = getattr(tb, "provenance", None)
-    pend = getattr(prov, "pending", None) or {}
-    call_log = getattr(tb, "call_log", [])
-    by = {"session": getattr(prov, "session_id", None), "call_index": len(call_log) + 1,
-          "tool": tool or pend.get("tool"), "args": tool_args if tool_args is not None else pend.get("args")}
+    job_id, d = _new_job_dir(tb)
+    by = _submitted_by(tb, tool, tool_args)
     spec = {"job_id": job_id, "label": label, "target": target, "kwargs": _jsonable(kwargs),
             "created": _iso(_now()), "workdir": str(getattr(tb, "workdir", os.getcwd())), "out": str(tb.out),
             "cwd": str(cwd or getattr(tb, "workdir", os.getcwd())), "python": sys.executable,
@@ -155,6 +176,107 @@ def submit(tb, label: str, target: str, kwargs: Dict[str, Any], *, status_hook: 
     _CHILDREN[job_id] = p
     (d / "pid").write_text(str(p.pid))          # status.json belongs to the child from now on
     return job_id
+
+
+def submit_flux(tb, label: str, steps: List[Dict[str, Any]], *, run_dir: str, kwargs: Optional[Dict] = None,
+                flux: Optional[Dict[str, Any]] = None, status_hook: Optional[str] = None,
+                flux_hook: Optional[str] = None, tool: Optional[str] = None,
+                tool_args: Optional[Dict[str, Any]] = None) -> str:
+    """Register Flux batch jobs that were already submitted as one registry job; return its id.
+
+    ``steps``: ``[{"step": "generate", "id": "f...", "script": "gen.flux", "command": [...],
+    "output_prefix": "espei-gen-NAME"}, ...]`` in dependency order.  ``flux``: anything else to record (resources,
+    detection, the submit script).  ``flux_hook`` ("module:function(tb, jobdir, spec, status, final) -> result or
+    None") adds progress from the run directory while the jobs run and builds result.json when they end."""
+    job_id, d = _new_job_dir(tb)
+    spec = {"job_id": job_id, "label": label, "backend": "flux", "target": "flux batch",
+            "kwargs": _jsonable({"run_dir": str(run_dir), **(kwargs or {})}), "created": _iso(_now()),
+            "workdir": str(getattr(tb, "workdir", os.getcwd())), "out": str(tb.out), "cwd": str(run_dir),
+            "flux": _jsonable({"steps": steps, **(flux or {})}), "status_hook": status_hook, "flux_hook": flux_hook,
+            "submitted_by": _submitted_by(tb, tool, tool_args)}
+    _write_json(d / "spec.json", spec)
+    _write_json(d / "status.json", {
+        "job_id": job_id, "label": label, "state": "queued", "backend": "flux", "pid": None,
+        "created": spec["created"], "start": None, "end": None, "frac": None, "metrics": {}, "n_progress": 0,
+        "message": "submitted to Flux: " + ", ".join(f"{s['step']} {s['id']}" for s in steps),
+        "flux": {s["step"]: {"id": s["id"], "status": "SUBMITTED"} for s in steps}})
+    return job_id
+
+
+def flux_output_file(run_dir: Path, prefix: Optional[str], jid: Optional[str] = None) -> Optional[Path]:
+    """The batch output file of a step (``--output=<prefix>.{{id}}.out``): the one with this id, else the newest."""
+    if not prefix:
+        return None
+    hits = sorted(Path(run_dir).glob(f"{prefix}.*.out"), key=lambda p: p.stat().st_mtime)
+    if jid:
+        from .hpc import norm_id
+        same = [h for h in hits if norm_id(h.name[len(prefix) + 1:-4]) == norm_id(jid)]
+        if same:
+            return same[-1]
+    return hits[-1] if hits else None
+
+
+def _flux_status(tb, d: Path, spec: Dict[str, Any], st: Dict[str, Any]) -> Dict[str, Any]:
+    if st.get("state") in FINAL:
+        return st
+    from . import hpc
+    steps = (spec.get("flux") or {}).get("steps") or []
+    states = hpc.flux_job_states([s["id"] for s in steps])
+    if states is None:
+        st["message"] = "Flux does not answer right now (flux jobs timed out); state unknown - try again"
+        return st
+    per = {s["step"]: {"id": s["id"], **states.get(s["id"], {"status": "UNKNOWN"})} for s in steps}
+    codes = [per[s["step"]]["status"] for s in steps]
+    mapped = [hpc.FLUX_STATE.get(c, "unknown") for c in codes]
+    if "failed" in mapped:
+        state = "failed"
+    elif "stopped" in mapped:
+        state = "stopped"
+    elif mapped and mapped[-1] == "done" and all(m in ("done", "unknown") for m in mapped):
+        state = "done"                              # (an earlier step Flux no longer lists must have succeeded)
+    elif "running" in mapped:
+        state = "running"
+    elif all(m == "unknown" for m in mapped):
+        state = st.get("state") or "queued"         # Flux lists none of them: keep the last known state
+    else:
+        state = "queued"
+    st["flux"] = per
+    st["state"] = state
+    now = _now()
+    if state == "running" and not st.get("start"):
+        st["start"] = _iso(now)
+    active = next((s for s in steps if per[s["step"]]["status"] not in hpc.FLUX_FINAL), steps[-1] if steps else None)
+    if active is not None:
+        st["message"] = f"{active['step']} job {active['id']}: {per[active['step']]['status']}"
+    final = state in FINAL
+    res: Optional[Dict[str, Any]] = None
+    hook = spec.get("flux_hook")
+    if hook:
+        try:
+            mod, fn = hook.split(":", 1)
+            res = getattr(importlib.import_module(mod), fn)(tb, d, spec, st, final)
+        except Exception as e:  # noqa: BLE001 - progress extras must never break the state
+            st["hook_error"] = f"{type(e).__name__}: {e}"[:300]
+    if final:
+        st["end"] = st.get("end") or _iso(now)
+        res = dict(res or {})
+        bad = next((s for s in steps if hpc.FLUX_STATE.get(per[s["step"]]["status"]) in ("failed", "stopped")), None)
+        if bad is not None:
+            b = per[bad["step"]]
+            out = flux_output_file(Path(spec["kwargs"]["run_dir"]), bad.get("output_prefix"), bad["id"])
+            why = (f"{bad['step']} job {bad['id']}: Flux status {b['status']}"
+                   + (f", exit code {b['returncode']}" if b.get("returncode") is not None else "")
+                   + (f", exception: {b['exception']}" if b.get("exception") else ""))
+            st["message"] = why
+            if state == "failed":
+                st["error"] = why
+                res["error"] = why
+            if out is not None:
+                res["output_file"] = str(out)
+                res["output_tail"] = _tail(out, 30)
+        _write_json(d / "result.json", _jsonable(res))
+    _write_json(d / "status.json", st)
+    return st
 
 
 # --------------------------------------------------------------------------- child side
@@ -278,6 +400,8 @@ def status(tb, job_id: str) -> Dict[str, Any]:
     """status.json, corrected when the process died without reporting (killed / crashed)."""
     d = job_dir(tb, job_id)
     st = _read_json(d / "status.json", {}) or {}
+    if st.get("backend") == "flux":
+        return _flux_status(tb, d, _read_json(d / "spec.json", {}) or {}, st)
     if st.get("state") in ("queued", "running"):
         if not st.get("pid") and (d / "pid").exists():
             st["pid"] = int((d / "pid").read_text().strip() or 0) or None
@@ -320,6 +444,8 @@ def stop(tb, job_id: str, grace_s: float = STOP_GRACE_S) -> Dict[str, Any]:
     if st.get("state") in FINAL:
         return {"state": st["state"], "note": "already finished"}
     (d / "stop").write_text(_iso(_now()) or "")
+    if st.get("backend") == "flux":
+        return _stop_flux(tb, job_id, d, st, grace_s)
     pid = st.get("pid")
     for _ in range(20):                           # just started: give the child a moment to report its group
         if st.get("pgid"):
@@ -374,6 +500,34 @@ def stop(tb, job_id: str, grace_s: float = STOP_GRACE_S) -> Dict[str, Any]:
     return {"state": st.get("state"), "signals": sent, "seconds": round(_now() - t0, 2)}
 
 
+def _stop_flux(tb, job_id: str, d: Path, st: Dict[str, Any], grace_s: float) -> Dict[str, Any]:
+    from . import hpc
+    spec = _read_json(d / "spec.json", {}) or {}
+    steps = (spec.get("flux") or {}).get("steps") or []
+    per = st.get("flux") or {}
+    ids = [s["id"] for s in steps if (per.get(s["step"]) or {}).get("status") not in hpc.FLUX_FINAL]
+    ok, msg = hpc.flux_cancel(ids)
+    t0 = _now()
+    while _now() - t0 < max(grace_s, 2.0):
+        st = status(tb, job_id)
+        if st.get("state") in FINAL:
+            break
+        time.sleep(min(1.0, _poll_s(tb, st)))
+    out = {"state": st.get("state"), "flux_cancel": ids, "ok": ok, "seconds": round(_now() - t0, 2)}
+    if msg:
+        out["flux"] = msg[-500:]
+    if st.get("state") not in FINAL:
+        out["note"] = "flux cancel sent; Flux is still cleaning up (job_status shows when it has ended)"
+    return out
+
+
+def _poll_s(tb, st: Dict[str, Any], default: float = 0.3) -> float:
+    if st.get("backend") != "flux":
+        return default
+    from .hpc import config_of
+    return max(0.05, float(config_of(tb).poll_s or 30.0))
+
+
 def wait(tb, job_id: str, timeout_s: float = 60.0, poll_s: float = 0.3) -> Dict[str, Any]:
     t0 = _now()
     timeout_s = min(float(timeout_s), WAIT_CAP_S)
@@ -381,7 +535,67 @@ def wait(tb, job_id: str, timeout_s: float = 60.0, poll_s: float = 0.3) -> Dict[
         st = status(tb, job_id)
         if st.get("state") in FINAL or _now() - t0 >= timeout_s:
             return st
-        time.sleep(poll_s)
+        time.sleep(min(_poll_s(tb, st, poll_s), max(0.05, timeout_s - (_now() - t0))))
+
+
+def _ui_progress(tb, msg: str, key: str) -> None:
+    ui = getattr(tb, "ui", None)
+    if ui is None or not hasattr(ui, "progress"):
+        return
+    try:
+        ui.progress(msg, key=key)
+    except TypeError:                                  # older / test UIs take only the message
+        ui.progress(msg)
+    except Exception:  # noqa: BLE001 - a status line must never end the wait
+        pass
+
+
+def wait_until_done(tb, job_id: str, max_s: Optional[float] = None, line_every_s: float = 10.0
+                    ) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Wait until the job finishes, writing a status line (replace-key ``wait:<id>``) as it goes.
+
+    Returns (status, why the wait ended early or None).  Ends early - leaving the job running - after ``max_s``
+    (default [hpc] wait_max_hours), on Ctrl-C, when ``tb.stop_waiting`` is set (web UI button) or when a file
+    ``stop_wait`` appears in the job directory."""
+    from .hpc import config_of
+    d = job_dir(tb, job_id)
+    label = (_read_json(d / "spec.json", {}) or {}).get("label") or job_id
+    max_s = float(max_s if max_s is not None else float(config_of(tb).wait_max_hours or 24) * 3600)
+    ev = getattr(tb, "stop_waiting", None)
+    if ev is not None:
+        ev.clear()
+    t0, last = _now(), 0.0
+    key = f"wait:{job_id}"
+    try:
+        while True:
+            st = status(tb, job_id)
+            el = _now() - t0
+            if st.get("state") in FINAL:
+                _ui_progress(tb, f"job {job_id} [{label}]: {st.get('state')} after waiting {_fmt_s(el)}", key)
+                return st, None
+            if el >= max_s:
+                return st, f"stopped waiting after {_fmt_s(el)} (limit [hpc] wait_max_hours); the job keeps running"
+            if (ev is not None and ev.is_set()) or (d / "stop_wait").exists():
+                try:
+                    (d / "stop_wait").unlink()
+                except OSError:
+                    pass
+                return st, f"stopped waiting after {_fmt_s(el)} at the user's request; the job keeps running"
+            if _now() - last >= line_every_s or last == 0.0:
+                fr = st.get("frac")
+                _ui_progress(tb, f"waiting for job {job_id} [{label}]: {st.get('state')}"
+                                 + (f" {100 * fr:.0f}%" if fr is not None else "")
+                                 + f" - {str(st.get('message') or '')[:120]} (waited {_fmt_s(el)}; Ctrl-C or "
+                                   "'stop waiting' ends the wait, not the job)", key)
+                last = _now()
+            nap = min(_poll_s(tb, st, 1.0), max(0.05, max_s - el))
+            t1 = _now()
+            while _now() - t1 < nap:
+                if ev is not None and ev.is_set():
+                    break
+                time.sleep(min(0.25, nap))
+    except KeyboardInterrupt:
+        return status(tb, job_id), "stopped waiting (Ctrl-C); the job keeps running"
 
 
 def progress_records(tb_or_dir, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -450,6 +664,13 @@ def report(tb, job_id: str, tail: int = 15) -> Tuple[str, List[str]]:
     st = status(tb, job_id)
     state = st.get("state")
     L = [f"job {job_id} [{spec.get('label')}] state: {state}"]
+    if spec.get("backend") == "flux":
+        steps = (spec.get("flux") or {}).get("steps") or []
+        per = st.get("flux") or {}
+        L.append("backend: Flux batch - " + ", ".join(
+            f"{s['step']} {s['id']} [{(per.get(s['step']) or {}).get('status', '?')}]" for s in steps))
+        L.append(f"run dir {tb.rel(spec['kwargs']['run_dir'])}; from a shell: flux jobs "
+                 + " ".join(s["id"] for s in steps))
     t_start = _parse_iso(st.get("start"))
     t_end = _parse_iso(st.get("end"))
     if t_start:
@@ -484,6 +705,8 @@ def report(tb, job_id: str, tail: int = 15) -> Tuple[str, List[str]]:
             L.append("error: " + str(res["error"]))
             if res.get("traceback"):
                 L.append("traceback:\n" + str(res["traceback"])[-2500:])
+        if res.get("output_tail"):
+            L.append(f"batch output ({tb.rel(res.get('output_file', ''))}), last lines:\n{res['output_tail']}")
         files = job_files(tb, job_id)
         if files:
             L.append("files:\n" + "\n".join(f"  {tb.rel(f)}" for f in files))
@@ -588,21 +811,29 @@ def register(tb) -> None:
     def job_status(job_id: str, tail: int = 15):
         return report(tb, job_id, tail=tail if tail is not None else 15)
 
-    @tb.add("stop_job", "Stop a background job (SIGTERM to its process group, SIGKILL after 16 s). ESPEI MCMC "
-            "saves the chains so far first.", {"job_id": S}, ["job_id"])
+    @tb.add("stop_job", "Stop a background job (SIGTERM, SIGKILL after 16 s; Flux: flux cancel). ESPEI MCMC keeps "
+            "the chains saved so far.", {"job_id": S}, ["job_id"])
     def stop_job(job_id: str):
         r = stop(tb, job_id)
         text, imgs = report(tb, job_id, tail=5)
         return f"stop: {json.dumps(r)}\n{text}", imgs
 
-    @tb.add("wait_job", f"Block until a background job finishes or timeout_s (max {WAIT_CAP_S:.0f} s) passes, then "
-            "report like job_status. For short jobs only.",
-            {"job_id": S, "timeout_s": N}, ["job_id"])
-    def wait_job(job_id: str, timeout_s: float = 120.0):
-        st = wait(tb, job_id, timeout_s if timeout_s is not None else 120.0)
+    @tb.add("wait_job", f"Wait for a background or Flux job to finish, then report like job_status. "
+            f"timeout_s: at most {WAIT_CAP_S:.0f} s; until='done': keep waiting (status line; the user can end "
+            "the wait, not the job) up to [hpc] wait_max_hours - use it for ESPEI optimisations, then continue.",
+            {"job_id": S, "timeout_s": N,
+             "until": {"type": "string", "enum": ["done"], "description": "wait until the job has finished"}},
+            ["job_id"])
+    def wait_job(job_id: str, timeout_s: float = 120.0, until: Optional[str] = None):
+        why = None
+        if until == "done":
+            st, why = wait_until_done(tb, job_id)
+        else:
+            st = wait(tb, job_id, timeout_s if timeout_s is not None else 120.0)
         text, imgs = report(tb, job_id)
         if st.get("state") not in FINAL:
-            text = "still running (timeout reached)\n" + text
+            text = (f"still {st.get('state')} ({why or 'timeout reached'}); wait_job until='done' waits until it "
+                    "finishes\n") + text
         return text, imgs
 
 

@@ -127,7 +127,8 @@ UNIT = {"type": "string", "enum": ["K", "C"], "description": "Temperature unit o
 class ToolBox:
     def __init__(self, workdir: str, output_dir: str, ui: UI, python_tool: str = "ask",
                  max_chars: int = 20000, llm_cfg=None, interactive: bool = True, diagram_style: str = "shaded",
-                 save_notebooks: bool = True):
+                 save_notebooks: bool = True, hpc=None):
+        import threading
         self.workdir = Path(workdir).resolve()
         self.out = (self.workdir / output_dir).resolve()
         self.out.mkdir(parents=True, exist_ok=True)
@@ -138,6 +139,10 @@ class ToolBox:
         self.py_ns: Dict[str, Any] = {}
         self.py_history: List[str] = []           # code that has actually been executed
         self.llm_cfg = llm_cfg                    # needed for auto_verify reviews
+        # [hpc] settings (calphad_tools.hpc.HPCConfig): Flux detection / submission and run-size defaults for ESPEI.
+        # None (library use, tests, replays): everything runs locally - only the agent passes its config.
+        self.hpc = hpc
+        self.stop_waiting = threading.Event()     # set (web "stop waiting" button) to end a wait_job until=done
         self.interactive = interactive            # is a human available to confirm?
         from calphad_tools.diagram_style import check_style
         self.diagram_style = check_style(diagram_style)   # phase-diagram style when a call gives none
@@ -357,6 +362,31 @@ class ToolBox:
         except Exception as e:  # noqa: BLE001 - report every failure back to the model
             tb = traceback.format_exc(limit=3)
             return f"{type(e).__name__}: {e}\n{tb[-1500:]}", [], True
+
+    def _flux_defaults(self) -> Dict[str, Any]:
+        """FluxSettings defaults from [hpc] (agent config) and the Flux detection (cores per node, --bank form)."""
+        from calphad_tools.hpc import config_of, detect
+        cfg = config_of(self)
+        out: Dict[str, Any] = {"nodes": int(cfg.nodes or 1), "time_limit": cfg.time_limit,
+                               "gen_time_limit": cfg.gen_time_limit}
+        if cfg.queue:
+            out["queue"] = cfg.queue
+        if cfg.bank:
+            out["bank"] = cfg.bank
+        if cfg.setup:
+            out["setup"] = list(cfg.setup)
+        if cfg.cores_per_node:
+            out["cores_per_node"] = int(cfg.cores_per_node)
+        if self.hpc is not None and str(cfg.scheduler).lower() != "local":
+            try:
+                info = detect()
+                if info.get("scheduler") == "flux":
+                    if not cfg.cores_per_node and info.get("cores_per_node"):
+                        out["cores_per_node"] = int(info["cores_per_node"])
+                    out["bank_flag"] = info.get("bank_flag") or "--bank"
+            except Exception:  # noqa: BLE001 - defaults only
+                pass
+        return out
 
     @staticmethod
     def j(obj) -> str:
@@ -609,14 +639,15 @@ class ToolBox:
                 {"type": "string", "enum": ["per-job", "bundle"]}, "setup": STRS, "gen_time_limit": S}}
 
         @self.add("generate_espei_flux_batch", "Write ESPEI YAML inputs and Flux batch scripts for one or more ESPEI "
-                  "runs (per-job: gen + multi-node dask MCMC chained with afterok; bundle: many runs in one "
-                  "allocation). Scripts are syntax-checked and YAML validated against ESPEI's schema.",
+                  "runs, without submitting (per-job: gen + multi-node dask MCMC chained with afterok; bundle: many "
+                  "runs in one allocation). Scripts are syntax-checked and YAML validated against ESPEI's schema. "
+                  "flux settings not given come from [hpc] (bank, queue, nodes, time_limit, cores per node).",
                   {"runs": {"type": "array", "items": run_schema}, "flux": flux_schema, "output_dir": S},
                   ["runs", "flux", "output_dir"])
         def generate_espei_flux_batch(runs, flux, output_dir):
             rs = [espei_flux.Run(**{**r, "phase_models": self.p(r["phase_models"]), "datasets": self.p(r["datasets"]),
                                     **({"input_db": self.p(r["input_db"])} if r.get("input_db") else {})}) for r in runs]
-            fs = espei_flux.FluxSettings(**flux)
+            fs = espei_flux.FluxSettings(**{**self._flux_defaults(), **(flux or {})})
             od = self.p(output_dir) if os.path.isabs(output_dir) or "/" in output_dir else str(self.out / output_dir)
             r = espei_flux.generate(rs, fs, od)
             return self.j({**r, "files": [self.rel(f) for f in r["files"]]}), []

@@ -816,7 +816,7 @@ TASKS: List[Tuple[str, List[str]]] = [
     ("calculated binary diagram or ternary isotherm with experimental ESPEI datasets overlaid",
      ["plot_diagram_with_data"]),
     ("which element goes on which side: right (binary) / corners (ternary); element_order for decks; edit_figure "
-     "composition_points places data by composition; transform_data element_fractions makes X(EL) columns",
+     "composition_points places data by composition",
      ["map_phase_diagram", "plot_diagram_with_data", "plot_all_binaries", "edit_figure", "transform_data"]),
     ("step calculation: phase fractions/compositions/properties vs T, P or X; transition temperatures",
      ["step_map", "equilibrium_property_plot"]),
@@ -855,18 +855,18 @@ TASKS: List[Tuple[str, List[str]]] = [
      ["compare_tdbs", "compare_system", "merge_tdbs"]),
     ("can TDB B join base A (staged check, unary50, new end-members); merge step by step with diagrams; N TDBs end "
      "to end with decision log + validation", ["evaluate_compatibility", "staged_merge", "combine_databases"]),
-    ("experimental data -> ESPEI datasets; ESPEI + Flux jobs",
+    ("experimental data -> ESPEI datasets; Flux batch scripts",
      ["parse_dataplot_exp", "convert_dataplot_exp_to_zpf", "convert_pop_to_zpf", "convert_csv_to_zpf",
       "write_zpf_dataset", "check_espei_datasets", "make_phase_models", "generate_espei_flux_batch"]),
-    ("extract data points / curves from a figure in a paper (PDF page or image; x-y axes or a composition "
-     "triangle): calibrate from ticks/corners, then markers by colour/shape or lines by colour",
+    ("extract data points / curves from a figure (PDF page or image; x-y axes or a composition triangle): "
+     "calibrate from ticks/corners, then markers by colour/shape or lines by colour",
      ["digitize_setup", "digitize_points", "digitize_curve", "digitize_fix"]),
-    ("phase-diagram figure -> ESPEI ZPF datasets: phases from the figure's region labels / legend (paper -> "
-     "database names), tie-lines, invariants, binary and ternary; optional TDB check",
+    ("phase-diagram figure -> ESPEI ZPF datasets: phases from its region labels / legend (paper -> database "
+     "names), tie-lines, invariants",
      ["digitize_setup", "digitize_points", "digitize_curve", "digitized_to_zpf", "check_espei_datasets",
       "plot_diagram_with_data"]),
-    ("run ESPEI locally (check inputs, parameter generation, quick MCMC before a Flux run)",
-     ["espei_validate_input", "espei_generate_parameters", "espei_run_mcmc"]),
+    ("ESPEI optimisation (Flux if detected, else here), or step by step here",
+     ["optimize_system", "espei_validate_input", "espei_generate_parameters", "espei_run_mcmc"]),
     ("background jobs (long ESPEI/optimizer runs): progress, ETA, plots, results, stop",
      ["list_jobs", "job_status", "wait_job", "stop_job"]),
     ("ESPEI MCMC results: convergence, burn-in, parameter statistics, corner plots, best-fit TDB, uncertainty "

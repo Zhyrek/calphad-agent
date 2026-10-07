@@ -265,8 +265,10 @@ def test_mcmc_job_end_to_end(tb, tmp_path):
     call(tb, "espei_generate_parameters", {"name": "CrNi", "phase_models": "CrNi/phase_models.json",
                                            "datasets": "CrNi/datasets"})
     t0 = time.time()
+    # cores=1: serial, so the YAML matches the serial Flux-generator structure exactly (the default is half the
+    # cores as a dask cluster; test_hpc covers that)
     text, _ = call(tb, "espei_run_mcmc", {"name": "CrNi", "iterations": 3, "chains_per_parameter": 2,
-                                          "save_interval": 1})
+                                          "save_interval": 1, "cores": 1})
     jid = _job_id(text)
     d = tb.out / "espei_runs" / "CrNi"
     assert "30 chains (2 x 15 parameters)" in text and "analyze_mcmc trace=" in text

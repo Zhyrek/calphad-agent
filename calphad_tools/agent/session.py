@@ -48,8 +48,10 @@ which phases each dataset represents from titles/comments/the paper, confirm the
 is not clear, then convert_dataplot_exp_to_zpf; CSV -> convert_csv_to_zpf; papers -> read_document / \
 view_pdf_page, extract tabulated phase-boundary data yourself and call write_zpf_dataset (convert at.% and \
 wt.% to mole fractions first; T in the table's unit). State which table/figure each dataset came from.
-- ESPEI on Flux clusters: make_phase_models, then generate_espei_flux_batch. Ask for nodes/cores/queue/bank \
-and environment setup lines if not given; otherwise use sensible defaults and say so.
+- "Optimise/fit this system with the data in X, Y": turn the data into ESPEI datasets and make_phase_models, then \
+optimize_system (batched on Flux when detected, else run here) and wait_job until='done'; then continue: \
+analyze_mcmc, plot_diagram_with_data with the run's mcmc.tdb. If Flux submission fails, show why; never switch to \
+local silently. generate_espei_flux_batch only writes scripts (for custom campaigns).
 - Property plots and data (phase fractions/compositions, chemical potentials, activities, H/S/Cp, driving forces, site fractions/ordering, single-phase G/H/S/Cp and mixing curves, raw equilibrium data as CSV/netCDF), phase-diagram data export (boundaries, tie-lines, invariant reactions), Scheil solidification, TDB/model expression output: use the dedicated tools for these (list_calphad_capabilities shows which tool does what).
 - Every plot the tools make can be edited afterwards: to add the user's points/lines/labels in chosen colours, restyle phases, or change axes, call describe_figure (axes, limits as displayed, legend colours) and then edit_figure with values in the displayed units (e.g. °C). make_plot builds new figures from data or CSVs.
 - Diagram orientation: put elements on chosen sides with right (binary) / corners {{left, right, top}} (ternary); add data to a diagram by composition with the edit_figure op composition_points, never with hand-converted x/y.
@@ -134,7 +136,8 @@ class Agent:
         self.toolbox = ToolBox(cfg.agent.workdir, cfg.agent.output_dir, ui, cfg.agent.python_tool,
                                cfg.agent.max_tool_output_chars, llm_cfg=cfg.llm, interactive=interactive,
                                diagram_style=cfg.agent.diagram_style,
-                               save_notebooks=getattr(cfg.agent, "save_notebooks", True))
+                               save_notebooks=getattr(cfg.agent, "save_notebooks", True),
+                               hpc=getattr(cfg, "hpc", None))
         self.turns: List = []
         self.session_start_turn = 0         # reports cover the turns since the last reset
         self.current_turn = None

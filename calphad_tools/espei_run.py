@@ -141,11 +141,35 @@ def _restart_path(tb, rt: Optional[str]) -> Optional[str]:
     return rt
 
 
-def mcmc_settings(tb, args: Dict[str, Any], run_dir: Optional[Path] = None
+def default_cores(tb, n_chains: Optional[int] = None) -> Tuple[int, str]:
+    """(cores, why) for a direct (local) MCMC run: [hpc] local_cores (default half of the available cores, at
+    least 1), never more than the number of chains (emcee evaluates the chains in parallel)."""
+    from .hpc import available_cores, config_of, local_cores
+    setting = config_of(tb).local_cores
+    n_avail = available_cores()
+    c = local_cores(setting, n_avail)
+    why = f"local_cores={setting!r} of {n_avail} available"
+    if n_chains and c > n_chains:
+        c, why = int(n_chains), why + f", capped at {n_chains} chains"
+    return max(1, c), why
+
+
+def _n_chains(run: espei_flux.Run, n_sym: int) -> Optional[int]:
+    if run.restart_trace:
+        try:
+            return int(np.load(run.restart_trace, mmap_mode="r").shape[0])
+        except Exception:  # noqa: BLE001
+            return None
+    n = len(run.symbols) if run.symbols else n_sym
+    return int(run.chains_per_parameter) * n if n else None
+
+
+def mcmc_settings(tb, args: Dict[str, Any], run_dir: Optional[Path] = None, n_chains: Optional[int] = None
                   ) -> Tuple[Path, Dict[str, Any], espei_flux.Run, Dict[str, Any]]:
     """(run dir, ESPEI mcmc settings, Run, info) for espei_run_mcmc arguments (no side effects).  Defaults
     (phase_models, datasets, input_db = dft.tdb) come from the directory of the run *name*; ``run_dir`` is where
-    it will actually run (see :func:`mcmc_run_dir`).  ``info``: resolved input_db."""
+    it will actually run (see :func:`mcmc_run_dir`).  ``info``: resolved input_db, cores and where they came from
+    (``cores`` argument, else :func:`default_cores` - half of the available cores, capped at ``n_chains``)."""
     name = _safe_name(args.get("name") or "espei")
     d0 = runs_root(tb) / name
     prev = _previous_system(d0)
@@ -166,7 +190,10 @@ def mcmc_settings(tb, args: Dict[str, Any], run_dir: Optional[Path] = None
     iters = int(args.get("iterations") or 50)
     save = args.get("save_interval")
     save = int(save) if save else max(1, min(20, iters // 20))
-    cores = int(args.get("cores") or 1)
+    if args.get("cores"):
+        cores, cores_why = int(args["cores"]), "cores argument"
+    else:
+        cores, cores_why = default_cores(tb, n_chains)
     run = espei_flux.Run(name=d.name, phase_models=tb.p(pm), datasets=tb.p(ds), input_db=idb,
                          generate_parameters=False, iterations=iters, save_interval=save,
                          chains_per_parameter=int(args.get("chains_per_parameter") or 2),
@@ -177,7 +204,7 @@ def mcmc_settings(tb, args: Dict[str, Any], run_dir: Optional[Path] = None
     same_dir = Path(idb).resolve().parent == d.resolve()
     settings = espei_flux.espei_yaml(run, Path(idb).name if same_dir else idb, "dask" if cores > 1 else None,
                                      cores if cores > 1 else None, "mcmc", Path(tb.workdir))
-    return d, settings, run, {"input_db": idb, "requested_dir": d0}
+    return d, settings, run, {"input_db": idb, "requested_dir": d0, "cores": cores, "cores_why": cores_why}
 
 
 def flux_entry(run: espei_flux.Run, generate: bool, rel: Callable[[str], str] = str) -> Dict[str, Any]:
@@ -599,7 +626,8 @@ def mcmc_status_hook(tb, jobdir: Path, spec: Dict[str, Any], status: Dict[str, A
     if recs:
         m = [r["metrics"] for r in recs]
         n = m[-1]["iteration"]
-        L.append(f"ESPEI: {n} iterations sampled ({m[-1].get('s_per_iteration')} s/iteration); lnprob mean "
+        spi = f" ({m[-1]['s_per_iteration']} s/iteration)" if m[-1].get("s_per_iteration") else ""
+        L.append(f"ESPEI: {n} iterations sampled{spi}; lnprob mean "
                  f"{m[0].get('mean_lnprob')} -> {m[-1].get('mean_lnprob')}, max {m[0].get('max_lnprob')} -> "
                  f"{m[-1].get('max_lnprob')}")
         if n >= 10:
@@ -620,6 +648,219 @@ def mcmc_status_hook(tb, jobdir: Path, spec: Dict[str, Any], status: Dict[str, A
     except Exception as e:  # noqa: BLE001
         L.append(f"(plot failed: {e})")
     return "\n".join(L), imgs
+
+
+# ---------------------------------------------------------------------------
+# optimize_system: generation -> MCMC, batched on Flux or run here
+# ---------------------------------------------------------------------------
+SUBMISSION_FILE = "hpc_submission.json"      # backend, Flux ids, commands, scripts, resources (show_code reads it)
+_ITER_RE = re.compile(r"\((\d+) of (\d+)\)")
+
+
+def optimize_job(run_dir: str, display_dir: str = "", generate: bool = True, cap_cores: bool = True,
+                 next_hint: str = "", progress: Callable = None) -> Dict[str, Any]:
+    """Job target (local backend): parameter generation (espei_generate.yaml -> dft.tdb), then MCMC
+    (espei_mcmc.yaml).  ``cap_cores``: after generation, lower the dask workers to the number of chains."""
+    d = Path(run_dir)
+    head: List[str] = []
+    files: List[str] = []
+    if generate:
+        progress("ESPEI parameter generation", 0.0)
+        r = run_generate(str(d))
+        n_sym = r["summary"]["n_symbols"]
+        head.append(f"parameter generation: {n_sym} fitted symbols in {r['summary']['seconds']} s -> "
+                    f"{display_dir or d}/dft.tdb")
+        files += r["files"]
+        progress(f"parameter generation done: {n_sym} symbols", 0.0, n_symbols=n_sym)
+        if cap_cores:
+            y = yaml.safe_load((d / "espei_mcmc.yaml").read_text())
+            m = y["mcmc"]
+            n_chains = int(m.get("chains_per_parameter") or 2) * (len(m.get("symbols") or []) or n_sym)
+            if m.get("cores") and n_chains and int(m["cores"]) > n_chains:
+                m["cores"] = n_chains
+                if n_chains <= 1:
+                    m["scheduler"] = None
+                    m.pop("cores", None)
+                (d / "espei_mcmc.yaml").write_text(yaml.safe_dump(y, sort_keys=False))
+                head.append(f"dask workers lowered to the {n_chains} chains")
+    res = mcmc_job(str(d), display_dir, progress=progress)
+    res["text"] = "\n".join(head + [res["text"]] + ([f"then: {next_hint}"] if next_hint and
+                                                      (d / "mcmc.tdb").exists() else []))
+    res["files"] = files + [f for f in res.get("files", []) if f not in files]
+    return res
+
+
+def _log_iteration(log: Path) -> Tuple[int, int]:
+    """(iterations done, total) from ESPEI's '(i of N)' progress lines (last 64 kB of mcmc.log)."""
+    try:
+        with open(log, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 65536))
+            txt = f.read().decode(errors="replace")
+    except OSError:
+        return 0, 0
+    hits = _ITER_RE.findall(txt)
+    return (int(hits[-1][0]), int(hits[-1][1])) if hits else (0, 0)
+
+
+def _lnprob_at(d: Path, it: int) -> Dict[str, Any]:
+    p = d / "lnprob.npy"
+    if not p.exists() or it < 1:
+        return {}
+    try:
+        lp = np.load(p)
+        col = lp[:, it - 1] if lp.ndim == 2 and lp.shape[1] >= it else None
+        if col is None or not np.any(col):              # not saved yet (lnprob.npy is written every save_interval)
+            return {}
+        return _lnprob_stats(np.asarray(col))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def flux_hook(tb, jobdir: Path, spec: Dict[str, Any], st: Dict[str, Any], final: bool) -> Optional[Dict[str, Any]]:
+    """jobs flux_hook for optimize_system on Flux: progress from the run directory while the batch jobs run
+    (generation: running/done; MCMC: iteration i/N from mcmc.log, lnprob from lnprob.npy) and, at the end, the
+    result text and files."""
+    d = Path(spec["kwargs"]["run_dir"])
+    per = st.get("flux") or {}
+    gen = (per.get("generate") or {}).get("status")
+    mc = (per.get("mcmc") or {}).get("status")
+    it, n = _log_iteration(d / "mcmc.log")
+    if mc in ("RUN", "CLEANUP") or (final and it):
+        if it and n:
+            st["frac"] = it / n
+            stats = _lnprob_at(d, it)
+            st["message"] = f"MCMC iteration {it}/{n} (mcmc.log)" + (
+                f"  mean lnprob {stats.get('mean_lnprob')}  max {stats.get('max_lnprob')}" if stats else "")
+            st.setdefault("metrics", {}).update({"iteration": it, "iterations": n, **stats})
+            if it != (st.get("_last_iteration") or 0):
+                st["_last_iteration"] = it
+                rec = {"t": round(time.time(), 3), "msg": st["message"], "frac": st["frac"],
+                       "metrics": {"iteration": it, **stats}}
+                with open(jobdir / "progress.jsonl", "a") as f:
+                    f.write(json.dumps(rec) + "\n")
+                st["n_progress"] = int(st.get("n_progress", 0)) + 1
+                st["last_progress"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        elif not final:
+            st["message"] = f"MCMC job {(per.get('mcmc') or {}).get('id')} running: setting up ESPEI / dask"
+    elif gen in ("RUN", "CLEANUP"):
+        st["message"] = f"parameter generation running (job {(per.get('generate') or {}).get('id')})"
+        st["frac"] = 0.0
+    elif gen == "COMPLETED" and mc in ("DEPEND", "PRIORITY", "SCHED"):
+        st["message"] = f"generation done (dft.tdb); MCMC job {(per.get('mcmc') or {}).get('id')} waiting: {mc}"
+    if not final:
+        return None
+    names = ["dft.tdb", "generate_summary.json", "trace.npy", "lnprob.npy", "mcmc.tdb", "generate.log", "mcmc.log"]
+    files = [str(d / x) for x in names if (d / x).exists()]
+    if (d / "dft.tdb").exists() and not (d / "generate_summary.json").exists():
+        try:                                          # the same per-phase summary the local tool writes
+            pm = _load_json(Path(spec["kwargs"].get("phase_models") or "")) or {}
+            summ = parameter_summary(str(d / "dft.tdb"), list(pm.get("phases", {})))
+            (d / "generate_summary.json").write_text(json.dumps(summ, indent=1))
+            files.insert(1, str(d / "generate_summary.json"))
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        png = plot_lnprob_progress(d, None)
+        if png:
+            files.append(png)
+    except Exception:  # noqa: BLE001
+        pass
+    dd = tb.rel(str(d))
+    state = st.get("state")
+    L = [f"ESPEI on Flux {'finished' if state == 'done' else state}: "
+         + ", ".join(f"{k} {v.get('id')} {v.get('status')}" for k, v in per.items())]
+    if it:
+        L.append(f"MCMC: {it}/{n} iterations (mcmc.log)")
+    L.append(f"run dir {dd}: " + (", ".join(Path(f).name for f in files) or "no outputs"))
+    if (d / "mcmc.tdb").exists():
+        L.append(f"next: analyze_mcmc trace={dd}; " + _plot_hint(tb, d, spec["kwargs"].get("phase_models"),
+                                                                  spec["kwargs"].get("datasets"))
+                 + " (the optimised database against the data)")
+    return {"text": "\n".join(L), "files": files, "iterations_done": it}
+
+
+def _plot_hint(tb, d: Path, phase_models: Optional[str], datasets: Optional[str]) -> str:
+    pm = _load_json(Path(phase_models)) if phase_models else None
+    els = sorted(c for c in (pm or {}).get("components", []) if c.upper() != "VA")
+    return (f"plot_diagram_with_data elements={json.dumps(els)} datasets_dir={tb.rel(str(datasets or ''))} "
+            f"tdb={tb.rel(str(d / 'mcmc.tdb'))}")
+
+
+def _submit_script(steps: List[Dict[str, Any]]) -> str:
+    """submit.sh: the exact flux batch commands that were run (MCMC chained on the generation job's id)."""
+    import shlex
+    L = ["#!/bin/bash", "# The flux batch commands optimize_system ran (resources: #flux: lines in the scripts).",
+         "set -euo pipefail", 'cd "$(dirname "$0")"']
+    for s_ in steps:
+        cmd = [("--dependency=afterok:$gen" if c.startswith("--dependency=afterok:") else c) for c in s_["command"]]
+        line = " ".join(shlex.quote(c) if not c.startswith("--dependency=afterok:$") else f'"{c}"' for c in cmd)
+        var = "gen" if s_["step"] == "generate" else "mcmc"
+        L += [f"{var}=$({line})", f'echo "{s_["step"]}: ${var}"']
+    return "\n".join(L) + "\n"
+
+
+def submit_flux_run(tb, run: espei_flux.Run, d: Path, info: Dict[str, Any], *, nodes=None, cores_per_node=None,
+                    time_limit=None, queue=None, bank=None, label: str = "", extra_kwargs=None) -> Dict[str, Any]:
+    """Write the per-job Flux layout into ``d`` and submit it (generation -> MCMC with afterok).  Returns
+    {job_id, steps, resources, files} or raises hpc.FluxSubmitError (already submitted steps are cancelled)."""
+    from . import hpc, jobs
+    cfg = hpc.config_of(tb)
+    n_nodes, cpn, src = hpc.batch_resources(cfg, info, nodes, cores_per_node)
+    fs = espei_flux.FluxSettings(nodes=n_nodes, cores_per_node=cpn, time_limit=time_limit or cfg.time_limit,
+                                 gen_time_limit=cfg.gen_time_limit, queue=None, bank=None,
+                                 setup=list(cfg.setup) if cfg.setup else espei_flux._default_setup(),
+                                 mode="per-job", bank_flag=info.get("bank_flag") or "--bank")
+    w = espei_flux.write_per_job_run(run, fs, str(d), base_dir=str(tb.workdir))
+    if w["problems"]:
+        raise ValueError("the generated ESPEI/Flux files have problems (nothing submitted): "
+                         + json.dumps(w["problems"])[:1500])
+    nested = bool(info.get("instance_level"))       # inside an allocation: no queues / banks there
+    opts = hpc.batch_options(cfg, info.get("bank_flag") or "--bank", bank=bank, queue=queue, nested=nested)
+    steps: List[Dict[str, Any]] = []
+    try:
+        dep = None
+        for step in ("generate", "mcmc"):
+            if step not in w["scripts"]:
+                continue
+            r = hpc.flux_batch(w["scripts"][step], str(d), opts, dependency=dep)
+            steps.append({"step": step, "id": r["id"], "script": w["scripts"][step], "command": r["command"],
+                          "output_prefix": w["output_prefix"][step]})
+            dep = r["id"]
+    except hpc.FluxSubmitError:
+        if steps:
+            hpc.flux_cancel([s_["id"] for s_ in steps])
+        raise
+    (d / "submit.sh").write_text(_submit_script(steps))
+    resources = {"nodes": n_nodes, "cores_per_node": cpn, "cores_per_node_from": src,
+                 "dask_workers": n_nodes * cpn, "time_limit": fs.time_limit,
+                 "gen_time_limit": fs.gen_time_limit if run.generate_parameters else None,
+                 "queue": queue if queue is not None else ("" if nested else cfg.queue),
+                 "bank": bank if bank is not None else ("" if nested else cfg.bank),
+                 "inside_allocation": nested,
+                 "extra_flux_args": list(cfg.extra_flux_args or []), "setup": fs.setup}
+    record = {"backend": "flux", "submitted": time.strftime("%Y-%m-%dT%H:%M:%S"), "steps": steps,
+              "resources": resources, "scripts": [Path(f).name for f in w["files"]] + ["submit.sh"],
+              "detected": {k: info.get(k) for k in ("reason", "version", "instance", "instance_level", "nodes",
+                                                    "cores_per_node", "queues", "bank_flag")}}
+    jid = jobs.submit_flux(tb, label or f"ESPEI optimise {d.name} (Flux)", steps, run_dir=str(d),
+                           kwargs={"display_dir": tb.rel(str(d)), **(extra_kwargs or {})},
+                           flux={k: v for k, v in record.items() if k != "steps"},
+                           status_hook="calphad_tools.espei_run:mcmc_status_hook",
+                           flux_hook="calphad_tools.espei_run:flux_hook")
+    record["job_id"] = jid
+    (d / SUBMISSION_FILE).write_text(json.dumps(record, indent=1, default=str))
+    _record_provenance(tb, record)
+    return {**record, "files": w["files"] + [str(d / "submit.sh"), str(d / SUBMISSION_FILE)]}
+
+
+def _record_provenance(tb, record: Dict[str, Any]) -> None:
+    prov = getattr(tb, "provenance", None)
+    if prov is not None and hasattr(prov, "record_event"):
+        try:
+            prov.record_event("hpc_submission", record, tool="optimize_system")
+        except Exception:  # noqa: BLE001 - provenance must never break a submission
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -693,7 +934,8 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
             {**RUN, "input_db": S, "iterations": {**I, "description": "default 50"},
              "chains_per_parameter": {**I, "description": "even, default 2"},
              "chain_std_deviation": {**N, "description": "default 0.1"},
-             "save_interval": I, "cores": {**I, "description": ">1: dask local cluster (default serial)"},
+             "save_interval": I, "cores": {**I, "description": "dask workers; 1 = serial (default: [hpc] local_cores, "
+                                                             "half of this machine's cores, at most 1 per chain)"},
              "restart_trace": {**S, "description": "trace.npy (or run dir) to continue from"},
              "deterministic": {**B, "description": "ESPEI's fixed seed (default true)"},
              "symbols": {**STRS, "description": "fit only these VV symbols"},
@@ -716,8 +958,11 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
         chk = check_inputs(run.phase_models, run.datasets, settings, run_dir=str(d))
         if not chk["ok"]:
             return _check_text(chk, tb.rel) + "\nnot started.", []
-        (d / "espei_mcmc.yaml").write_text(yaml.safe_dump(settings, sort_keys=False))
         n_sym = len(symbols) if symbols else chk["dataset_counts"].get("fitted symbols in input_db", 0)
+        if not cores:                                  # default: half the cores, at most one per chain
+            d, settings, run, info = mcmc_settings(tb, args, d, n_chains=_n_chains(run, n_sym))
+        cores = info["cores"]
+        (d / "espei_mcmc.yaml").write_text(yaml.safe_dump(settings, sort_keys=False))
         jid = jobs.submit(tb, f"ESPEI MCMC {d.name}", "calphad_tools.espei_run:mcmc_job",
                           {"run_dir": str(d), "display_dir": tb.rel(str(d))},
                           status_hook="calphad_tools.espei_run:mcmc_status_hook")
@@ -725,7 +970,7 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
         L = [f"background job {jid}: ESPEI MCMC {run.iterations} iterations, "
              + (f"restart from {tb.rel(run.restart_trace)}" if run.restart_trace else
                 f"{run.chains_per_parameter * n_sym} chains ({run.chains_per_parameter} x {n_sym} parameters)")
-             + (f", dask {cores} cores" if cores and cores > 1 else ", serial"),
+             + (f", dask {cores} cores" if cores and cores > 1 else ", serial") + f" ({info['cores_why']})",
              f"run dir {rd}" + (f" (new: {tb.rel(str(info['requested_dir']))} already has a trace)"
                                 if renamed else "") + f"; input TDB {tb.rel(info['input_db'])}",
              f"outputs there: trace.npy, lnprob.npy (every {run.save_interval} iterations), mcmc.tdb, mcmc.log",
@@ -735,6 +980,145 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
         if chk["warnings"]:
             L.append("warnings:\n" + "\n".join(f"  - {w}" for w in chk["warnings"][:10]))
         return "\n".join(L), []
+
+    @tb.add("optimize_system",
+            "ESPEI optimisation (generation -> MCMC): Flux batch jobs if detected, else a local job. "
+            "Inputs: prepared datasets (dir) + phase models. Flux: generation -> MCMC chained (afterok), [hpc] "
+            "bank/queue/nodes/time_limit from calphad_agent.toml, 1 node with all its cores by default. Local: a "
+            "background job with half the cores. Then wait_job until='done' and continue (analyze_mcmc, "
+            "plot_diagram_with_data with the run's mcmc.tdb).",
+            {**RUN, "input_db": {**S, "description": "generate=true: TDB whose parameters generation keeps (e.g. "
+                                                     "unaries); generate=false: MCMC starting TDB (VV symbols)"},
+             "generate": {**B, "description": "run parameter generation first (default true)"},
+             "iterations": {**I, "description": "MCMC iterations (default 1000)"},
+             "chains_per_parameter": {**I, "description": "even, default 2"}, "save_interval": I,
+             "symbols": {**STRS, "description": "fit only these VV symbols"},
+             "prior": {"type": "object"}, "data_weights": {"type": "object", "description": "e.g. {\"ZPF\": 20}"},
+             "ref_state": {"type": "string", "enum": ["SGTE91", "SR2016"]},
+             "aicc_penalty_factor": {"type": "object"},
+             "backend": {"type": "string", "enum": ["auto", "flux", "local"],
+                         "description": "auto (default): Flux if detected / [hpc] scheduler"},
+             "cores": {**I, "description": "local: dask workers (default [hpc] local_cores = half the cores)"},
+             "nodes": {**I, "description": "Flux: nodes for the MCMC job (default [hpc] nodes = 1)"},
+             "cores_per_node": {**I, "description": "Flux: default from flux resource info"},
+             "time_limit": {**S, "description": "Flux MCMC job, e.g. 8h (default [hpc] time_limit)"},
+             "queue": S, "bank": S, "overwrite": B},
+            ["name"])
+    def optimize_system(name, phase_models=None, datasets=None, input_db=None, generate=True, iterations=1000,
+                        chains_per_parameter=2, save_interval=None, symbols=None, prior=None, data_weights=None,
+                        ref_state="SGTE91", aicc_penalty_factor=None, backend="auto", cores=None, nodes=None,
+                        cores_per_node=None, time_limit=None, queue=None, bank=None, overwrite=False):
+        from . import hpc
+        generate = True if generate is None else bool(generate)
+        nm = _safe_name(name)
+        prev = _previous_system(runs_root(tb) / nm)
+        pm = phase_models or prev.get("phase_models")
+        ds = datasets or prev.get("datasets")
+        if not pm or not ds:
+            raise ValueError("give phase_models (JSON, make_phase_models) and datasets (directory of ESPEI datasets)")
+        if not generate and not input_db:
+            raise ValueError("generate=false needs input_db (the TDB with VV#### symbols to start the MCMC from)")
+        d, renamed = mcmc_run_dir(tb, {"name": nm, "overwrite": overwrite})
+        iters = int(iterations or 1000)
+        run = espei_flux.Run(name=d.name, phase_models=tb.p(pm), datasets=tb.p(ds),
+                             input_db=tb._find_tdb(input_db) if input_db else None, generate_parameters=generate,
+                             ref_state=ref_state or "SGTE91", aicc_penalty_factor=aicc_penalty_factor or None,
+                             iterations=iters, save_interval=int(save_interval or max(1, min(20, iters // 20))),
+                             chains_per_parameter=int(chains_per_parameter or 2), prior=prior or None,
+                             data_weights=data_weights or None, symbols=symbols or None, verbosity=2)
+        base = Path(tb.workdir)
+        gen_settings = espei_flux.espei_yaml(run, None, None, None, "generate", base) if generate else None
+        mcmc_db = "dft.tdb" if generate else run.input_db
+        probe = espei_flux.espei_yaml(run, mcmc_db, None, None, "mcmc", base)
+        if generate:
+            chk = check_inputs(run.phase_models, run.datasets, gen_settings)
+            err = espei_flux.validate_espei_yaml(probe)
+            if err:
+                chk["problems"].append(f"MCMC YAML rejected by ESPEI's schema: {err[:400]}")
+                chk["ok"] = False
+        else:
+            chk = check_inputs(run.phase_models, run.datasets, probe, run_dir=str(d))
+        if not chk["ok"]:
+            return _check_text(chk, tb.rel) + "\nnot started.", []
+        n_sym = chk["dataset_counts"].get("fitted symbols in input_db", 0)
+        warn = ("\nwarnings:\n" + "\n".join(f"  - {w}" for w in chk["warnings"][:10])) if chk["warnings"] else ""
+        rd = tb.rel(str(d))
+        where = f"run dir {rd}" + (f" (new: {nm} already has a trace)" if renamed else "")
+        chains = (f"{run.chains_per_parameter} chains per fitted parameter" if generate else
+                  f"{_n_chains(run, n_sym)} chains ({run.chains_per_parameter} x {len(symbols) if symbols else n_sym})")
+        cfg = hpc.config_of(tb)
+        kind, info = hpc.resolve_backend(cfg, backend)
+        d.mkdir(parents=True, exist_ok=True)
+        note = ""
+        if kind == "flux":
+            try:
+                sub = submit_flux_run(tb, run, d, info, nodes=nodes, cores_per_node=cores_per_node,
+                                      time_limit=time_limit, queue=queue, bank=bank,
+                                      extra_kwargs={"phase_models": run.phase_models, "datasets": run.datasets})
+            except hpc.FluxSubmitError as e:
+                import shlex
+                msg = (f"FLUX SUBMISSION FAILED - nothing is running.\n{e}\ncommand: {shlex.join(e.command)} "
+                       f"(in {rd})\nhow to fix:\n{hpc.submit_hint(e.stderr)}")
+                ans = ""
+                if cfg.fallback_to_local:
+                    note = msg + "\n[hpc] fallback_to_local = true: running it locally instead.\n"
+                elif getattr(tb, "interactive", False) and getattr(tb, "ui", None) is not None:
+                    ans = str(tb.ui.ask(msg + "\nRun the optimisation locally on this machine instead?",
+                                        ["run locally", "don't run (fix the Flux settings first)"]) or "")
+                    if ans.strip().lower().startswith("run locally"):
+                        note = msg + "\nrunning it locally instead, as the user chose.\n"
+                if not note:
+                    return (msg + "\nNot run locally (no silent fallback): fix [hpc] bank / queue / time_limit in "
+                            "calphad_agent.toml (or pass bank= / queue=) and call optimize_system again, or call it "
+                            "with backend='local' if the user wants it run on this machine."), []
+            else:
+                res = sub["resources"]
+                ids = [s_["id"] for s_ in sub["steps"]]
+                L = [f"Flux job {sub['job_id']}: ESPEI optimisation of {d.name} submitted with flux batch ("
+                     + " -> ".join(f"{s_['step']} {s_['id']}" for s_ in sub["steps"]) + ")",
+                     f"backend: flux ({info.get('reason')})",
+                     f"resources: MCMC {res['nodes']} node(s) x {res['cores_per_node']} cores "
+                     f"({res['cores_per_node_from']}), {res['dask_workers']} dask workers, -t {res['time_limit']}"
+                     + (f"; generation 1 core, -t {res['gen_time_limit']}" if generate else "")
+                     + f"; queue {res['queue'] or '(site default)'}; bank {res['bank'] or '(none)'}"
+                     + (" (inside a Flux allocation: its own resources, [hpc] queue/bank not used)"
+                        if res.get("inside_allocation") else ""),
+                     "commands: " + " ; ".join(" ".join(s_["command"]) for s_ in sub["steps"]),
+                     f"{where} (espei_generate.yaml, espei_mcmc.yaml, gen.flux, mcmc.flux, submit.sh); "
+                     f"MCMC {iters} iterations, {chains}",
+                     f"wait: wait_job job_id={sub['job_id']} until='done', then analyze_mcmc trace={rd}; "
+                     + _plot_hint(tb, d, run.phase_models, run.datasets),
+                     f"from a shell: flux jobs {' '.join(ids)}"]
+                return "\n".join(L) + warn, []
+        # ------------------------------------------------ local (direct) run
+        if gen_settings is not None:
+            (d / "espei_generate.yaml").write_text(yaml.safe_dump(gen_settings, sort_keys=False))
+        if cores:
+            n_cores, why = int(cores), "cores argument"
+        else:
+            n_cores, why = default_cores(tb, None if generate else _n_chains(run, n_sym))
+        mdb = mcmc_db if generate or Path(mcmc_db).resolve().parent != d.resolve() else Path(mcmc_db).name
+        mset = espei_flux.espei_yaml(run, mdb, "dask" if n_cores > 1 else None, n_cores if n_cores > 1 else None,
+                                     "mcmc", base)
+        (d / "espei_mcmc.yaml").write_text(yaml.safe_dump(mset, sort_keys=False))
+        jid = jobs.submit(tb, f"ESPEI optimise {d.name}", "calphad_tools.espei_run:optimize_job",
+                          {"run_dir": str(d), "display_dir": rd, "generate": generate, "cap_cores": not cores,
+                           "next_hint": _plot_hint(tb, d, run.phase_models, run.datasets)},
+                          status_hook="calphad_tools.espei_run:mcmc_status_hook")
+        from .hpc import available_cores
+        record = {"backend": "local", "submitted": time.strftime("%Y-%m-%dT%H:%M:%S"), "job_id": jid,
+                  "resources": {"cores": n_cores, "cores_from": why, "available_cores": available_cores()},
+                  "reason": info.get("reason"), "fallback_from_flux": bool(note)}
+        (d / SUBMISSION_FILE).write_text(json.dumps(record, indent=1, default=str))
+        _record_provenance(tb, record)
+        L = [f"background job {jid}: ESPEI optimisation of {d.name} on this machine ("
+             + ("parameter generation -> " if generate else "") + f"MCMC {iters} iterations, {chains})",
+             f"backend: local ({info.get('reason')}); "
+             + (f"dask {n_cores} cores" if n_cores > 1 else "serial") + f" ({why})",
+             f"{where}" + (f"; input TDB {tb.rel(run.input_db)}" if run.input_db else ""),
+             f"wait: wait_job job_id={jid} until='done', then analyze_mcmc trace={rd}; "
+             + _plot_hint(tb, d, run.phase_models, run.datasets)]
+        return note + "\n".join(L) + warn, []
 
     @tb.add("espei_validate_input",
             "Check ESPEI inputs before running: YAML against ESPEI's schema, phase_models, every dataset (ESPEI "

@@ -1,8 +1,16 @@
 """calphad-agent --setup: answers -> a valid calphad_agent.toml (comments kept); no key ever written by default."""
 import os
 
+import pytest
+
 from calphad_tools.agent.config import load_config
 from calphad_tools.agent.setup_wizard import run
+
+
+@pytest.fixture(autouse=True)
+def _no_flux(monkeypatch):
+    """The answers below assume no Flux bank/queue questions (asked only when Flux is detected; see test_hpc)."""
+    monkeypatch.setattr("calphad_tools.hpc.detect", lambda *a, **k: {"scheduler": "local", "reason": "test"})
 
 
 def test_interactive_answers(tmp_path, monkeypatch):

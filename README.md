@@ -14,7 +14,7 @@ permissions of the process you started, and inherits its sandbox. The model only
 | 3 | Every ternary isothermal section of a quaternary+ TDB → PowerPoint | `ternaries` | `plot_all_ternaries` |
 | 4 | Merge 2+ TDBs, auto-resolving obvious differences and asking about the rest | `merge` | `merge_tdbs` |
 | 5 | Experimental data (POP / DATAPLOT .exp / CSV / paper PDF) → ESPEI ZPF JSON | `exp2zpf`, `pdftext` | `convert_*`, `read_document`, `view_pdf_page`, `write_zpf_dataset` |
-| 6 | ESPEI inputs + Flux batch scripts (multi-node dask MCMC, or many runs in one allocation) | `espei-flux`, `phase-models` | `generate_espei_flux_batch`, `make_phase_models`, `espei_generate_parameters`, `espei_run_mcmc` |
+| 6 | ESPEI optimisation, batched on Flux when detected (else run here), + Flux batch scripts | `espei-flux`, `phase-models` | `optimize_system`, `generate_espei_flux_batch`, `make_phase_models`, `espei_generate_parameters`, `espei_run_mcmc` |
 | 7 | Natural-language pycalphad chat (terminal or browser) | `calphad-agent` | equilibria, isotherms, isopleths, step plots, G–x curves, `run_python` |
 
 ## Install (any computer)
@@ -60,7 +60,7 @@ When the browser opens:
 
 `--no-browser` (or `CALPHAD_NO_BROWSER=1`) turns the automatic opening off. If port 8765 is taken by another program, the next free port is used, and the terminal says which.
 
-`pycalphad-agent-venv/bin/calphad-agent --check` tests the connection. `--setup` asks the questions again.
+`pycalphad-agent-venv/bin/calphad-agent --check` tests the connection and shows whether ESPEI runs go to Flux or run here. `--setup` asks the questions again.
 
 **On a cluster (Linux with environment modules):**
 
@@ -68,6 +68,7 @@ When the browser opens:
   * `./install.sh --which-python` shows what it would pick.
   * If the Python module needs a compiler module loaded first (hierarchical Lmod), load both yourself and run the installer again, or point it at a Python: `PYTHON=... ./install.sh`.
 * **Environment file:** the installer writes `pycalphad-agent-env.sh`, which loads that module and activates the environment. `start-agent.sh` sources it. The ESPEI/Flux batch scripts the agent generates also start with it, so jobs on compute nodes use the same Python.
+* **Flux:** after building the environment the installer checks for a Flux scheduler and prints what it found. If there is one, the setup also asks for your Flux bank and queue. See [Running ESPEI on a Flux cluster](#running-espei-on-a-flux-cluster).
 * **Web UI:** it listens only on the machine it runs on, behind its secret link. Either:
   * start it from an SSH session with X forwarding (the cluster's Firefox opens in your VNC or X window);
   * forward the port (`ssh -L 8765:127.0.0.1:8765 you@cluster`; the agent prints the exact command) and open the printed link locally;
@@ -619,6 +620,44 @@ On the synthetic benchmarks in `tests/test_digitize_zpf.py`:
   * `provenance` shows how a file was made.
   * The terminal commands `/log` and `/export [script|notebook|both] [steps]` do the same.
 
+### Running ESPEI on a Flux cluster
+
+Ask "optimise Cr-Ni with the data in X, Y and Z" and the agent turns the data into ESPEI datasets, makes the phase models, and calls `optimize_system` (parameter generation, then MCMC). Where that runs is decided automatically:
+
+* **Detection.** Flux is used when the `flux` command is on the PATH **and** a Flux instance answers: inside an allocation (`FLUX_URI` set) `flux getattr size`, otherwise the system instance with `flux uptime`. The probes have a short timeout and never submit anything. They also read nodes, cores per node and GPUs (`flux resource info`, else `flux resource list`), the queues (`flux queue list`), and whether `flux batch` has `--bank`. Detection runs once per agent process when `[hpc] scheduler = "auto"`; the installer and `calphad-agent --check` print it, and `python -m calphad_tools.hpc` shows it at any time.
+* **Batched (Flux found).** The run directory `<output>/espei_runs/<name>/` gets the ESPEI YAMLs and two batch scripts (the `per-job` layout below). They are submitted with
+
+  ```
+  flux batch -q <QUEUE> --bank=<BANK> [extra_flux_args] gen.flux
+  flux batch -q <QUEUE> --bank=<BANK> [extra_flux_args] --dependency=afterok:<GEN_ID> mcmc.flux
+  ```
+
+  The node count, cores and time limit are `#flux:` lines in the scripts: generation `-N 1 -n 1 -t <gen_time_limit>`; MCMC `-N <nodes> --exclusive -t <time_limit>` with one dask worker per core. `submit.sh` in the run directory holds the exact commands. Older flux-core without `--bank` gets `--setattr=system.bank=<BANK>` instead (detected).
+* **Direct (no Flux).** A background job on this machine: generation, then MCMC on a dask cluster.
+* **Waiting.** The agent calls `wait_job ... until='done'` and keeps waiting with one status line (MCMC iteration from `mcmc.log`, lnprob) until the jobs finish. Ctrl-C in the terminal, or **stop waiting** in the web UI, ends the wait but not the job; `[hpc] wait_max_hours` (24) is the limit. When the run is done the agent continues: `analyze_mcmc`, and `plot_diagram_with_data` with the run's `mcmc.tdb` against the data.
+* **Failures.** A failed Flux job reports its Flux status, exit code and the last lines of its batch output file (`espei-mcmc-<name>.<id>.out`). If `flux batch` refuses the job (missing bank, wrong queue, time limit), nothing runs: the agent shows Flux's message and which `[hpc]` setting to change. It never switches to a local run silently: it asks you, or follows `fallback_to_local = true`.
+* **From a shell.** `flux jobs` lists the jobs (the agent prints their ids); `flux jobs -a` includes finished ones, and `flux cancel <id>` stops one. The agent's `list_jobs`, `job_status` and `stop_job` (which runs `flux cancel`) do the same. Job records live in `<output>/jobs/<id>/`, so they survive an agent restart.
+* **Provenance.** The job record, `hpc_submission.json` in the run directory and the session log hold the backend, the Flux job ids, the scripts, the commands and the resources. `show_code` on the outputs of a Flux run writes the YAMLs and batch scripts and resubmits them with the same `flux batch` commands.
+
+The `[hpc]` table of `calphad_agent.toml`:
+
+```toml
+[hpc]
+scheduler = "auto"         # auto | flux | local   (or CALPHAD_HPC_SCHEDULER)
+bank = ""                  # flux batch --bank=BANK (your allocation account)
+queue = ""                 # flux batch -q QUEUE
+nodes = 1                  # batched runs: nodes per ESPEI MCMC job
+cores_per_node = 0         # 0 = from flux resource info
+time_limit = "4h"          # flux batch -t, MCMC job
+gen_time_limit = "1h"      # flux batch -t, 1-core generation job
+local_cores = "half"       # direct runs: "half" of the available cores, "all", or a number
+extra_flux_args = []       # added to every flux batch command
+fallback_to_local = false  # Flux found but submission fails: run here instead (and say so)
+wait_max_hours = 24        # wait_job until='done' stops waiting after this long
+```
+
+**Run-size defaults.** Direct runs use half of the available cores (CPU affinity, at least 1, never more dask workers than MCMC chains). Batched runs use 1 node per ESPEI MCMC job with all of its cores. `optimize_system` takes `cores`, `nodes`, `cores_per_node`, `time_limit`, `queue`, `bank` and `backend` (`auto`, `flux` or `local`) to override them. `optimize_parameters` (the gradient optimiser) runs on one core, so `local_cores` does not apply to it.
+
 ### Combining databases
 
 Ask "combine these databases" and the agent calls `combine_databases` with two or more TDBs. It runs in four stages.
@@ -905,7 +944,7 @@ The generated YAML is validated against ESPEI's schema, and the scripts are chec
 
 * `espei_validate_input` checks the YAML against ESPEI's schema, the phase models, every dataset, and whether the datasets match the phase models. It also flags datasets hit by a known ESPEI 0.9.1 bug: an equilibrium-property dataset with several temperatures *and* several compositions is compared in the wrong order. Split such datasets so only one of pressure, temperature or composition varies.
 * `espei_generate_parameters` runs parameter generation (ref state SGTE91 or SR2016, AICc penalty factors, fitting description). It writes `dft.tdb` in `<output>/espei_runs/<name>/` and lists the chosen parameters of each phase with their values. Small inputs run straight away; large ones become a background job.
-* `espei_run_mcmc` starts MCMC as a background job: serial by default, or a dask cluster on this machine with `cores`. It supports restarting from a trace, a subset of symbols, priors and data weights. `trace.npy`, `lnprob.npy` and `mcmc.tdb` land in the run folder, where `analyze_mcmc` and `mcmc_to_tdb` find them. A folder that already holds a trace is never overwritten; the new run goes to `<name>_2`.
+* `espei_run_mcmc` starts MCMC as a background job on a dask cluster on this machine: half of the available cores by default (`[hpc] local_cores`; never more workers than chains), `cores` to choose, `cores: 1` for a serial run. It supports restarting from a trace, a subset of symbols, priors and data weights. `trace.npy`, `lnprob.npy` and `mcmc.tdb` land in the run folder, where `analyze_mcmc` and `mcmc_to_tdb` find them. A folder that already holds a trace is never overwritten; the new run goes to `<name>_2`.
 * Background jobs run in their own process, so they keep going if the agent exits. `list_jobs`, `job_status` (progress, ETA, log tail, results and plots; for MCMC also an lnprob plot at any time), `wait_job` and `stop_job` follow them. Stopping an MCMC run ends it after the current iteration and keeps the chains so far. Job files are in `<output>/jobs/<id>/`.
 * `show_code` on a file made by one of these runs gives standalone code that writes the ESPEI YAML inline and calls `run_espei`.
 

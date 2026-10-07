@@ -6,7 +6,11 @@ Looked up in this order (later wins):
   3. ./calphad_agent.toml   (or the file given with --config)
   4. environment variables: CALPHAD_LLM_PROVIDER, CALPHAD_LLM_BASE_URL, CALPHAD_LLM_MODEL, CALPHAD_LLM_API,
      CALPHAD_LLM_API_KEY.  If no key is set, the key is read from the variable named by
-     ``api_key_env``, then from OPENAI_API_KEY / ANTHROPIC_API_KEY.
+     ``api_key_env``, then from OPENAI_API_KEY / ANTHROPIC_API_KEY.  CALPHAD_HPC_SCHEDULER (auto | flux | local)
+     overrides ``[hpc] scheduler``.
+
+``[hpc]`` (:class:`calphad_tools.hpc.HPCConfig`): where ESPEI optimisations run - batched on a Flux cluster when one
+is detected, else directly on this machine - and how big the runs are.
 """
 from __future__ import annotations
 
@@ -14,6 +18,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from ..hpc import HPCConfig
 
 try:
     import tomllib
@@ -82,6 +88,7 @@ class AgentConfig:
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    hpc: HPCConfig = field(default_factory=HPCConfig)
     source_files: list = field(default_factory=list)
     profiles: list = field(default_factory=list)
     profile: str = ""
@@ -108,6 +115,7 @@ def load_config(path: Optional[str] = None, profile: Optional[str] = None) -> Co
                 data = tomllib.load(f)
             _apply(cfg.llm, data.get("llm", {}))
             _apply(cfg.agent, data.get("agent", {}))
+            _apply(cfg.hpc, data.get("hpc", {}))
             profiles.update(data.get("profiles", {}))
             cfg.source_files.append(str(p))
     cfg.profiles = sorted(profiles)
@@ -118,6 +126,13 @@ def load_config(path: Optional[str] = None, profile: Optional[str] = None) -> Co
         _apply(cfg.llm, profiles[profile])
         cfg.profile = profile
     env = os.environ
+    if env.get("CALPHAD_HPC_SCHEDULER"):
+        sch = env["CALPHAD_HPC_SCHEDULER"].strip().lower()
+        if sch not in ("auto", "flux", "local"):
+            raise ValueError(f"CALPHAD_HPC_SCHEDULER must be auto, flux or local, not {sch!r}")
+        cfg.hpc.scheduler = sch
+    if str(cfg.hpc.scheduler).strip().lower() not in ("auto", "flux", "local"):
+        raise ValueError(f"[hpc] scheduler must be auto, flux or local, not {cfg.hpc.scheduler!r}")
     if env.get("CALPHAD_LLM_PROVIDER"):
         cfg.llm.provider = env["CALPHAD_LLM_PROVIDER"]
     if env.get("CALPHAD_LLM_BASE_URL"):
@@ -191,4 +206,21 @@ max_tool_rounds = 40
 diagram_style = "shaded"                  # phase diagrams: shaded (black lines, filled two-phase fields) | color
 save_notebooks = true                     # <figure>.ipynb next to every phase diagram: pycalphad code that
                                           # regenerates all of its files (PNG/SVG/PDF, CSVs, JSON)
+
+[hpc]
+# ESPEI optimisations (optimize_system): batched on a Flux cluster when one is detected, else run here.
+scheduler = "auto"                        # auto (detect Flux at run time) | flux | local
+bank = ""                                 # Flux bank (allocation account): flux batch --bank=BANK
+                                          #   (older flux-core without --bank: --setattr=system.bank=BANK, automatic)
+queue = ""                                # Flux queue: flux batch -q QUEUE   (`flux queue list` shows them)
+nodes = 1                                 # batched runs: nodes per ESPEI MCMC job (default 1 node)
+cores_per_node = 0                        # 0 = read from `flux resource info`
+time_limit = "4h"                         # flux batch -t for the MCMC job
+gen_time_limit = "1h"                     # flux batch -t for the 1-core parameter-generation job
+local_cores = "half"                      # direct runs: "half" of this machine's cores, "all", or a number
+extra_flux_args = []                      # added to every flux batch command, e.g. ["--setattr=system.constraints=..."]
+fallback_to_local = false                 # Flux found but submission fails: true = run here instead (it says so)
+wait_max_hours = 24                       # wait_job until=done stops waiting (not the job) after this long
+# setup = ["module load python/3.13", "source /path/to/venv/bin/activate"]   # batch-script environment;
+                                          # default: the installer's pycalphad-agent-env.sh
 '''

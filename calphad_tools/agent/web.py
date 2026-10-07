@@ -131,8 +131,11 @@ function handle(e){
    const stick=nearBottom();(e.images||[]).forEach(p=>{d.insertAdjacentHTML('beforeend','<a href="/file?path='+encodeURIComponent(p)+'" target="_blank"><img class="plot" src="/file?path='+encodeURIComponent(p)+'"></a>')});
    d.querySelectorAll('img').forEach(i=>i.onload=()=>{if(stick)bottom()})}
  else if(e.type==='progress'){const last=log.lastElementChild;
-   if(e.key&&last&&last.className==='prog'&&last.dataset.key===e.key){last.textContent='… '+e.text}
-   else{const d=document.createElement('div');d.className='prog';if(e.key)d.dataset.key=e.key;d.textContent='… '+e.text;log.appendChild(d)}}
+   if(e.key&&last&&last.className==='prog'&&last.dataset.key===e.key){last.firstChild.textContent='… '+e.text}
+   else{const d=document.createElement('div');d.className='prog';if(e.key)d.dataset.key=e.key;const sp=document.createElement('span');sp.textContent='… '+e.text;d.appendChild(sp);
+     if(e.key&&e.key.startsWith('wait:')){const b=document.createElement('button');b.className='sec';b.textContent='stop waiting';b.title='End the wait (the job keeps running); the agent then reports the job state';
+       b.style.cssText='margin-left:8px;padding:1px 8px;font-size:12px';b.onclick=()=>{fetch('/api/stop_wait',{method:'POST',body:'{}'});b.disabled=true};d.appendChild(b)}
+     log.appendChild(d)}}
  else if(e.type==='question'){const d=add('q',esc(e.text)+'<br>');(e.options||[]).forEach(o=>{const b=document.createElement('button');b.className='sec';b.textContent=o;b.onclick=()=>answer(e.qid,o,d);d.appendChild(b)});
    const i=document.createElement('input');i.placeholder='or type an answer + Enter';i.style.cssText='width:100%;margin-top:8px;padding:6px';i.onkeydown=ev=>{if(ev.key==='Enter')answer(e.qid,i.value,d)};d.appendChild(i)}
  else if(e.type==='confirm'){const d=add('q',esc(e.text)+'<pre>'+esc(e.code)+'</pre>');const y=document.createElement('button');y.textContent='Run';y.onclick=()=>answer(e.qid,'yes',d);
@@ -419,6 +422,9 @@ def serve(cfg, port: int = 8765, browser: Optional[bool] = None) -> int:
                     agent.toolbox.python_tool = "auto_verify" if body.get("auto_verify") else "ask"
                     hub.emit({"type": "progress", "text": f"python_tool = {agent.toolbox.python_tool}"})
                 self._json({"ok": True, "python_tool": agent.toolbox.python_tool})
+            elif self.path == "/api/stop_wait":         # end a wait_job until='done' (the job keeps running)
+                agent.toolbox.stop_waiting.set()
+                self._json({"ok": True})
             elif self.path == "/api/answer":
                 hub.answer(body["qid"], body.get("answer", ""))
                 self._json({"ok": True})

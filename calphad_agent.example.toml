@@ -32,3 +32,20 @@ max_tool_rounds = 40
 diagram_style = "shaded"                  # phase diagrams: shaded (black lines, filled two-phase fields) | color
 save_notebooks = true                     # <figure>.ipynb next to every phase diagram: pycalphad code that
                                           # regenerates all of its files (PNG/SVG/PDF, CSVs, JSON)
+
+[hpc]
+# ESPEI optimisations (optimize_system): batched on a Flux cluster when one is detected, else run here.
+scheduler = "auto"                        # auto (detect Flux at run time) | flux | local
+bank = ""                                 # Flux bank (allocation account): flux batch --bank=BANK
+                                          #   (older flux-core without --bank: --setattr=system.bank=BANK, automatic)
+queue = ""                                # Flux queue: flux batch -q QUEUE   (`flux queue list` shows them)
+nodes = 1                                 # batched runs: nodes per ESPEI MCMC job (default 1 node)
+cores_per_node = 0                        # 0 = read from `flux resource info`
+time_limit = "4h"                         # flux batch -t for the MCMC job
+gen_time_limit = "1h"                     # flux batch -t for the 1-core parameter-generation job
+local_cores = "half"                      # direct runs: "half" of this machine's cores, "all", or a number
+extra_flux_args = []                      # added to every flux batch command, e.g. ["--setattr=system.constraints=..."]
+fallback_to_local = false                 # Flux found but submission fails: true = run here instead (it says so)
+wait_max_hours = 24                       # wait_job until=done stops waiting (not the job) after this long
+# setup = ["module load python/3.13", "source /path/to/venv/bin/activate"]   # batch-script environment;
+                                          # default: the installer's pycalphad-agent-env.sh

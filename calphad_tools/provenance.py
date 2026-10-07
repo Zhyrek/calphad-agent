@@ -441,6 +441,14 @@ class Recorder:
                 self.decisions.append(rec)
                 self._append(rec)
 
+    def record_event(self, kind: str, data: Dict[str, Any], tool: str) -> None:
+        """One {"type": kind} line in the session log tied to the running call (e.g. "hpc_submission": the
+        backend, Flux job ids, batch scripts, commands and resources of an ESPEI run)."""
+        with self.lock:
+            self._ensure_log()
+            self._append({"type": kind, "call_index": len(self.tb.call_log) + 1, "tool": tool, "time": _now_iso(),
+                          **redact(jsonable(data), self._secrets)})
+
     def decisions_of(self, first: int = 0, last: Optional[int] = None) -> List[Dict[str, Any]]:
         """Recorded decisions of calls first < index <= last (all by default)."""
         return [d for d in self.decisions if first < int(d.get("call_index") or 0) <= (last or 10 ** 9)]

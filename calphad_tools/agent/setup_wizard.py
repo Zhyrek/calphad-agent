@@ -4,6 +4,9 @@
     calphad-agent --setup --yes --base-url https://host/v1 --key-env SOL_API_KEY   # no questions
 
 The installers (install.sh / install.ps1) run this after creating the virtual environment.
+
+When a Flux scheduler is detected (:func:`calphad_tools.hpc.detect`) it also asks for the Flux bank and queue
+(``[hpc]``), which batched ESPEI runs need; elsewhere those questions are skipped.
 """
 from __future__ import annotations
 
@@ -33,6 +36,34 @@ FIELDS = [
 ]
 
 
+# asked only when Flux is detected (key, question, help); written to [hpc]
+HPC_FIELDS = [
+    ("bank", "Flux bank (allocation account) for batched ESPEI runs",
+     "flux batch --bank=BANK; leave empty if your site needs none"),
+    ("queue", "Flux queue for batched ESPEI runs", "flux batch -q QUEUE; leave empty for the site default"),
+]
+
+
+def _detect(detect=None) -> Dict:
+    try:
+        if detect is not None:
+            return detect()
+        from ..hpc import detect as _d
+        return _d()
+    except Exception as e:  # noqa: BLE001 - setup must never fail on the HPC probe
+        return {"scheduler": "local", "reason": f"detection failed: {type(e).__name__}: {e}"}
+
+
+def _ask_hpc(info: Dict, current: Dict[str, str], inp=input, out=print) -> Dict[str, str]:
+    q = f"; queues here: {', '.join(info['queues'])}" if info.get("queues") else ""
+    out(f"\nFlux scheduler found ({info.get('reason')}): ESPEI optimisations will be submitted as batch jobs{q}.")
+    vals = {}
+    for key, question, help_ in HPC_FIELDS:
+        default = current.get(key) or (info.get("default_queue") or "" if key == "queue" else "")
+        vals[key] = _ask(question, default, help_, inp, out)
+    return vals
+
+
 def _ask(question: str, default: str, help_: str, inp=input, out=print) -> str:
     out(f"\n{question}\n  ({help_})")
     ans = inp(f"  [{default}] > ").strip()
@@ -54,7 +85,7 @@ def _set(text: str, key: str, value: str, section: str = "llm") -> str:
     return text[:start] + block + text[end:]
 
 
-def build_config(values: Dict[str, str], api_key: str = "") -> str:
+def build_config(values: Dict[str, str], api_key: str = "", hpc: Optional[Dict[str, str]] = None) -> str:
     t = EXAMPLE_CONFIG
     for k in ("base_url", "model", "api_key_env", "api"):
         t = _set(t, k, values.get(k, ""))
@@ -62,7 +93,16 @@ def build_config(values: Dict[str, str], api_key: str = "") -> str:
     t = _set(t, "vision", "true" if str(values.get("vision", "yes")).lower().startswith(("y", "t")) else "false")
     for k in ("workdir", "python_tool"):
         t = _set(t, k, values.get(k, ""), section="agent")
+    for k, v in (hpc or {}).items():
+        t = set_hpc(t, k, v)
     return t
+
+
+def set_hpc(text: str, key: str, value: str) -> str:
+    """Set ``key`` in the [hpc] table of a config text (the table is appended from the example when missing)."""
+    if "\n[hpc]" not in "\n" + text:
+        text = text.rstrip("\n") + "\n\n" + EXAMPLE_CONFIG[EXAMPLE_CONFIG.index("[hpc]"):]
+    return _set(text, key, str(value or ""), section="hpc")
 
 
 def env_hint(name: str) -> str:
@@ -91,8 +131,31 @@ def test_connection(path: Path, out=print) -> bool:
         return False
 
 
+def _offer_hpc_update(p: Path, detect=None, inp=input, out=print) -> None:
+    """Existing config kept: on a Flux system with no bank/queue set yet, offer to set just those."""
+    info = _detect(detect)
+    if info.get("scheduler") != "flux":
+        return
+    from .config import load_config
+    try:
+        h = load_config(str(p)).hpc
+    except Exception:  # noqa: BLE001
+        return
+    if h.bank and h.queue:
+        return
+    a = inp("\nFlux was found but the Flux bank/queue are not set. Set them now? [Y/n] > ").strip().lower()
+    if a not in ("", "y", "yes"):
+        return
+    vals = _ask_hpc(info, {"bank": h.bank, "queue": h.queue}, inp, out)
+    t = p.read_text()
+    for k, v in vals.items():
+        t = set_hpc(t, k, v)
+    p.write_text(t)
+    out(f"updated [hpc] in {p.resolve()}")
+
+
 def run(path: str = "calphad_agent.toml", yes: bool = False, preset: Optional[Dict[str, str]] = None,
-        inp=input, out=print) -> int:
+        inp=input, out=print, detect=None) -> int:
     p = Path(path)
     preset = {k: v for k, v in (preset or {}).items() if v is not None}
     out("CALPHAD agent setup - press Enter to accept the value in [brackets].")
@@ -100,6 +163,7 @@ def run(path: str = "calphad_agent.toml", yes: bool = False, preset: Optional[Di
         a = inp(f"\n{p} already exists. Replace it? [y/N] > ").strip().lower()
         if a not in ("y", "yes"):
             out("kept the existing configuration.")
+            _offer_hpc_update(p, detect, inp, out)
             return 0
     vals: Dict[str, str] = {}
     for key, q, default, help_ in FIELDS:
@@ -108,7 +172,11 @@ def run(path: str = "calphad_agent.toml", yes: bool = False, preset: Optional[Di
     api_key = preset.get("api_key", "")
     if not vals["api_key_env"] and not api_key and not yes:
         api_key = inp("\nPaste your API key (stored in calphad_agent.toml - keep that file private) > ").strip()
-    p.write_text(build_config(vals, api_key))
+    hpc_vals = {k: preset[k] for k in ("bank", "queue") if preset.get(k)}
+    info = _detect(detect)
+    if info.get("scheduler") == "flux" and not yes:
+        hpc_vals.update(_ask_hpc(info, hpc_vals, inp, out))
+    p.write_text(build_config(vals, api_key, hpc=hpc_vals))
     try:
         os.chmod(p, 0o600)
     except OSError:
@@ -125,7 +193,25 @@ def run(path: str = "calphad_agent.toml", yes: bool = False, preset: Optional[Di
     return 0
 
 
+def hpc_check(path: str = "calphad_agent.toml", out=print, detect=None) -> None:
+    """The HPC detection (Flux or local, resources, queues, run-size defaults) for calphad-agent --check."""
+    from ..hpc import HPCConfig, reminder, summary
+    cfg = HPCConfig()
+    if Path(path).is_file():
+        try:
+            from .config import load_config
+            cfg = load_config(path).hpc
+        except Exception as e:  # noqa: BLE001
+            out(f"  (could not read [hpc] from {path}: {e})")
+    info = _detect(detect)
+    out(summary(info, cfg))
+    rem = reminder(info, cfg, path)
+    if rem:
+        out(rem)
+
+
 def check(path: str = "calphad_agent.toml") -> int:
+    hpc_check(path)
     return 0 if test_connection(Path(path)) else 1
 
 

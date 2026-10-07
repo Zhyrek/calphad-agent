@@ -174,10 +174,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--init-config", action="store_true", help="write an example calphad_agent.toml and exit")
     ap.add_argument("--setup", action="store_true", help="first-time setup: asks for the settings, writes "
                                                          "calphad_agent.toml, tests the connection")
-    ap.add_argument("--check", action="store_true", help="test the connection to the configured model and exit")
+    ap.add_argument("--check", action="store_true", help="show the HPC detection (Flux or local) and test the "
+                                                         "connection to the configured model, then exit")
     ap.add_argument("--link", action="store_true", help="print the access link of your running web UI and exit")
     ap.add_argument("--yes", action="store_true", help="with --setup: no questions, use the given values/defaults")
     ap.add_argument("--key-env", help="with --setup: name of the environment variable holding the API key")
+    ap.add_argument("--bank", help="with --setup: Flux bank for batched ESPEI runs ([hpc] bank)")
+    ap.add_argument("--queue", help="with --setup: Flux queue for batched ESPEI runs ([hpc] queue)")
     ap.add_argument("--web", action="store_true", help="browser chat UI instead of the terminal")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true", help="with --web: do not open the browser automatically")
@@ -196,7 +199,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         from .setup_wizard import run as setup
         return setup(a.config or "calphad_agent.toml", yes=a.yes,
                      preset={"base_url": a.base_url, "model": a.model, "api_key_env": a.key_env,
-                             "workdir": a.workdir})
+                             "workdir": a.workdir, "bank": a.bank, "queue": a.queue})
     if a.link:
         from .web import running_links
         links = running_links()
