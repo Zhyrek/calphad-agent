@@ -6,8 +6,11 @@ Two styles:
 * ``"shaded"`` (default): binary T-x diagrams with black phase boundaries and invariant lines (lw 1.25, solid),
   two-phase fields filled ``aliceblue`` between their two boundaries, no tie-lines, minor ticks on and all ticks
   pointing in on all four sides; ternary isotherms with grey (#999999) phase boundaries and tie-triangle edges,
-  two-phase fields filled ``aliceblue`` too (three-phase triangles stay white), no tie-lines.  No phase legend: the phases are named by labels inside the figure (region labels; on isopleths and
-  T-MU diagrams, where regions are not labelled, each line is labelled with :func:`line_labels`).
+  two-phase fields filled ``aliceblue`` too (three-phase triangles stay white), no tie-lines; isopleths with black
+  ZPF lines and invariant lines, every region with an even number of phases (two, four) filled ``aliceblue``
+  (:func:`fill_regions`; the regions come from isopleth_regions), one- and three-phase regions white.  No phase
+  legend: the phases are named by labels inside the figure (region labels; on T-MU diagrams, and on isopleths
+  drawn without region labels, each line is labelled with :func:`line_labels`).
 * ``"color"``: one colour per phase, grey tie-lines, red invariants and a phase legend.
 
 This module only needs numpy and a matplotlib axes, so show_code copies it into the standalone scripts: the tools
@@ -81,6 +84,33 @@ def draw_shaded(ax, boundaries, invariants, kind="binary", tiny=1e-3):
         else:
             p = p[np.argsort(p[:, 0])]                      # invariant line, lowest to highest x
         ax.plot(p[:, 0], p[:, 1], color=color, lw=lw, ls="-", solid_capstyle="butt", zorder=2.5)
+
+
+def fill_regions(ax, polygons, zorder=1):
+    """Isopleth fill: every region with an even number of phases (2, 4 ...) aliceblue, the others left white.
+    polygons: [{"key": phases, "xy": outer ring, "holes": [rings]}] in plotted coordinates (isopleth_regions).
+    One PolyCollection (holes kept); returns it, or None if nothing is filled."""
+    from matplotlib.collections import PolyCollection
+    from matplotlib.path import Path as MPath
+    verts, codes = [], []
+    for p in polygons:
+        if not len(p["key"]) or len(p["key"]) % 2:
+            continue
+        rings = [np.asarray(p["xy"], float)] + [np.asarray(h, float) for h in p.get("holes") or []]
+        rings = [r for r in rings if len(r) >= 3]
+        if not rings:
+            continue
+        v = np.vstack([np.vstack([r, r[:1]]) for r in rings])
+        c = np.concatenate([[MPath.MOVETO] + [MPath.LINETO] * (len(r) - 1) + [MPath.CLOSEPOLY] for r in rings])
+        verts.append(v)
+        codes.append(c.astype(np.uint8))
+    if not verts:
+        return None
+    pc = PolyCollection([], facecolors=FILL_COLOR, edgecolors="none", linewidths=0, zorder=zorder)
+    pc.set_verts_and_codes(verts, codes)
+    pc.set_gid("region_fill")
+    ax.add_collection(pc, autolim=False)
+    return pc
 
 
 def _crossing(p1, p2, q1, q2) -> np.ndarray:

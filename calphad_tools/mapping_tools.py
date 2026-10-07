@@ -37,12 +37,14 @@ from . import pcache  # noqa: E402  (process-wide model / compiled-code cache)
 
 KELVIN = 273.15
 STYLE_SCHEMA = {"type": "string", "enum": ["shaded", "color"],
-                "description": "shaded: black lines, two-phase fields filled, grey ternary, phases named by labels "
-                               "in the figure (no legend); color: colour per phase + tie-lines + legend. Default: "
-                               "config diagram_style (shaded)"}
+                "description": "shaded: black lines, two-phase fields (isopleth: even phase counts) filled, grey "
+                               "ternary, phases named by labels in the figure (no legend); color: colour per phase "
+                               "+ tie-lines + legend. Default: config diagram_style (shaded)"}
 CHECK_SCHEMA = {"type": "string", "enum": ["auto", "thorough", "off"],
                 "description": "binary/ternary: check traced lines against equilibrium, trim metastable parts, "
-                               "drop duplicates, re-trace missing boundaries (default auto; off = raw pycalphad)"}
+                               "drop duplicates, re-trace missing boundaries; isopleth: report regions no traced "
+                               "line bounds and lines that are no phase boundary (default auto; off = raw "
+                               "pycalphad)"}
 TIELINE_COLOR = (0.45, 0.45, 0.45, 0.45)
 INVARIANT_COLOR = "#d62728"
 
@@ -385,14 +387,18 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
 
     check_mapping: "auto" (default) / "thorough" / "off" - binary T-x diagrams and ternary isotherms: check the
     traced lines against equilibrium and repair them (metastable tie-lines trimmed, duplicate traces dropped,
-    missing boundaries traced again; see mapping_check); "off" = pycalphad's lines as traced.
+    missing boundaries traced again; see mapping_check); isopleths (with regions): report regions no traced line
+    bounds and ZPF lines that are no phase boundary (isopleth_regions; nothing is re-traced); "off" = pycalphad's
+    lines as traced, unchecked.
 
-    label_regions: write the phases of every region / tie-triangle (and binary invariant temperatures) on the
-    diagram (see region_labels); None = on in the shaded style (binary T-x and ternary isotherms; isopleth and
-    T-MU lines are named on the line instead), off in the color style.  formats: extra outputs next to the PNG
-    (default svg + pdf in the shaded style or when labelling).  style: "shaded" (black boundaries, aliceblue
-    two-phase fields, grey ternary lines, no legend; see diagram_style) or "color" (one colour per phase, tie-lines,
-    phase legend).
+    label_regions: write the phases of every region / tie-triangle (and binary / isopleth invariant temperatures)
+    on the diagram (see region_labels); None = on in the shaded style (T-MU lines are named on the line instead),
+    off in the color style.  Isopleths: the regions between the ZPF lines are found by isopleth_regions (named by
+    the lines, checked against an equilibrium grid; the check's findings go into "mapping_check"), in the shaded
+    style even phase counts (2, 4) are filled aliceblue; without region labels each line is named on the line.
+    formats: extra outputs next to the PNG (default svg + pdf in the shaded style or when labelling).  style:
+    "shaded" (black boundaries, aliceblue two-phase fields, grey ternary lines, no legend; see diagram_style) or
+    "color" (one colour per phase, tie-lines, phase legend).
     Orientation (see orientation.py): right = element on the right of a binary (x axis = its fraction; isopleth:
     the varying element); corners = {left, right, top} of a ternary; otherwise the element order decides
     (binary [left, right], ternary [bottom-left, bottom-right, top])."""
@@ -469,9 +475,7 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
             conds[v.X(k)] = val
         Strat = IsoplethStrategy
     if label_regions is None:   # shaded: no legend, so the phases are named inside the figure
-        label_regions = shaded and kind in ("binary", "ternary") and not potential_axis
-    if label_regions and kind == "isopleth":
-        raise ValueError("label_regions is available for binary T-x diagrams and ternary isotherms, not isopleths")
+        label_regions = shaded and not potential_axis
     if label_regions and potential_axis:
         raise ValueError("label_regions is not available on a T-MU (potential_axis) diagram")
     if label_style:
@@ -521,8 +525,7 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
         ax = fig.add_subplot(projection="triangular")
     else:
         ax = fig.add_subplot()
-    if kind == "isopleth":
-        _plot_isopleth(ax, res, phase_colors, style)
+    if kind == "isopleth":      # (drawn below, once its regions are known: missing boundaries are traced first)
         ax.set_xlabel(U.comp_label(axis_el))
         ax.set_ylabel(U.T_label())
         legend_title = "ZPF line of"
@@ -561,9 +564,28 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
         ax.set_xlim(float(xlim[0]), float(xlim[1]))
     if ylim:
         ax.set_ylim(float(ylim[0]), float(ylim[1]))
+    iso = None
+    if kind == "isopleth":
+        if shaded or label_regions:     # regions from the lines + equilibrium (isopleth_regions)
+            reg_args = (tdb, db, strategy, els, ph, pressure, conds, U, temperature_unit, rename_disordered, xr,
+                        composition_step or 0.02, temperature_step, axis_el, fixed, check_mapping, time_limit_s)
+            iso = _isopleth_regions(ax, res, *reg_args)
+            seeds = [sd for u in iso["check"]["unbounded"] for sd in u.get("seeds", [])]
+            if seeds and check_mapping != "off" and run["finished"]:   # boundaries the mapping missed: trace them
+                found = mc.retrace_isopleth(strategy, iso["recipe"], seeds, time.time() + max(30.0, 0.1 * time_limit_s))
+                if found["lines_added"]:
+                    res = _isopleth_data(strategy, db, els, axis_el, fixed, s_els, lab, U, outdir, stem, files)
+                    before = iso["check"]["unbounded"]
+                    iso = _isopleth_regions(ax, res, *reg_args, grid=iso["grid"])
+                    found["regions_before"] = [{k: val for k, val in u.items() if k != "seeds"} for u in before]
+                iso["check"]["retraced"] = found
+                iso["check"]["text"] = _iso_text(iso, U)
+        _plot_isopleth(ax, res, phase_colors, style)
+        if shaded and iso is not None:
+            ds.fill_regions(ax, iso["regions"]["polygons"])
     if not shaded:
         _legend(ax, sorted(res["phases_found"]), phase_colors, title=legend_title)
-    elif kind == "isopleth" or mu_el:   # no region labels there: name each line on the line
+    elif mu_el or (kind == "isopleth" and not label_regions):   # no region labels: name each line on the line
         _shaded_line_labels(ax, res, kind, els, mu_el, phase_labels)
     if kind == "ternary":
         Tk = conds[v.T]
@@ -579,13 +601,17 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
     ax.set_title(title or default_title, fontsize=11)
     recipe = _recipe(tdb, kind, els, ph, pressure, conds, U, temperature_unit, rename_disordered, xr,
                      composition_step or 0.02, temperature_step) if not mu_el else None
-    if kind == "isopleth":      # orientation / units for composition points (no region labels on isopleths)
-        balance = [e for e in els if e != axis_el and e not in fixed][0]
-        recipe.update(axis_element=axis_el, balance=balance, fixed=dict(fixed))
-        ax._calphad_diagram = {"recipe": recipe, "style": style}
-        recipe = None
+    if kind == "isopleth":      # orientation / units for composition points; the regions for the labels
+        if iso is not None:
+            recipe = iso["recipe"]
+            ax._calphad_diagram = {"recipe": recipe, "regions": iso["regions"], "style": style,
+                                   "grid": iso["grid"], "grid_lim": iso["grid_lim"]}
+        else:
+            balance = [e for e in els if e != axis_el and e not in fixed][0]
+            recipe.update(axis_element=axis_el, balance=balance, fixed=dict(fixed))
+            ax._calphad_diagram = {"recipe": recipe, "style": style}
     labels = None
-    if recipe is not None:      # what edit_figure label_phase_regions / composition_points need later
+    if recipe is not None and kind != "isopleth":   # what edit_figure label_phase_regions / composition_points need
         from .phase_regions import regions_from_lines
         ax._calphad_diagram = {"recipe": recipe, "regions": regions_from_lines(res["lines"], res["invariants"],
                                                                                recipe, db),
@@ -617,14 +643,14 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
         "mapping": {**run, "zpf_lines": len(strategy.zpf_lines),
                     "degenerate_edge_lines_dropped": res.get("degenerate_lines_dropped", 0),
                     "duplicate_lines_dropped": res.get("duplicate_lines_dropped", 0)},
-        "mapping_check": mc.report_json(check) if check else {"mode": check_mapping, "note": "not checked "
-                                                                "(isopleths and T-MU diagrams are not)"},
+        "mapping_check": mc.report_json(check) if check else _iso_check_json(iso, check_mapping),
         "regions": res["regions"], "invariants": res["invariants"], "files": files,
         "renamed_when_disordered": dict(lab.renamed), "style": style,
         "hash_seed": hashseed_current(),    # PYTHONHASHSEED of the mapping (which lines get traced depends on it)
     }
     if kind == "isopleth":
         bal = [e for e in els if e != axis_el and e not in fixed][0]
+        summary["phase_regions"] = iso["summary"] if iso is not None else []
         summary["orientation"] = orientation_info(kind, els, axis_el, bal)
         o_text = orientation_text(kind, els, _lc(U.comp_label(axis_el)), axis_el, bal)
     else:
@@ -639,6 +665,8 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
     head, _, rest = _map_text(summary, U).partition("\n")
     if check and check_mapping != "off":
         head += "\n" + check["text"]
+    elif iso is not None and check_mapping != "off":
+        head += "\n" + iso["check"]["text"]
     summary["text"] = head + "\n" + o_text + "\n" + rest + (("\n" + labels["text"]) if labels is not None else "")
     return summary
 
@@ -658,6 +686,64 @@ def _recipe(tdb, kind, els, ph, pressure, conds, U, temperature_unit, rename, xr
     else:
         r["T_K"] = float(conds[v.T])
     return r
+
+
+def _iso_lines(res) -> Tuple[List[Dict], List[Dict]]:
+    """Isopleth ZPF lines and invariant segments as drawn (for isopleth_regions)."""
+    U = res["U"]
+    lines = [{"xy": np.column_stack([ln["x"], ln["T"]]), "zero_phase": ln["zero_phase"], "names": ln["names"]}
+             for ln in res["lines"]]
+    invs = [{"T_K": inv["T_K"], "y": U.T(inv["T_K"]), "x0": min(inv["_seg_plot"]), "x1": max(inv["_seg_plot"]),
+             "phases": list(inv["phases"])} for inv in res["_invs_plot"] if len(inv["_seg_plot"]) >= 2]
+    return lines, invs
+
+
+def _iso_text(iso, U) -> str:
+    """The isopleth check line (isopleth_regions.iso_check_text in the plot units)."""
+    from .isopleth_regions import iso_check_text
+    return iso_check_text(iso["check"], lambda val: f"{val:.3g}", lambda val: f"{val:.0f} {'°C' if U.tC else 'K'}")
+
+
+def _isopleth_regions(ax, res, tdb, db, strategy, els, ph, pressure, conds, U, temperature_unit, rename, xr, step,
+                      T_step, axis_el, fixed, check_mapping, time_limit, grid=None) -> Dict:
+    """Phase regions of a drawn isopleth (isopleth_regions): the equilibrium grid over the axes, the areas between
+    the lines named by it (or one equilibrium each), their outlines snapped to the lines, and the line check."""
+    from .isopleth_regions import isopleth_regions
+    from .mapping_check import GRID_N, PDENS
+    from .phase_regions import equilibrium_grid, key_at, lowest_key, ordered_info
+    recipe = _recipe(tdb, "isopleth", els, ph, pressure, conds, U, temperature_unit, rename, xr,
+                     step, T_step)
+    balance = [e for e in els if e != axis_el and e not in fixed][0]
+    recipe.update(axis_element=axis_el, balance=balance, fixed=dict(fixed))
+    comps = sorted(els) + ["VA"]
+    info = ordered_info(db, comps, ph, strategy.models) if rename else {}
+    xlim, ylim = list(ax.get_xlim()), list(ax.get_ylim())
+    t0 = time.time()
+    if grid is None:
+        grid = equilibrium_grid(db, recipe, info, xlim, ylim, GRID_N["isopleth"], models=strategy.models,
+                                phase_records=strategy.phase_records, pdens=PDENS)
+
+    def probe(x, y):
+        return key_at(db, recipe, info, x, y, PDENS)
+
+    def resolve(x, y, keys):
+        return lowest_key(db, recipe, info, x, y, keys)
+    lines, invs = _iso_lines(res)
+    out = isopleth_regions(ax, lines, invs, grid, probe, resolve=resolve, info=info, check=check_mapping != "off",
+                           deadline=t0 + max(60.0, 0.25 * float(time_limit)))
+    out["check"]["text"] = _iso_text(out, U)
+    out["check"]["seconds"] = round(time.time() - t0, 2)
+    out.update(recipe=recipe, grid=grid, grid_lim=[xlim, ylim])
+    return out
+
+
+def _iso_check_json(iso, mode) -> Dict:
+    """mapping_check entry of an isopleth / T-MU summary."""
+    if iso is None:
+        return {"mode": mode, "note": "not checked (T-MU diagrams, and isopleths without regions, are not)"}
+    if mode == "off":
+        return {"mode": mode, "note": "off (isopleth regions found, lines not checked)"}
+    return {"mode": mode, "kind": "isopleth", **{k: val for k, val in iso["check"].items()}}
 
 
 def _tieline_data(strategy, db, comps, ph, els, kind, s_els, lab, U, outdir, stem, files) -> Dict:
@@ -792,9 +878,10 @@ def _isopleth_data(strategy, db, els, axis_el, fixed, s_els, lab, U, outdir, ste
         names_mid = lab.names(mid.stable_composition_sets)
         zero = names_mid[0]  # fixed (zero-fraction) composition set comes first
         region = " + ".join(sorted(names_mid))
-        xs, ts, tks = [], [], []
+        xs, ts, tks, pnames = [], [], [], []
         for pi, p in enumerate(z.points):
             T = _point_T(p)
+            pnames.append(lab.names(p.stable_composition_sets))
             xv = _f(p.global_conditions[v.X(axis_el)])
             xs.append(U.comp(glob_x(xv), axis_el))
             ts.append(U.T(T))
@@ -807,7 +894,7 @@ def _isopleth_data(strategy, db, els, axis_el, fixed, s_els, lab, U, outdir, ste
                 row[f"NP_{k + 1}"] = float(cs.NP)
                 row.update({f"X{k + 1}({e})": X[e] for e in els})
             rows.append(row)
-        lines.append({"id": li, "zero_phase": zero, "region": region, "x": xs, "T": ts, "T_K": tks})
+        lines.append({"id": li, "zero_phase": zero, "region": region, "x": xs, "T": ts, "T_K": tks, "names": pnames})
 
     invs = []
     inv_nodes = [n for n in strategy.node_queue.nodes
@@ -852,6 +939,10 @@ def _isopleth_data(strategy, db, els, axis_el, fixed, s_els, lab, U, outdir, ste
         found |= set(inv["phases"])
     allx = [x for ln in lines for x in ln["x"]]
     xlim = [min(allx), max(allx)] if allx else None
+    xd = [float(np.squeeze(c)) for c in np.atleast_1d(strategy.axis_lims[v.X(axis_el)])] \
+        if hasattr(strategy, "axis_lims") else None
+    if xd is not None and len(xd) == 2:     # the mapped range: the lines end on it (not where a trace overshoots)
+        xlim = [U.comp(glob_x(xd[0]), axis_el), U.comp(glob_x(xd[1]), axis_el)]
     out_invs = [{k: val for k, val in i.items() if not k.startswith("_")} for i in invs]
     return {"lines": lines, "invariants": out_invs, "_invs_plot": invs, "regions": reg_list,
             "phases_found": found, "xlim": xlim, "U": U}
@@ -1757,9 +1848,10 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
              "pressure": {**N, "description": "Pa, default 101325"},
              "time_limit_s": {**N, "description": "stop mapping after this time (partial result), default 600"},
              "label_regions": {**B, "description": "write the phases of each region / tie-triangle (e.g. L+FCC, "
-                                                   "BCC+σ) inside it, stoichiometric phases (Al₃Ni) outside the "
-                                                   "axes and binary invariant temperatures by their line, clear of "
-                                                   "data; binary or ternary isotherm; default on when shaded"},
+                                                   "BCC+σ) inside it (too small: below it or with a leader line), "
+                                                   "stoichiometric phases (Al₃Ni) outside the axes, binary / "
+                                                   "isopleth invariant temperatures by their line, clear of data; "
+                                                   "default on when shaded"},
              "label_invariants": {**B, "description": "with label_regions (default true)"},
              "phase_labels": {"type": "object", "additionalProperties": {"type": "string"},
                               "description": "label text overrides, e.g. {\"SIGMA\": \"σ-phase\"}"},

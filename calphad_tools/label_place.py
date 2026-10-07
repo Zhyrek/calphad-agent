@@ -25,7 +25,13 @@ per cell):
    degrees; ternary: beyond the nearest edge, 60 degrees at the bottom edge, -30 / +30 degrees - square to the
    edge - at the left / right edge); tick labels they cover are hidden (:class:`TickLabelHider`), and axis titles
    moved clear.  A ternary compound inside the triangle gets a leader label (and a dot at a point compound);
-6. every position is confirmed with ``key_at`` (an equilibrium calculation) before the label is drawn.
+6. every position is confirmed with ``key_at`` (an equilibrium calculation) before the label is drawn (isopleths:
+   where it gives another phase set, ``confirm`` may still accept the label's by Gibbs energy);
+7. isopleths (``kind="isopleth"``, regions from isopleth_regions): every drawn line is a wall, any region - one,
+   two, three phases - that has no room inside is named right below its lowest point inside the axes (60°, as in
+   3.), else in the nearest free space with a leader line (only where that leader crosses no other label), else
+   left out; nothing is named outside the axes (the x axis is the alloy's composition, not a phase's; there are
+   no end-member phases); invariant temperatures as in 4.
 
 Each label is one Text artist (``gid`` "phase_label:<PHASES>" / "invariant_label:<T>"), so it stays one editable
 text object in SVG (``svg.fonttype = 'none'``) and PDF (``pdf.fonttype = 42``): see :func:`save_vector`.  Names
@@ -286,6 +292,8 @@ def build_regions(ax, R: Raster, inside: np.ndarray, regions: Dict, grid: Option
         key = tuple(p["key"])
         pts = ax.transData.transform(np.asarray(p["xy"], float))
         raw = R.poly(pts) & inside
+        for hole in p.get("holes") or []:       # (isopleth regions can have islands of other regions)
+            raw &= ~R.poly(ax.transData.transform(np.asarray(hole, float)))
         m = raw & (rid == -1)
         same = [int(i) for i in np.unique(rid[raw & (rid >= 0)]) if regs[int(i)]["key"] == key]
         if same and raw.sum() >= 3 and np.isin(rid[raw], same).sum() >= 0.5 * raw.sum():
@@ -635,12 +643,14 @@ def clear_labels(ax) -> int:
 def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Optional[Callable] = None, *,
                   kind: str = "binary", elements: Optional[Sequence[str]] = None, phase_labels=None,
                   liquids: Sequence[str] = (), invariants: bool = True, T_unit: str = "C",
-                  style: Optional[Dict] = None) -> Dict:
+                  style: Optional[Dict] = None, confirm: Optional[Callable] = None) -> Dict:
     """Draw phase-region labels, outside names of stoichiometric phases and binary invariant temperatures.
 
     regions: {"polygons": [{"key", "xy" (plotted coordinates), "tri"?, "ties"?}], "compounds": [...],
               "invariants": [{"T_K", "y", "x0", "x1"}]} (see phase_regions.regions_from_lines).
-    grid: equilibrium grid {"xy", "keys", "table"}; key_at(x, y) -> region key at a plotted point.
+    grid: equilibrium grid {"xy", "keys", "table"}; key_at(x, y) -> region key at a plotted point; confirm(key,
+    got, x, y) -> True if ``key`` is stable there after all although key_at gave ``got`` (by Gibbs energy:
+    phase_regions.lowest_key; isopleths).
     Rules: a region label lies inside its region (turned if that lets it be larger), between ``fontsize`` and
     ``min_fontsize``, or is left out; an invariant temperature lies right above or below its line, in the
     adjacent region, between ``invariant_fontsize`` and ``min_fontsize``, or is left out; a stoichiometric phase
@@ -659,6 +669,8 @@ def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Option
     inner = inside & (_edt(inside) * R.res > 1.0)       # keep 1 pt from the frame / triangle edges
     regs, rid, grid_only = build_regions(ax, R, inside, regions, grid, probe=key_at)
     walls = walls_of(rid, inside)
+    if kind == "isopleth":                              # every drawn line is a wall (also a line end inside a region)
+        walls |= drawn_lines(ax, R)
     obst, n_pts = obstacles(ax, R, renderer)
     placed = R.zeros()
     meas = _Measure(ax, renderer, st)
@@ -686,7 +698,13 @@ def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Option
             return None
         if got is None:
             return False
-        return (key[0] in got) if contains else (tuple(got) == tuple(key))
+        ok = (key[0] in got) if contains else (tuple(got) == tuple(key))
+        if not ok and not contains and confirm is not None:
+            try:
+                ok = bool(confirm(tuple(key), tuple(got), *xy))
+            except Exception:  # noqa: BLE001
+                ok = False
+        return ok
 
     def record(t, kind_, key, xy, fs, rot, verified, **extra):
         report["labels"].append({"text": plain_text(t), "gid": t.get_gid(), "kind": kind_, "key": list(key),
@@ -744,8 +762,8 @@ def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Option
             report["skipped"].append({"label": s, "reason": "not confirmed by equilibrium" if unconfirmed
                                       else small, "_region": r})
 
-    # -------------------------------------------------------------- binary invariant temperatures
-    if kind == "binary" and invariants:
+    # -------------------------------------------------------------- binary / isopleth invariant temperatures
+    if kind in ("binary", "isopleth") and invariants:
         inv_sizes = _sizes(st["invariant_fontsize"], st["min_fontsize"])
         gap = 1.8                                       # pt between the line and the text box
         for inv in invariant_lines(regions.get("invariants") or []):
@@ -802,6 +820,11 @@ def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Option
     # single-phase regions too small for a label inside that reach an edge (not terminal phases of a binary)
     # (ternary: if it touches no edge, or is a compound inside the triangle, with a leader line instead)
     name_of = lambda key: region_label(key, elements, phase_labels, liquids)      # noqa: E731
+    if kind == "isopleth":
+        _isopleth_fallback(ax, R, report, check, st, meas, renderer, inside, inner, walls, obst, placed, gid_for,
+                           record, small)
+        report["n_obstacle_points"] = n_pts
+        return report
     edges, ticks = _edges(ax, kind)
     items, leaders = _compound_items(ax, kind, regions.get("compounds") or [], edges, check, report, name_of)
     more_items, more_leaders, below, corner_items = _single_phase_items(
@@ -1288,10 +1311,13 @@ def _free_spot(R: Raster, blocked: np.ndarray, hard: np.ndarray, w: float, h: fl
     return tuple(float(q) for q in R.to_px(cols[k], rows[k])), line, int(crosses[k])
 
 
-def _place_leaders(ax, R, items, st, meas, renderer, inside, inner, walls, obst, placed, gid_for, record):
+def _place_leaders(ax, R, items, st, meas, renderer, inside, inner, walls, obst, placed, gid_for, record,
+                   force: bool = True) -> List[Dict]:
     """Ternary-only single-phase fields and compounds inside the triangle: the label goes to the nearest free
     space - inside the triangle on a free area (no line, no other label), else just outside it - with a thin
-    leader line to the field (a dot at a point compound).  Never left out."""
+    leader line to the field (a dot at a point compound).  Never left out (force; else - isopleth regions - an
+    item with no free space whose leader crosses no other label is returned, not drawn)."""
+    failed = []
     inv = ax.transData.inverted()
     lines = R.zeros()
     sizes = _sizes(st["fontsize"], st["min_fontsize"])
@@ -1309,6 +1335,9 @@ def _place_leaders(ax, R, items, st, meas, renderer, inside, inner, walls, obst,
                     break
             if spot is not None and spot[0][2] == 0:
                 break
+        if not force and (spot is None or spot[0][2] > 0):
+            failed.append(it)
+            continue
         if spot is None:                                # nowhere free: right beside the field anyway
             fs = sizes[-1]
             spot = (((tpx[0] + 12 * R.ppp, tpx[1] + 12 * R.ppp), R.zeros(), 0), fs)
@@ -1332,6 +1361,68 @@ def _place_leaders(ax, R, items, st, meas, renderer, inside, inner, walls, obst,
         placed |= line                                  # later labels keep off this leader line
         lines |= line
         record(t, it["kind"], it["key"], it["probe"], fs, 0.0, it["ok"], leader=True, text_xy=list(xy))
+    return failed
+
+
+def drawn_lines(ax, R: Raster, width_pt: float = 1.0) -> np.ndarray:
+    """Cells under the drawn lines of the axes (Line2D without markers, at least 0.9 pt wide - not the thin leader
+    / guide lines of labels), grown by ``width_pt``."""
+    from scipy import ndimage
+    m = R.zeros()
+    for ln in ax.get_lines():
+        if not ln.get_visible() or ln.get_linewidth() < 0.9 or str(ln.get_gid() or "").startswith(DOT_PREFIX):
+            continue
+        if str(ln.get_marker()) not in ("None", "none", "", " "):
+            continue
+        xy = np.column_stack([np.asarray(ln.get_xdata(), float), np.asarray(ln.get_ydata(), float)])
+        if len(xy) >= 2:
+            R.polyline(m, ln.get_transform().transform(xy))
+    it = int(round(width_pt / R.res))
+    return ndimage.binary_dilation(m, iterations=it) if it > 0 else m
+
+
+def _isopleth_fallback(ax, R, report, check, st, meas, renderer, inside, inner, walls, obst, placed, gid_for,
+                       record, small):
+    """Isopleth regions with no room for a label inside: right below the region's lowest point, inside the axes
+    (60°, crossing no line; as for a binary single-phase field), else in the nearest free space with a leader line
+    to the region's thickest point (only where the leader crosses no other label), else left out.  Any number of
+    phases; nothing is named outside the axes (an isopleth's x axis is the alloy's composition, not a phase's)."""
+    inv = ax.transData.inverted()
+    below, leaders = [], []
+    for sk in list(report["skipped"]):
+        r = sk.get("_region")
+        if r is None or sk["reason"] != small:
+            continue
+        key = tuple(r["key"])
+        if r["mask"].sum() >= 3:
+            d = _edt(r["mask"])
+            row, col = np.unravel_index(int(np.argmax(d)), d.shape)
+            probe = tuple(float(v) for v in inv.transform(R.to_px(col, row)))
+            rows, cols = np.nonzero(r["mask"])
+            low = rows == rows.min()
+            end = tuple(float(v) for v in inv.transform(R.to_px(float(np.median(cols[low])), float(rows.min()))))
+        elif r.get("pole_px") is not None:
+            probe, end = tuple(float(v) for v in inv.transform(r["pole_px"])), None
+        else:
+            continue
+        ok = check(key, probe)
+        if ok is False:
+            continue
+        report["skipped"] = [q for q in report["skipped"] if q is not sk]
+        it = {"key": key, "s": sk["label"], "end": end, "terminal": False, "ok": ok, "kind": "region",
+              "probe": probe, "target": probe, "dot": False}
+        (below if end is not None else leaders).append(it)
+    for sk in report["skipped"]:
+        sk.pop("_region", None)
+    leaders += _place_below(ax, R, below, st, meas, renderer, walls, obst, placed, gid_for, record)
+    for t in ax.texts:                                  # (labels below their field are obstacles too)
+        if _is_ours(t):
+            _mark_text(R, placed, t, renderer)
+    if leaders:
+        failed = _place_leaders(ax, R, leaders, st, meas, renderer, inside, inner, walls, obst, placed, gid_for,
+                                record, force=False)
+        for it in failed:
+            report["skipped"].append({"label": it["s"], "reason": small})
 
 
 def _label_outside(ax, kind, items, edges, ticks, st, meas, renderer, gid_for, record):

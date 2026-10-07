@@ -228,6 +228,27 @@ def test_map_isopleth(tb, tmp_path):
     points_near(line_points(art[0]), line_points(ta[0]), scale=(1, 1000), mapping=True)
 
 
+def test_map_isopleth_color_labels(tb, tmp_path):
+    """Colour style with region labels: no fill, a legend, the regions found and labelled as in the shaded style;
+    the script finds and labels them the same way (same label set, same summary keys)."""
+    _, imgs = call(tb, "map_phase_diagram", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["FE", "CR", "NI"],
+                                             "vary": "CR", "fixed": {"NI": 0.1}, "tmin": 1300, "tmax": 1900,
+                                             "x_range": [0, 0.4], "composition_step": 0.04, "temperature_step": 20,
+                                             "style": "color", "label_regions": True})
+    script = standalone(tb, imgs[0])
+    assert "isopleth_regions(" in script and "label_diagram(" in script and "fill_regions(" not in script
+    out, stdout, art = run(script, tmp_path)
+    png = Path(imgs[0])
+    a, b = (json.loads(p_.read_text()) for p_ in (png.with_suffix(".json"), out / (png.stem + ".json")))
+    assert set(a) == set(b) and a["style"] == b["style"] == "color"
+    names = (lambda s_: {lab["text"] for lab in s_["labels"]["labels"]})
+    assert names(a) == names(b) and {"L", "BCC", "FCC", "BCC+FCC"} <= names(a)
+    from calphad_tools.figures import load_figure
+    ax = load_figure(str(png)).axes[0]
+    assert ax.get_legend() is not None and not [c for c in ax.collections if c.get_gid() == "region_fill"]
+    assert "isopleth check:" in stdout
+
+
 def test_map_potential_axis_falls_back(tb, tmp_path):
     from calphad_tools import codegen
     _, imgs = call(tb, "map_phase_diagram", {"tdb": "CrNi-06Hal.tdb", "elements": ["CR", "NI"], "tmin": 1400,

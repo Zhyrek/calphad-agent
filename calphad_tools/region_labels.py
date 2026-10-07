@@ -1,7 +1,8 @@
 """Phase-region labels for the diagram tools (toolkit side).
 
-* :func:`label_axes` - labels a binary T-x or ternary isotherm axes from a *recipe* (database, elements, phases,
-  conditions, plot units; see :mod:`phase_regions`), reusing mapped ZPF data when the caller has it.  The recipe
+* :func:`label_axes` - labels a binary T-x, ternary isotherm or isopleth axes from a *recipe* (database, elements,
+  phases, conditions, plot units; see :mod:`phase_regions`), reusing mapped ZPF data when the caller has it (an
+  isopleth: the regions map_phase_diagram stored, see :mod:`isopleth_regions`).  The recipe
   and the region data are stored on the axes (``ax._calphad_diagram``), so a stored figure can be labelled
   (again) later by the ``label_phase_regions`` figure operation.
 * figure operations: ``label_phase_regions``, ``move_label``, ``delete_label``, ``relabel``.
@@ -17,7 +18,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from .figures import OpContext, register_op
-from .mapping_check import GRID_N  # noqa: F401 - equilibrium grid size (shared with the mapping check)
+from .mapping_check import GRID_N, PDENS  # noqa: F401 - equilibrium grid size (shared with the mapping check)
 STYLE_KEYS = {"fontsize", "min_fontsize", "color", "background", "background_alpha", "rotate", "margin",
               "invariant_fontsize", "invariant_color", "fontweight"}
 # accepted and ignored: reaction types (eutectic ...) are never written; leader lines are drawn only for
@@ -54,16 +55,23 @@ def label_axes(ax, recipe: Dict, *, lines=None, invariants=None, label_invariant
     from . import pcache
     from .calc import get_db
     from .label_place import label_diagram
-    from .phase_regions import (equilibrium_grid, key_at, map_lines, ordered_info, regions_from_lines)
+    from .phase_regions import (equilibrium_grid, key_at, lowest_key, map_lines, ordered_info, regions_from_lines)
     t0 = time.time()
     ignored = sorted(k for k in (style or {}) if k in IGNORED_KEYS)
     style = check_style(style)
     kind = recipe["kind"]
-    if kind not in ("binary", "ternary"):
-        raise ValueError("phase-region labels are available for binary T-x diagrams and ternary isotherms")
+    if kind not in ("binary", "ternary", "isopleth"):
+        raise ValueError("phase-region labels are available for binary T-x diagrams, ternary isotherms and isopleths")
     db = get_db(recipe["tdb"])
     comps = sorted(recipe["elements"]) + ["VA"]
     stored = getattr(ax, "_calphad_diagram", None) or {}
+    if kind == "isopleth" and not (stored.get("regions") or {}).get("polygons"):
+        raise ValueError("this isopleth has no stored phase regions: map it again with map_phase_diagram (shaded "
+                         "style or label_regions=true)")
+    if kind == "isopleth":              # the regions are named now: no more names on the lines
+        for t in list(ax.texts):
+            if str(t.get_gid() or "").startswith("line_label:"):
+                t.remove()
     if stored.get("style") == "shaded":      # black invariant temperatures on a shaded (black and white) diagram
         from .diagram_style import LABEL_COLOR
         style = {"invariant_color": LABEL_COLOR, **style}
@@ -78,17 +86,23 @@ def label_axes(ax, recipe: Dict, *, lines=None, invariants=None, label_invariant
             regions = regions_from_lines(lines, invariants or [], recipe, db)
         xlim, ylim = ax.get_xlim(), ax.get_ylim()
         grid = stored.get("grid") if reuse and stored.get("grid_lim") == [list(xlim), list(ylim)] else None
-        if grid is None:
+        if grid is None and kind != "isopleth":     # (an isopleth's regions cover the whole plot)
             grid = equilibrium_grid(db, recipe, info, xlim, ylim, GRID_N[kind])
         n_checks = [0]
 
         def probe(x, y):
             n_checks[0] += 1
+            with pcache.use():      # (an isopleth: denser sampling, as its regions were found with)
+                return key_at(db, recipe, info, x, y, PDENS if kind == "isopleth" else None)
+        if grid is not None:
+            ax._calphad_diagram = {**stored, "recipe": dict(recipe), "regions": regions, "grid": grid,
+                                   "grid_lim": [list(xlim), list(ylim)]}
+        def confirm(key, got, x, y):            # isopleth: key_at may miss the stable set (by Gibbs energy)
+            n_checks[0] += 1
             with pcache.use():
-                return key_at(db, recipe, info, x, y)
-        ax._calphad_diagram = {**stored, "recipe": dict(recipe), "regions": regions, "grid": grid,
-                               "grid_lim": [list(xlim), list(ylim)]}
-        rep = label_diagram(ax, regions, grid, probe, kind=kind, elements=_db_elements(db),
+                return lowest_key(db, recipe, info, x, y, [key, got]) == tuple(key)
+        rep = label_diagram(ax, regions, grid if kind != "isopleth" else None, probe, kind=kind,
+                            confirm=confirm if kind == "isopleth" else None, elements=_db_elements(db),
                             phase_labels=phase_labels, liquids=liquids_of(db, recipe["phases"]),
                             invariants=label_invariants, T_unit=recipe.get("T_unit", "K"), style=style)
     rep["seconds"] = round(time.time() - t0, 1)
@@ -157,7 +171,7 @@ def _op_label(ctx: OpContext):
     d = getattr(ax, "_calphad_diagram", None)
     if not d or "recipe" not in d:
         raise ValueError("this axes has no phase-diagram recipe: make the diagram with map_phase_diagram "
-                         "(binary or ternary isotherm) or plot_diagram_with_data first")
+                         "(binary, ternary isotherm or isopleth) or plot_diagram_with_data first")
     style = {k: op[k] for k in STYLE_KEYS | IGNORED_KEYS if k in op}
     rep = label_axes(ax, d["recipe"], label_invariants=op.get("invariants", True),
                      phase_labels=op.get("phase_labels"), style=style)

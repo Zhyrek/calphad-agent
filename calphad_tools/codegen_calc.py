@@ -480,7 +480,7 @@ def _gen_map_phase_diagram(args, ctx: Ctx) -> str:
     check = check_mode(a.get("check_mapping"))
     label_regions = a.get("label_regions")
     if label_regions is None:       # the tool's default: labels on in the shaded style (no legend)
-        label_regions = shaded and kind in ("binary", "ternary")
+        label_regions = shaded
     if kind == "isopleth" or check == "off":
         ctx.need("import time")
         run_code = ("t_map = time.time()\nstrategy.do_map()\n"
@@ -519,10 +519,12 @@ def _gen_map_phase_diagram(args, ctx: Ctx) -> str:
     units = _unit_code(tC, cu, masses) + "\n\n"
     ctx.mapped(str(Path(png).with_suffix(".json")))
     if kind == "isopleth":
+        regions = bool(shaded or label_regions)
         return head + units + _isopleth_code(ctx, a, els, axis_el, fixed, png, png_name, colors, tC, cu, tlo, thi,
-                                             system, shaded) + _summary_code(
-            ctx, a, "isopleth", els, png, system, cu, shaded, check, checked, bool(dis), False, axis_el=axis_el,
-            balance=[e for e in els if e != axis_el and e not in fixed][0])
+                                             system, shaded, db=db, ph=ph, P=P, xr=xr, step=step, masses=masses,
+                                             check=check, label_regions=bool(label_regions)) + _summary_code(
+            ctx, a, "isopleth", els, png, system, cu, shaded, check, checked, bool(dis), bool(label_regions),
+            axis_el=axis_el, balance=[e for e in els if e != axis_el and e not in fixed][0], regions=regions)
 
     # ---- binary / ternary (tie-line strategies)
     weight_cols = ('\n            row.update({f"W({e})": w for e, w in to_weight(X).items()})'
@@ -647,7 +649,7 @@ _ISO_REGION_SUMMARY = '''
 
 def _summary_code(ctx: Ctx, a: Dict, kind: str, els, png: str, system: str, cu: str, shaded: bool, check: str,
                   checked: bool, renames: bool, labelled: bool, axis_el: Optional[str] = None,
-                  balance: Optional[str] = None) -> str:
+                  balance: Optional[str] = None, regions: bool = False) -> str:
     """Code writing the summary JSON map_phase_diagram writes next to the PNG (same keys; times, paths and the
     hash seed are this run's)."""
     from . import mapping_check as mc
@@ -662,7 +664,7 @@ def _summary_code(ctx: Ctx, a: Dict, kind: str, els, png: str, system: str, cu: 
                      invariants_csv=p.stem + "_invariants.csv")
     fmts = a.get("formats")
     if fmts is None:
-        fmts = ["svg", "pdf"] if (shaded or (labelled and kind != "isopleth")) else []
+        fmts = ["svg", "pdf"] if (shaded or labelled) else []
     for ext in fmts:
         ext = str(ext).lower().lstrip(".")
         if ext != "png":
@@ -672,7 +674,13 @@ def _summary_code(ctx: Ctx, a: Dict, kind: str, els, png: str, system: str, cu: 
     files_code = "{" + ", ".join(f"{k!r}: str(OUT / {name!r})" for k, name in files.items()
                                  if k != "json") + "}"     # (the tool lists the JSON only in its reply)
     if kind == "isopleth":
-        check_json = Ctx.py({"mode": check, "note": "not checked (isopleths and T-MU diagrams are not)"})
+        if not regions:
+            check_json = Ctx.py({"mode": check, "note": "not checked (T-MU diagrams, and isopleths without regions, "
+                                                        "are not)"})
+        elif check == "off":
+            check_json = Ctx.py({"mode": check, "note": "off (isopleth regions found, lines not checked)"})
+        else:
+            check_json = f'{{"mode": {check!r}, "kind": "isopleth", **iso["check"]}}'
         phases_found = 'sorted({ln["zero_phase"] for ln in lines} | {n for inv in invariants for n in inv["phases"]})'
         invs = ('[{**{k: val for k, val in inv.items() if k != "segment"}, f"X({axis_el})_segment": inv["segment"]}\n'
                 '                   for inv in invariants]')
@@ -708,13 +716,15 @@ def _summary_code(ctx: Ctx, a: Dict, kind: str, els, png: str, system: str, cu: 
             "invariants": <<invs>>,
             "files": <<files>>,
             "renamed_when_disordered": <<renamed>>, "style": <<style>>,
-            "hash_seed": "0" if sys.flags.hash_randomization == 0 else (os.environ.get("PYTHONHASHSEED") or "random"),
+            "hash_seed": "0" if sys.flags.hash_randomization == 0 else (os.environ.get("PYTHONHASHSEED")
+                                                                         or "random"),<<preg>>
             "orientation": <<orient>>,
         }
         ''', kind=repr(kind), system=repr(system), tdb=ctx.tdb(a["tdb"]), found=phases_found, cu=repr(cu),
                    mapping=mapping, check=check_json, invs=invs, files=files_code,
                    renamed="dict(RENAMED)" if renames else "{}", style=repr("shaded" if shaded else "color"),
-                   orient=Ctx.py(orient)))
+                   orient=Ctx.py(orient), preg=("\n    \"phase_regions\": " + ('iso["summary"],' if regions else "[],"))
+                   if kind == "isopleth" else ""))
     if labelled:
         code += 'summary["labels"] = {k: report[k] for k in ("labels", "skipped", "seconds", "equilibrium_checks")}\n'
     code += f"(OUT / {files['json']!r}).write_text(json.dumps(summary, indent=1, default=str))\n"
@@ -916,49 +926,62 @@ _ISO_BODY = '''
         return float(np.squeeze(point.global_conditions[v.T]))
 
 
-    # ZPF lines: along each line one phase (listed first) has zero phase fraction
-    lines, rows = [], []
-    for li, zpf in enumerate(strategy.zpf_lines):
-        if not zpf.points:
-            continue
-        mid_names = names(zpf.points[len(zpf.points) // 2].stable_composition_sets)
-        zero, region = mid_names[0], " + ".join(sorted(mid_names))
-        xs, ts, tks = [], [], []
-        for pi, p in enumerate(zpf.points):
-            T = temp(p)
-            xv = float(np.squeeze(p.global_conditions[v.X(axis_el)]))
-            xs.append(c_disp(overall(xv), axis_el))
-            ts.append(T_disp(T))
-            tks.append(T)
-            row = {"line": li, "point": pi, "zero_phase": zero, "phases": region, "T_K": T, "T_C": T - KELVIN,
-                   f"X({axis_el})": xv}
-            for k, (name, cs) in enumerate(zip(names(p.stable_composition_sets), p.stable_composition_sets)):
-                X = dict(zip(s_els, np.asarray(cs.X, dtype=float)))
-                row[f"phase_{k + 1}"] = name
-                row[f"NP_{k + 1}"] = float(cs.NP)
-                row.update({f"X{k + 1}({e})": X[e] for e in elements})
-            rows.append(row)
-        lines.append({"zero_phase": zero, "x": xs, "T": ts, "T_K": tks})
+    def zpf_data():
+        """The ZPF lines (along each line one phase - listed first - has zero phase fraction), their CSV rows, and the
+        invariant equilibria (zero degrees of freedom) crossed by the section."""
+        lines, rows = [], []
+        for li, zpf in enumerate(strategy.zpf_lines):
+            if not zpf.points:
+                continue
+            mid_names = names(zpf.points[len(zpf.points) // 2].stable_composition_sets)
+            zero, region = mid_names[0], " + ".join(sorted(mid_names))
+            xs, ts, tks, point_names = [], [], [], []
+            for pi, p in enumerate(zpf.points):
+                T = temp(p)
+                point_names.append(names(p.stable_composition_sets))   # (the zero-fraction phase first)
+                xv = float(np.squeeze(p.global_conditions[v.X(axis_el)]))
+                xs.append(c_disp(overall(xv), axis_el))
+                ts.append(T_disp(T))
+                tks.append(T)
+                row = {"line": li, "point": pi, "zero_phase": zero, "phases": region, "T_K": T, "T_C": T - KELVIN,
+                       f"X({axis_el})": xv}
+                for k, (name, cs) in enumerate(zip(names(p.stable_composition_sets), p.stable_composition_sets)):
+                    X = dict(zip(s_els, np.asarray(cs.X, dtype=float)))
+                    row[f"phase_{k + 1}"] = name
+                    row[f"NP_{k + 1}"] = float(cs.NP)
+                    row.update({f"X{k + 1}({e})": X[e] for e in elements})
+                rows.append(row)
+            lines.append({"zero_phase": zero, "x": xs, "T": ts, "T_K": tks, "names": point_names})
+        invariants = []
+        nodes = [n for n in strategy.node_queue.nodes
+                 if degrees_of_freedom(n, strategy.components, strategy.num_potential_condition) == 0]
+        try:
+            segments = strategy.get_invariant_data(v.X(axis_el), v.T)
+        except Exception:
+            segments = [None] * len(nodes)
+        for node, seg_data in zip(nodes, segments):
+            node_phases = names(node.stable_composition_sets)
+            T = temp(node)
+            if any(abs(inv["T_K"] - T) < 0.05 and sorted(inv["phases"]) == sorted(node_phases) for inv in invariants):
+                continue
+            seg = sorted(float(np.squeeze(d.x)) for d in seg_data.data) if seg_data is not None else []
+            invariants.append({"T_K": round(T, 3), "T_C": round(T - KELVIN, 3), "phases": node_phases,
+                               "compositions": {n: {e: round(float(x), 6) for e, x in zip(s_els, np.asarray(cs.X))}
+                                                for n, cs in zip(node_phases, node.stable_composition_sets)},
+                               "segment": [round(s, 6) for s in seg]})
+        invariants.sort(key=lambda inv: -inv["T_K"])
+        return lines, rows, invariants
 
-    # invariant equilibria (zero degrees of freedom) crossed by the section
-    invariants = []
-    nodes = [n for n in strategy.node_queue.nodes
-             if degrees_of_freedom(n, strategy.components, strategy.num_potential_condition) == 0]
-    try:
-        segments = strategy.get_invariant_data(v.X(axis_el), v.T)
-    except Exception:
-        segments = [None] * len(nodes)
-    for node, seg_data in zip(nodes, segments):
-        node_phases = names(node.stable_composition_sets)
-        T = temp(node)
-        if any(abs(inv["T_K"] - T) < 0.05 and sorted(inv["phases"]) == sorted(node_phases) for inv in invariants):
-            continue
-        seg = sorted(float(np.squeeze(d.x)) for d in seg_data.data) if seg_data is not None else []
-        invariants.append({"T_K": round(T, 3), "T_C": round(T - KELVIN, 3), "phases": node_phases,
-                           "compositions": {n: {e: round(float(x), 6) for e, x in zip(s_els, np.asarray(cs.X))}
-                                            for n, cs in zip(node_phases, node.stable_composition_sets)},
-                           "segment": [round(s, 6) for s in seg]})
-    invariants.sort(key=lambda inv: -inv["T_K"])
+
+    lines, rows, invariants = zpf_data()
+    fig, ax = plt.subplots(figsize=(7.2, 5.4))
+    ax.set_xlabel(<<xlabel>>)
+    ax.set_ylabel(<<ylabel>>)
+    x_lo, x_hi = (float(np.squeeze(val)) for val in strategy.axis_lims[v.X(axis_el)])   # the mapped range
+    ax.set_xlim(c_disp(overall(x_lo), axis_el), c_disp(overall(x_hi), axis_el))
+    ax.set_ylim(<<ylim>>)
+    <<finish>><<limits>>
+    <<regions>>
     inv_rows = [{"invariant": k, "T_K": inv["T_K"], "T_C": inv["T_C"], "phases": " + ".join(inv["phases"]),
                  "phase": n, f"X({axis_el})_segment": " ".join(f"{s:g}" for s in inv["segment"]),
                  **{f"X({e})": inv["compositions"][n][e] for e in elements}}
@@ -969,19 +992,11 @@ _ISO_BODY = '''
         print(f"{' + '.join(inv['phases'])} at {inv['T_K']:.2f} K ({inv['T_C']:.2f} °C)")
 
     <<plot>>
-    ax.set_xlabel(<<xlabel>>)
-    ax.set_ylabel(<<ylabel>>)
-    all_x = [x for ln in lines for x in ln["x"]]
-    if all_x:
-        ax.set_xlim(min(all_x), max(all_x))
-    ax.set_ylim(<<ylim>>)
-    <<finish>><<limits>>
     '''
 
 _ISO_PLOT = '''
     # plot: each ZPF line coloured by its zero-fraction phase, invariants as red horizontal segments
     colors = <<colors>>
-    fig, ax = plt.subplots(figsize=(7.2, 5.4))
     for ln in lines:
         ax.plot(ln["x"], ln["T"], color=colors[ln["zero_phase"].split("#")[0]], lw=1.3, solid_capstyle="butt")
     for inv in invariants:
@@ -991,15 +1006,119 @@ _ISO_PLOT = '''
 
 _ISO_PLOT_SHADED = '''
     # plot (shaded style): black ZPF lines and invariant segments, no legend
-    fig, ax = plt.subplots(figsize=(7.2, 5.4))
     segments = [[c_disp(overall(x), axis_el) for x in inv["segment"]] for inv in invariants]
     draw_shaded(ax, [[np.column_stack([ln["x"], ln["T"]])] for ln in lines],
                 [np.array([[min(s), T_disp(inv["T_K"])], [max(s), T_disp(inv["T_K"])]])
                  for inv, s in zip(invariants, segments) if len(s) >= 2], kind="isopleth")'''
 
 
+_ISO_REGIONS = '''
+    # ---- phase regions: the areas between the drawn lines, named by the ZPF lines around them (one side of a line has
+    # its zero-fraction phase, the other not) and checked against an equilibrium grid (pdens 500; a second phase set
+    # counts only if it is lower in Gibbs energy) - isopleth_regions; their outlines are snapped onto the lines
+    recipe = <<recipe>>
+    region_info = <<info>>
+    t_regions = time.time()
+    grid = equilibrium_grid(db, recipe, region_info, ax.get_xlim(), ax.get_ylim(), <<n>>, models=strategy.models,
+                            phase_records=strategy.phase_records, pdens=<<pdens>>)
+
+
+    def probe(x, y):
+        """Stable phase set at a plotted point (equilibrium)."""
+        return key_at(db, recipe, region_info, x, y, <<pdens>>)
+
+
+    def resolve(x, y, keys):
+        """Which of the phase sets is stable at a plotted point, by Gibbs energy (restricted equilibria)."""
+        return lowest_key(db, recipe, region_info, x, y, keys)
+
+
+    def find_regions():
+        t0 = time.time()
+        segs = [[c_disp(overall(x), axis_el) for x in inv["segment"]] for inv in invariants]
+        out = isopleth_regions(ax, [{"xy": np.column_stack([ln["x"], ln["T"]]), "zero_phase": ln["zero_phase"],
+                                     "names": ln["names"]} for ln in lines],
+                               [{"T_K": inv["T_K"], "y": T_disp(inv["T_K"]), "x0": min(s), "x1": max(s),
+                                 "phases": list(inv["phases"])} for inv, s in zip(invariants, segs) if len(s) >= 2],
+                               grid, probe, resolve=resolve, info=region_info, check=<<check>>,
+                               deadline=t_regions + <<budget>>)
+        out["check"]["text"] = check_line(out)
+        out["check"]["seconds"] = round(time.time() - t0, 2)
+        return out
+
+
+    def check_line(iso):
+        return iso_check_text(iso["check"], lambda val: f"{val:.3g}", lambda val: f"{val:.0f} <<tu>>")
+
+
+    iso = find_regions()<<retrace>>
+    print(iso["check"]["text"])
+    '''
+
+_ISO_RETRACE = '''
+    seeds = [sd for u in iso["check"]["unbounded"] for sd in u.get("seeds", [])]
+    if seeds and run["finished"]:   # boundaries the mapping missed: short step maps through them seed new lines
+        found = retrace_isopleth(strategy, recipe, seeds, time.time() + <<budget>>)
+        if found["lines_added"]:
+            lines, rows, invariants = zpf_data()
+            before = iso["check"]["unbounded"]
+            iso = find_regions()
+            found["regions_before"] = [{k: val for k, val in u.items() if k != "seeds"} for u in before]
+        iso["check"]["retraced"] = found
+        iso["check"]["text"] = check_line(iso)'''
+
+_ISO_LABELS = '''
+    # ---- phase-region labels: inside each region at its thickest free part, at 8 pt or more with a 2.5 pt margin
+    # (turned if that lets it be larger); a region too small for that is named right below its lowest point (60°),
+    # else in the nearest free space with a leader line, else left out; invariant temperatures next to their line;
+    # every position checked by an equilibrium (or, where that misses the stable set, by Gibbs energy)
+    t_labels, n_checks = time.time(), [0]
+
+
+    def check_probe(x, y):
+        n_checks[0] += 1
+        return probe(x, y)
+
+
+    def confirm(key, got, x, y):
+        n_checks[0] += 1
+        return resolve(x, y, [key, got]) == tuple(key)
+
+
+    report = label_diagram(ax, iso["regions"], None, check_probe, confirm=confirm, <<args>>)
+    report.update(seconds=round(time.time() - t_labels, 1), equilibrium_checks=n_checks[0])
+    for lab in report["labels"]:
+        print("label:", lab["text"], "at", (round(lab["x"], 4), round(lab["y"], 4)), "gid", lab["gid"])
+    for skip in report["skipped"]:
+        print("not labelled:", skip["label"], "-", skip["reason"])
+    '''
+
+
+def isopleth_helpers(ctx: Ctx) -> str:
+    """Sources of phase_regions (equilibrium grid, point equilibria) and isopleth_regions, once per script."""
+    from . import isopleth_regions, phase_regions
+    from .codegen_compare import module_source
+    out = ""
+    if not ctx.__dict__.get("_phase_regions"):
+        ctx._phase_regions = True
+        out += module_source(ctx, phase_regions, "phase regions: equilibrium grid, stable phase set at a point")
+    if not ctx.__dict__.get("_mapping_check"):
+        ctx._mapping_check = True
+        from . import mapping_check
+        out += module_source(ctx, mapping_check, "mapping check (here: retrace_isopleth, missing isopleth boundaries "
+                                                 "traced from short step maps)")
+    if not ctx.__dict__.get("_isopleth_regions"):
+        ctx._isopleth_regions = True
+        out += module_source(ctx, isopleth_regions, "isopleth regions: areas between the ZPF lines, named by the "
+                                                    "lines, checked by equilibrium, outlines snapped to the lines")
+    return out
+
+
 def _isopleth_code(ctx, a, els, axis_el, fixed, png, png_name, colors, tC, cu, tlo, thi, system,
-                   shaded=False) -> str:
+                   shaded=False, *, db=None, ph=None, P=101325.0, xr=(0.0, 1.0), step=0.02, masses=None,
+                   check="auto", label_regions=False) -> str:
+    from . import mapping_tools as mt
+    from .mapping_check import GRID_N, PDENS
     ctx.need("from pycalphad.mapping.utils import degrees_of_freedom")
     balance = [e for e in els if e != axis_el and e not in fixed][0]
     names_ = _register_siblings(ctx, png, ["_zpf_lines.csv", "_invariants.csv"])
@@ -1009,14 +1128,37 @@ def _isopleth_code(ctx, a, els, axis_el, fixed, png, png_name, colors, tC, cu, t
     if a.get("ylim"):
         limits += f"\nax.set_ylim({_num(a['ylim'][0])}, {_num(a['ylim'][1])})"
     plot = _T(_ISO_PLOT_SHADED) if shaded else _T(_ISO_PLOT, colors=Ctx.py(colors, 9))
+    regions = ""
+    if shaded or label_regions:     # the regions (fill and labels): as map_phase_diagram finds them
+        ctx.need("import time")
+        unit = a["temperature_unit"]
+        from pycalphad import variables as v
+        conds = {v.T: (tlo, thi, float(a["temperature_step"]))}
+        rec = mt._recipe(ctx.tb._find_tdb(a["tdb"]), "isopleth", els, ph, P, conds, mt._Units(unit, cu, masses),
+                         unit, a["rename_disordered"], xr, step, float(a["temperature_step"]))
+        rec.update(axis_element=axis_el, balance=balance, fixed=dict(fixed))
+        rec = {k: val for k, val in rec.items() if k != "tdb"}
+        info = ("ordered_info(db, sorted(recipe['elements']) + ['VA'], recipe['phases'], strategy.models)"
+                if a["rename_disordered"] else "{}")
+        tl = float(a.get("time_limit_s") or 600.0)
+        regions = _T(_ISO_REGIONS, recipe=Ctx.py(rec, 9), info=info, n=Ctx.py(tuple(GRID_N["isopleth"])), pdens=PDENS,
+                     check=repr(check != "off"), budget=_num(max(60.0, 0.25 * tl)), tu="°C" if tC else "K",
+                     retrace=("\n" + _T(_ISO_RETRACE, budget=_num(max(30.0, 0.1 * tl))).rstrip("\n"))
+                     if check != "off" else "")
+        helpers = (label_helpers(ctx) if label_regions else "") + isopleth_helpers(ctx)
+    else:
+        helpers = ""
+    plot = (plot + ("\nfill_regions(ax, iso[\"regions\"][\"polygons\"])   # even numbers of phases (2, 4) aliceblue, "
+                    "the rest white" if shaded and regions else ""))
     body = _T(_ISO_BODY, fixed=Ctx.py(fixed), axis=repr(axis_el), bal=repr(balance),
               zcsv=repr(names_["_zpf_lines.csv"]), icsv=repr(names_["_invariants.csv"]),
               plot=plot.strip("\n"),
               xlabel=repr(_comp_label(axis_el, cu)),
               ylabel=repr(_T_label(tC)),
               ylim=f"{_num(tlo - KELVIN if tC else tlo)}, {_num(thi - KELVIN if tC else thi)}",
-              finish="ticks_in(ax)" if shaded else "ax.grid(alpha=0.25)", limits=limits)
-    body = textwrap.dedent(body)
+              finish="ticks_in(ax)" if shaded else "ax.grid(alpha=0.25)", limits=limits,
+              regions=regions.strip("\n"))
+    body = helpers + textwrap.dedent(body) + "\n"
     weight = cu.startswith("weight")
     title = a.get("title") or (f"{system} isopleth, " + ", ".join(
         f"{'w' if weight else 'x'}({k.capitalize()})={val:g}" for k, val in fixed.items())
@@ -1025,13 +1167,28 @@ def _isopleth_code(ctx, a, els, axis_el, fixed, png, png_name, colors, tC, cu, t
                 ltitle=', title="ZPF line of", title_fontsize=8') if not shaded else ""
     fmts = a.get("formats")
     if fmts is None:
-        fmts = ["svg", "pdf"] if shaded else []
-    if shaded:      # no legend: each ZPF line is named on the line by its zero-fraction phase
+        fmts = ["svg", "pdf"] if shaded or label_regions else []
+    if shaded and not label_regions:      # no legend and no region labels: each ZPF line is named on the line
         legend = (_phase_names_source(ctx) + f"line_labels(ax, [(format_phase(ln['zero_phase'], {list(els)!r}, "
                   f"{a.get('phase_labels')!r}), np.column_stack([ln['x'], ln['T']])) for ln in lines])\n")
-    return body + legend + (f"ax.set_title({title!r}, fontsize=11)\n"
-                            f"fig.savefig(OUT / {png_name!r}, dpi=150, bbox_inches='tight')\n"
-                            + _vector_saves(ctx, png, fmts))
+    labels = ""
+    if label_regions:
+        from .region_labels import _db_elements, liquids_of
+        kw = {"kind": "isopleth", "elements": _db_elements(db), "liquids": liquids_of(db, ph)}
+        if a.get("phase_labels"):
+            kw["phase_labels"] = dict(a["phase_labels"])
+        if not a.get("label_invariants", True):
+            kw["invariants"] = False
+        kw["T_unit"] = "C" if tC else "K"
+        st = _label_style(a.get("label_style"), shaded)
+        if st:
+            kw["style"] = dict(st)
+        labels = _T(_ISO_LABELS, args=", ".join(f"{k}={Ctx.py(val)}" for k, val in kw.items()))
+        if not shaded:
+            labels += f"prettify_legend(ax, {list(els)!r}, {a.get('phase_labels')!r})\n"
+    return body + legend + (f"ax.set_title({title!r}, fontsize=11)\n" + labels +
+                                      f"fig.savefig(OUT / {png_name!r}, dpi=150, bbox_inches='tight')\n"
+                                      + _vector_saves(ctx, png, fmts))
 
 
 # ---------------------------------------------------------------------------------------------------------

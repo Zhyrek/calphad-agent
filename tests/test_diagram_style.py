@@ -203,16 +203,139 @@ def _assert_fill_matches_fields(ax, png):
         assert not any(p.contains_point(np.mean(pts, axis=0)) for p in paths), pts
 
 
-def test_isopleth_shaded_names_lines(tb):
+def region_fill(ax):
+    """The isopleth fill: one PolyCollection (gid region_fill) whose paths are the even-phase-count regions."""
+    got = [c for c in fills(ax) if c.get_gid() == "region_fill"]
+    assert len(got) == 1, [c.get_gid() for c in fills(ax)]
+    return got[0]
+
+
+def fill_contains(ax, pc, xy):
+    """Plotted points inside the filled area (outline minus holes: one path per region, holes as later subpaths)."""
+    import matplotlib.path as mpath
+    inside = np.zeros(len(xy), bool)
+    for path in pc.get_paths():
+        rings, cur = [], []
+        for v, c in path.iter_segments(simplify=False):
+            if c == mpath.Path.MOVETO and cur:
+                rings.append(np.array(cur))
+                cur = []
+            if c != mpath.Path.CLOSEPOLY:
+                cur.append(v[-2:])
+        rings.append(np.array(cur))
+        own = mpath.Path(rings[0]).contains_points(xy)
+        for h in rings[1:]:
+            own &= ~mpath.Path(h).contains_points(xy)
+        inside |= own
+    return inside
+
+
+def line_tree(ax):
+    """KD-tree of the drawn lines (display px, sampled every 0.25 pt)."""
+    from scipy.spatial import cKDTree
+    f = ax.figure.dpi / 72
+    pts = []
+    for ln in plain_lines(ax):
+        q = ax.transData.transform(np.column_stack([ln.get_xdata(), ln.get_ydata()]).astype(float))
+        for a, b in zip(q[:-1], q[1:]):
+            n = max(2, int(np.hypot(*(b - a)) / (0.25 * f)) + 1)
+            pts.append(a + (b - a) * np.linspace(0, 1, n)[:, None])
+    return cKDTree(np.vstack(pts))
+
+
+def test_isopleth_shaded_regions(tb):
+    """Shaded isopleth: black lines; the regions with an even number of phases filled aliceblue, exactly up to the
+    black lines; the phases named inside the regions (no names on the lines)."""
     text, imgs = call(tb, "map_phase_diagram", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["FE", "CR", "NI"],
                                                 "vary": "CR", "fixed": {"NI": 0.1}, "tmin": 900, "tmax": 1700,
                                                 "x_range": [0, 0.4], "output_prefix": "iso_shaded"})
     fig, ax = stored(imgs[0])
     assert all(mcolors.to_hex(ln.get_color()) == BLACK and ln.get_linewidth() == 1.25 for ln in plain_lines(ax))
     assert ax.get_legend() is None
+    pc = region_fill(ax)
+    assert facecolors(pc) == {ALICEBLUE} and pc.get_zorder() < min(ln.get_zorder() for ln in plain_lines(ax))
+    assert not [t for t in ax.texts if (t.get_gid() or "").startswith("line_label:")]     # names in the regions
+    texts = {name(t) for t in labels_of(ax)}
+    assert {"FCC", "BCC", "BCC+FCC", "FCC+σ", "BCC+FCC+σ"} <= texts, texts
+    assert check_anchors_iso(ax) >= 5
+    assert_ticks_in(ax)
+    d = ax._calphad_diagram
+    assert d["recipe"]["kind"] == "isopleth" and all(len(p["key"]) for p in d["regions"]["polygons"])
+    # every equilibrium-grid node in the fill has an even number of phases, every node outside it an odd number
+    # (nodes within one grid spacing of a line excepted: the traced line and the point equilibria differ by a
+    # fraction of a grid spacing; the 1-phase-count σ-HT / σ alternative counts like σ)
+    fig.canvas.draw()
+    g = d["grid"]
+    xy = np.asarray(g["xy"], float)
+    keys = [g["table"][k] if k >= 0 else None for k in g["keys"]]
+    px = ax.transData.transform(xy)
+    f = fig.dpi / 72
+    spacing = np.median(np.diff(np.unique(np.round(px[:, 0], 6)))) / f
+    near = line_tree(ax).query(px)[0] / f < spacing
+    filled = fill_contains(ax, pc, xy)
+    ok = np.array([k is not None for k in keys]) & ~near
+    assert ok.sum() > 1000
+    even = np.array([k is not None and len(k) % 2 == 0 for k in keys])
+    assert (filled[ok] == even[ok]).all(), [(tuple(np.round(xy[i], 3)), keys[i]) for i in np.flatnonzero(ok)
+                                            if filled[i] != even[i]][:10]
+    assert filled[ok].sum() > 300 and (~filled[ok]).sum() > 300
+    # the fill meets the black lines: every vertex of its outline lies on a line (within 0.3 pt) or on the frame
+    tree = line_tree(ax)
+    b = ax.bbox
+    for path in pc.get_paths():
+        v = ax.transData.transform(path.vertices[path.codes != 79])
+        frame = (np.abs(v[:, 0] - b.x0) < 0.1) | (np.abs(v[:, 0] - b.x1) < 0.1) | \
+            (np.abs(v[:, 1] - b.y0) < 0.1) | (np.abs(v[:, 1] - b.y1) < 0.1)
+        dist = tree.query(v[~frame])[0] / f
+        assert dist.max() < 0.3, dist.max()
+    summary = json.loads(Path(imgs[0]).with_suffix(".json").read_text())
+    assert summary["phase_regions"] and all(r["shaded"] == (r["n_phases"] % 2 == 0) for r in summary["phase_regions"])
+    assert summary["mapping_check"]["kind"] == "isopleth" and "isopleth check:" in text
+    assert "labels" in summary and Path(imgs[0]).with_suffix(".svg").exists()
+
+
+def check_anchors_iso(ax):
+    """Every region label of an isopleth is in a region of its phases: the equilibrium there (pdens 500), or the
+    lower Gibbs energy of the two (phase_regions.lowest_key; a full equilibrium can miss e.g. the better σ)."""
+    import warnings
+    from calphad_tools.calc import get_db
+    from calphad_tools.phase_regions import key_at, lowest_key, ordered_info
+    rec = ax._calphad_diagram["recipe"]
+    db = get_db(rec["tdb"])
+    info = ordered_info(db, sorted(rec["elements"]) + ["VA"], rec["phases"])
+    n = 0
+    for t in labels_of(ax, ("phase_label:",)):
+        lab = t._calphad_label
+        x, y = lab["at"] if (lab.get("leader") or lab.get("below")) else t.get_position()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            got = key_at(db, rec, info, x, y, 500)
+            if got != tuple(lab["key"]):
+                got = lowest_key(db, rec, info, x, y, [tuple(lab["key"]), got])
+        assert got == tuple(lab["key"]), (name(t), (x, y), got)
+        n += 1
+    return n
+
+
+def test_isopleth_shaded_without_labels_names_lines(tb):
+    """label_regions=false: the fill stays, and each ZPF line is named on the line instead."""
+    text, imgs = call(tb, "map_phase_diagram", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["FE", "CR", "NI"],
+                                                "vary": "CR", "fixed": {"NI": 0.1}, "tmin": 1400, "tmax": 1900,
+                                                "x_range": [0, 0.4], "composition_step": 0.04,
+                                                "temperature_step": 25, "label_regions": False,
+                                                "output_prefix": "iso_lines"})
+    fig, ax = stored(imgs[0])
+    assert facecolors(region_fill(ax)) == {ALICEBLUE}
     names = [name(t) for t in ax.texts if (t.get_gid() or "").startswith("line_label:")]
     assert names and set(names) <= {"L", "BCC", "FCC", "σ"}, names
-    assert_ticks_in(ax)
+    assert not labels_of(ax) and "phase labels" not in text
+    # labelled later (edit_figure label_phase_regions, from the regions stored with the figure): the names on the
+    # lines make way for the region labels
+    text, imgs = call(tb, "edit_figure", {"image": imgs[0], "operations": [{"op": "label_phase_regions"}],
+                                          "output": "iso_lines_labelled.png"})
+    fig, ax = stored(imgs[0])
+    assert not [t for t in ax.texts if (t.get_gid() or "").startswith("line_label:")]
+    assert {"L", "BCC", "FCC", "BCC+FCC", "L+BCC"} <= {name(t) for t in labels_of(ax)}
 
 
 def test_color_style_is_the_old_look(tmp_path):
@@ -364,6 +487,26 @@ def test_show_code_reproduces_shaded_ternary_overview(tb, tmp_path):
     assert got[0]["fills"] == want[0]["fills"] == [ALICEBLUE]
     assert not got[0]["legend"] and not got[0]["tielines"]
     assert len(set(want[0]["labels"]) & set(got[0]["labels"])) >= 3 and len(got[0]["labels"]) >= 4
+
+
+def test_show_code_reproduces_shaded_isopleth(tb, tmp_path):
+    text, imgs = call(tb, "map_phase_diagram", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["FE", "CR", "NI"],
+                                                "vary": "CR", "fixed": {"NI": 0.1}, "tmin": 1000, "tmax": 1800,
+                                                "x_range": [0, 0.5], "composition_step": 0.04,
+                                                "temperature_step": 20, "output_prefix": "iso_code"})
+    got, out = _run_show_code(tb, imgs[0], tmp_path)
+    want = _style_of(stored(imgs[0])[0])
+    assert got[0]["lines"] == want[0]["lines"] == [[BLACK, 1.25, "-"]]
+    assert got[0]["fills"] == want[0]["fills"] == [ALICEBLUE]
+    assert got[0]["ticks"] == want[0]["ticks"] == ["in", "in"] and not got[0]["legend"]
+    assert len(set(want[0]["labels"]) & set(got[0]["labels"])) >= len(want[0]["labels"]) - 1
+    a, b = (json.loads(p.read_text()) for p in (Path(imgs[0]).with_suffix(".json"), out / "iso_code.json"))
+    assert set(a) == set(b) and "phase_regions" in a and "labels" in b
+    assert {r["phases"] for r in a["phase_regions"] if r["area_fraction"] > 0.01} == \
+        {r["phases"] for r in b["phase_regions"] if r["area_fraction"] > 0.01}
+    shaded = (lambda s_: sum(r["area_fraction"] for r in s_["phase_regions"] if r["shaded"]))
+    assert abs(shaded(a) - shaded(b)) < 0.01
+    assert (out / "iso_code.svg").exists() and (out / "iso_code.pdf").exists()
 
 
 def test_color_overview_and_its_code(tmp_path):

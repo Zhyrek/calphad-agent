@@ -30,7 +30,10 @@ incomplete, and nothing downstream checks them.  This pass uses equilibrium calc
    the area alone with half the steps.  New lines are validated as in 1, and the coverage is checked again.
 
 Depends on numpy, pycalphad and phase_regions only, so show_code copies it into the standalone scripts: the
-tools and the generated code run the same check.  Isopleths and T-MU diagrams are not checked.
+tools and the generated code run the same check.  T-MU diagrams are not checked.  Isopleths are checked by
+isopleth_regions (the areas between the traced lines, named by the lines, against an equilibrium grid: regions no
+traced line bounds, lines that are no phase boundary); a missing boundary is traced by :func:`retrace_isopleth`
+(short step maps through it seed new lines, as pycalphad seeds an isopleth).
 """
 from __future__ import annotations
 
@@ -40,11 +43,11 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .phase_regions import (base_name, compset_names, equilibrium_grid, fractions_to_plot, key_of, ordered_info,
-                            plot_to_fractions, T_of_y, xy_of, y_of_T)
+from .phase_regions import (base_name, compset_names, equilibrium_grid, fractions_to_plot, iso_axis_fraction, key_of,
+                            ordered_info, plot_to_fractions, T_of_y, xy_of, y_of_T)
 
 MODES = ("auto", "thorough", "off")
-GRID_N = {"binary": (80, 60), "ternary": (40, 40)}   # the region-label grid (region_labels.GRID_N)
+GRID_N = {"binary": (80, 60), "ternary": (40, 40), "isopleth": (80, 60)}   # region-label grid (region_labels.GRID_N)
 MIN_CELLS = 4               # a missing area must cover at least this many grid cells
 COVER_TOL = 1.0             # a grid cell within this many cell spacings of a traced field is covered by it
 DUP_TOL = 2.5e-3            # duplicate lines: within this distance (mole fraction / fraction of the T range)
@@ -1386,6 +1389,73 @@ def report_text(rep: Dict, recipe: Dict) -> str:
 def report_json(rep: Dict) -> Dict:
     """The report without the grid (for the tool's JSON)."""
     return {k: val for k, val in rep.items() if k not in ("grid", "grid_lim", "text")}
+
+
+# ---------------------------------------------------------------------------------------------------------
+# isopleths: trace the boundaries the mapping missed
+# ---------------------------------------------------------------------------------------------------------
+def retrace_isopleth(strategy, recipe: Dict, seeds: Sequence[Dict], deadline: Optional[float] = None,
+                     tol: float = DUP_TOL) -> Dict:
+    """Isopleth (IsoplethStrategy): trace boundaries the mapping missed, found by isopleth_regions (two phase sets
+    in one area between the traced lines).  Each seed is a short step map through that boundary - {"x": plotted
+    x, "y": [y0, y1]} (in T) or {"y": plotted T, "x": [x0, x1]} (in composition) - whose phase changes become
+    starting points, as pycalphad seeds an isopleth itself (add_starting_points_from_step); the strategy then
+    continues.  New lines that repeat a traced one (within tol of the axis ranges) are dropped.  Returns
+    {"seeds", "lines_added", "finished"}."""
+    from pycalphad import variables as v
+    from pycalphad.mapping import StepStrategy
+    xa = v.X(recipe["axis_element"])
+    lims = {var: sorted(float(np.squeeze(t)) for t in strategy.axis_lims[var]) for var in (xa, v.T)}
+    span = {var: max(hi - lo, 1e-12) for var, (lo, hi) in lims.items()}
+
+    def pts(z):
+        return np.array([[float(np.squeeze(p.global_conditions[xa])) / span[xa],
+                          float(np.squeeze(p.global_conditions[v.T])) / span[v.T]] for p in z.points], float)
+    n0 = len(strategy.zpf_lines)
+    used = 0
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for sd in seeds:
+            if deadline is not None and time.time() > deadline:
+                break
+            conds = dict(strategy.conditions)
+            if np.ndim(sd["y"]):                   # a step in T at one composition
+                t0, t1 = sorted(float(t) for t in T_of_y(recipe, np.asarray(sd["y"], float)))
+                t0, t1 = max(t0, lims[v.T][0]), min(t1, lims[v.T][1])
+                conds[xa] = float(np.clip(iso_axis_fraction(recipe, float(sd["x"])), *lims[xa]))
+                conds[v.T] = (t0, t1, float(strategy.axis_delta[v.T]) / 2)
+            else:                                   # a step in composition at one temperature
+                x0, x1 = sorted(float(t) for t in iso_axis_fraction(recipe, np.asarray(sd["x"], float)))
+                conds[v.T] = float(np.clip(T_of_y(recipe, float(sd["y"])), *lims[v.T]))
+                conds[xa] = (max(x0, lims[xa][0]), min(x1, lims[xa][1]), float(strategy.axis_delta[xa]) / 2)
+            try:
+                step = StepStrategy(strategy.dbf, strategy.components, strategy.phases, conds,
+                                    models=strategy.models, phase_record_factory=strategy.phase_records,
+                                    **strategy._constant_kwargs())
+                step.do_map()
+                strategy.add_starting_points_from_step(step)
+                used += 1
+            except Exception:  # noqa: BLE001 - a seed that fails is skipped
+                continue
+        finished = True
+        if used:
+            while not strategy.iterate():
+                if deadline is not None and time.time() > deadline:
+                    finished = False
+                    break
+    old = [pts(z) for z in strategy.zpf_lines[:n0] if len(z.points) >= 2]
+    keep = []
+    for z in strategy.zpf_lines[n0:]:
+        if len(z.points) < 2:
+            continue
+        P = pts(z)
+        if old and max(float(np.min([_dist_to_polyline(P, Q).max() for Q in old])), 0.0) <= tol:
+            continue                                # the same line traced again
+        keep.append(z)
+        old.append(P)
+    del strategy.zpf_lines[n0:]
+    strategy.zpf_lines.extend(keep)
+    return {"seeds": used, "lines_added": len(keep), "finished": finished}
 
 
 # ---------------------------------------------------------------------------------------------------------

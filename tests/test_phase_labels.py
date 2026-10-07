@@ -3,6 +3,7 @@
 Run:  .venv/bin/python -m pytest -q -p no:warnings tests/test_phase_labels.py
 """
 import csv
+import json
 import os
 import pickle
 import re
@@ -258,14 +259,30 @@ def check_layout(fig, ax, min_fs=MIN_FS):
     return [(s, p) for s, p, _ in rects]
 
 
+class RegionPath:
+    """Display-space outline of a region polygon with its holes (isopleth regions can enclose others):
+    contains_point = inside the outline and in none of the holes."""
+
+    def __init__(self, ax, p):
+        from matplotlib.path import Path as MPath
+        self.outer = MPath(ax.transData.transform(np.asarray(p["xy"], float)))
+        self.holes = [MPath(ax.transData.transform(np.asarray(h, float))) for h in p.get("holes") or []]
+
+    def contains_point(self, pt):
+        return self.outer.contains_point(pt) and not any(h.contains_point(pt) for h in self.holes)
+
+
+def region_path(ax, p):
+    return RegionPath(ax, p)
+
+
 def check_inside(fig, ax):
     """The rotated box of every region label lies inside its region: inside a polygon of its own phases (two-phase
-    fields, tie-triangles), and inside no polygon of other phases.  Returns the number of labels checked."""
-    from matplotlib.path import Path as MPath
+    fields, tie-triangles, isopleth regions - minus their holes), and inside no polygon of other phases.  Returns
+    the number of labels checked."""
     fig.canvas.draw()
     r = fig.canvas.get_renderer()
-    polys = [(tuple(p["key"]), MPath(ax.transData.transform(np.asarray(p["xy"], float))))
-             for p in ax._calphad_diagram["regions"]["polygons"]]
+    polys = [(tuple(p["key"]), region_path(ax, p)) for p in ax._calphad_diagram["regions"]["polygons"]]
     n = 0
     for t in labels_of(ax, ("phase_label:",)):
         if t._calphad_label["kind"] != "region" or not in_region(t):
@@ -868,6 +885,110 @@ def test_plot_diagram_with_data_labels(tb, tmp_path):
     assert n > 0
     check_anchors(ax)
     check_invariants(fig, ax)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# isopleths
+# ---------------------------------------------------------------------------------------------------------
+def check_isopleth_layout(fig, ax, min_fs=MIN_FS):
+    """Isopleth labels: none overlap, none smaller than min_fs, all inside the axes (nothing is named outside an
+    isopleth); a label in its region is a plain text, one below its field is at 60°, one elsewhere has a leader
+    line (any number of phases).  Returns {"region": n, "below": n, "leader": n}."""
+    from matplotlib.text import Annotation
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    rects = [(name(t), text_rect(t, r), t) for t in labels_of(ax)]
+    count = {"region": 0, "below": 0, "leader": 0}
+    for s_, q, t in rects:
+        assert t.get_fontsize() >= min_fs - 1e-9, (s_, t.get_fontsize())
+        assert in_plot(ax, q).all() and not is_outside(t), s_
+        if is_leader(t):
+            assert isinstance(t, Annotation) and t.arrow_patch is not None, s_
+            count["leader"] += 1
+        elif is_below(t):
+            assert t.get_rotation() == 60, s_
+            count["below"] += 1
+        elif t._calphad_label["kind"] == "region":
+            assert not isinstance(t, Annotation), s_
+            count["region"] += 1
+    for i in range(len(rects)):
+        for j in range(i + 1, len(rects)):
+            assert not rects_overlap(rects[i][1], rects[j][1]), (rects[i][0], rects[j][0])
+    return count
+
+
+def check_isopleth_anchors(ax):
+    """Every isopleth label names the phases where it points: the equilibrium there (pdens 500) or, where that
+    misses the stable set (γ' next to γ, the better of two σ), the lower Gibbs energy of the two."""
+    from calphad_tools.calc import get_db
+    from calphad_tools.phase_regions import key_at, lowest_key, ordered_info
+    rec = ax._calphad_diagram["recipe"]
+    db = get_db(rec["tdb"])
+    info = ordered_info(db, sorted(rec["elements"]) + ["VA"], rec["phases"])
+    n = 0
+    for t in labels_of(ax, ("phase_label:",)):
+        x, y = label_anchor(t)
+        key = tuple(t._calphad_label["key"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            got = key_at(db, rec, info, x, y, 500)
+            if got != key:
+                got = lowest_key(db, rec, info, x, y, [key, got])
+        assert got == key, (name(t), (x, y), got)
+        n += 1
+    return n
+
+
+def test_isopleth_alcrni_labels(tb):
+    """Al-Cr-Ni isopleth at x(Cr) = 0.1 (Ni-rich to NiAl): γ, γ', B2, A2, liquid, AlCr₂ - every region named inside
+    it (8 pt or more, 2.5 pt clear of every line), a too small one below it or with a leader line; γ + γ' named
+    as FCC+L1₂ (the grid nodes inside where pycalphad's equilibrium misses γ' are corrected by Gibbs energy)."""
+    text, images = call(tb, "map_phase_diagram", {"tdb": "AlCoCrNi_Liu2016.tdb", "elements": ["AL", "CR", "NI"],
+                                                  "vary": "AL", "fixed": {"CR": 0.1}, "tmin": 600, "tmax": 1600,
+                                                  "temperature_unit": "C", "x_range": [0, 0.5],
+                                                  "output_prefix": "alcrni_iso"})
+    fig, ax = stored(images[0])
+    texts = {name(t) for t in labels_of(ax, ("phase_label:",))}
+    assert {"L", "FCC", "B2", "FCC+L1₂", "BCC+L1₂", "BCC+B2", "L+B2", "B2+FCC", "BCC+B2+L1₂"} <= texts, texts
+    assert any("AlCr₂" in s_ for s_ in texts), texts                         # real subscripts
+    count = check_isopleth_layout(fig, ax)
+    assert count["region"] >= 9 and count["leader"] >= 1
+    assert check_inside(fig, ax) == count["region"]
+    assert check_clearance(fig, ax) >= 2.0
+    assert check_isopleth_anchors(ax) >= 12
+    assert "too small inside, named with a leader line" in text and "isopleth check:" in text
+    assert "missed minimum" in text                                       # γ' missed by the grid's equilibria
+    f = files_from(text)
+    summary = json.loads(f["json"].read_text())
+    assert {r["phases"] for r in summary["phase_regions"]} >= {"FCC_A1 + L12_FCC", "BCC_A2 + BCC_B2"}
+    assert summary["labels"]["labels"] and summary["mapping_check"]["grid_nodes_corrected"]
+    svg = f["svg"].read_text()
+    assert re.search(r'id="phase_label:FCC_A1.L12_FCC"', svg)
+
+
+def test_isopleth_fecrni_gap_and_invariants(tb):
+    """Fe-Cr-Ni isopleth at x(Ni) = 0.04, 300-1000 °C: the BCC miscibility gap (BCC+BCC), three-phase regions and
+    two four-phase invariant lines (each temperature once, right by its line); the two-phase regions (the gap
+    included) filled, the one- and three-phase regions white."""
+    text, images = call(tb, "map_phase_diagram", {"tdb": "CoCrFeNiV_Choi2019.tdb", "elements": ["FE", "CR", "NI"],
+                                                  "vary": "CR", "fixed": {"NI": 0.04}, "tmin": 300, "tmax": 1000,
+                                                  "temperature_unit": "C", "x_range": [0, 0.96],
+                                                  "output_prefix": "fecrni_gap"})
+    fig, ax = stored(images[0])
+    texts = {name(t) for t in labels_of(ax)}
+    assert {"BCC+BCC", "BCC+BCC+FCC", "BCC+FCC+σ", "BCC+σ", "σ", "FCC", "BCC"} <= texts, texts
+    inv = check_invariants(fig, ax)
+    assert len(inv) == 2, inv                                             # 471 °C and 352 °C, once each
+    count = check_isopleth_layout(fig, ax)
+    assert check_inside(fig, ax) == count["region"] >= 10
+    assert check_clearance(fig, ax) >= 2.0
+    assert check_isopleth_anchors(ax) >= 12
+    keys = {tuple(p["key"]): len(p["key"]) % 2 == 0 for p in ax._calphad_diagram["regions"]["polygons"]}
+    assert keys[("BCC_A2", "BCC_A2")] and not keys[("BCC_A2", "BCC_A2", "FCC_A1")]
+    shaded = {tuple(p["key"]) for p in ax._calphad_diagram["regions"]["polygons"] if len(p["key"]) % 2 == 0}
+    fill = next(c for c in ax.collections if c.get_gid() == "region_fill")            # one path per shaded region
+    assert len(fill.get_paths()) == sum(len(p["key"]) % 2 == 0 for p in ax._calphad_diagram["regions"]["polygons"])
+    assert ("BCC_A2", "SIGMA") in shaded and "invariant temperatures: 471 °C, 352 °C" in text
 
 
 def test_label_errors(tb):

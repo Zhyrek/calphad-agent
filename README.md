@@ -287,11 +287,15 @@ in the **shaded** style by default:
   (`aliceblue`), no tie-lines, minor ticks on and all ticks pointing in on all four sides.
 * **Ternary isotherm:** grey (#999999) phase boundaries and tie-triangle edges, two-phase fields filled light blue
   (three-phase triangles stay white), no tie-lines.
+* **Isopleth:** black ZPF lines and invariant lines; every region with an even number of phases (two-phase, and in a
+  quaternary isopleth four-phase) filled light blue, one- and three-phase regions white - as the two-phase fields of
+  a binary. The regions are not bounded by tie-lines in an isopleth, so they are found from the drawn lines (see
+  *Isopleth regions* below); the fill is snapped onto the black lines.
 * **Labels:** black text with no background box, so the fill shows through.
 * **No legend:** the phases are named by labels inside the figure. `label_regions` is on by default in this style
-  (pass `label_regions: false` to leave it out). Isopleths and T–μ diagrams can't have region labels, so each line is
-  named on the line instead. With experimental data, the legend lists the data references only, and it sits inside
-  the axes.
+  (pass `label_regions: false` to leave it out; an isopleth then names each ZPF line on the line). T–μ diagrams
+  can't have region labels, so each line is named on the line instead. With experimental data, the legend lists the
+  data references only, and it sits inside the axes.
 * **Files:** PNG, plus SVG and PDF with editable text (`formats` changes that).
 
 Titles, axis labels and corner labels are the same in both styles. For the coloured look (one colour per phase,
@@ -315,13 +319,42 @@ that are not equilibria are removed (Ce–Co: BCC + Ce₅Co₁₉ + L at pure Ce
 pycalphad rejects as metastable are added when point equilibria confirm them (Fe–Ni: BCC + FCC + FCC#2 at 683 K), and
 two-phase areas of an equilibrium grid that no traced line bounds are traced again; the result says what was changed or could not be
 repaired in one `mapping check:` line, with details in the JSON. `check_mapping: "off"` gives pycalphad's raw lines
-and `"thorough"` validates more points; the code is `calphad_tools/mapping_check.py`, which `show_code` copies, and
-isopleths and T–μ diagrams are not checked.
+and `"thorough"` validates more points; the code is `calphad_tools/mapping_check.py`, which `show_code` copies.
+T–μ diagrams are not checked. Isopleths are checked through their regions (next section): an area between the
+traced lines that holds two phase sets is a boundary the mapping missed - short step maps through it seed new lines
+(as pycalphad seeds an isopleth) and it is traced; a ZPF line with the same phases on both sides is reported as no
+phase boundary. The result has one `isopleth check:` line, details under `mapping_check` in the JSON.
+
+### Isopleth regions
+
+In an isopleth a ZPF line separates a region with its zero-fraction phase from one without it, so the regions
+(for the fill and the labels) are found from the drawn lines, in `calphad_tools/isopleth_regions.py`:
+
+1. **Areas.** The ZPF lines and invariant lines are walls on a 0.25 pt raster of the axes; a line end within 2 pt
+   of another line or the frame is joined to it. The connected areas between them are the candidate regions.
+2. **Names.** A line with phase set S has S on one side and S without its zero-fraction phase on the other, so the
+   set all the lines around an area allow is its name (FCC+L1₂ between the γ′ solvus and the γ solvus). Where the
+   lines leave two candidates, an equilibrium grid (80 × 60 nodes, `pdens` 500) inside the area decides, weighted by
+   the nodes' distance from the lines; with no node inside, the lower Gibbs energy of the two at the area's thickest
+   point. Ordered/disordered states are named as on the lines (B2 disordered = BCC).
+3. **Check.** Grid nodes at least one grid spacing inside an area must agree with its name. A different phase set
+   on 4+ nodes counts only if it is lower in Gibbs energy there (restricted equilibria, denser sampling if needed):
+   pycalphad's global minimisation misses e.g. γ′ next to γ in Al–Cr–Ni, or the better of the two σ descriptions in
+   Choi 2019 Fe–Cr–Ni - those nodes are reported as corrected, not as a region. A real second phase set is a missing
+   boundary (traced, see *Mapping check*); if it cannot be traced, the area is split by the nearest grid node and the
+   result says so.
+4. **Outlines.** Each region's outline is a contour of its raster cells with every vertex near a line moved onto
+   that line and the vertices beyond the frame onto the frame, so the fill neither crosses nor falls short of the
+   black lines.
+
+The JSON has `phase_regions` (phases, number of phases, shaded, extent, area fraction, what named it). The regions
+are computed only in the shaded style or with `label_regions` (an isopleth in the colour style without labels is as
+before). Cost: the grid, checks and labels added 15-25 s to the test isopleths (Fe–Cr–Ni 12 → 27 s, Al–Cr–Ni 49 → 73 s).
 
 ### Phase labels on diagrams
 
-`map_phase_diagram` (binary T–x and ternary isotherms) and `plot_diagram_with_data` take `label_regions: true` (the default in the shaded style).
-The phases of each region are then written on the diagram, and on binaries the invariant temperatures too. To label
+`map_phase_diagram` (binary T–x, ternary isotherms and isopleths) and `plot_diagram_with_data` take `label_regions: true` (the default in the shaded style).
+The phases of each region are then written on the diagram, and on binaries and isopleths the invariant temperatures too. To label
 a diagram you already made, use the `edit_figure` operation `label_phase_regions`. That works after data points were
 added, and the labels avoid those points.
 
@@ -354,6 +387,16 @@ added, and the labels avoid those points.
     60° with no box; it starts about 2 pt below that point and runs down and away, only where it crosses no line
     or other label.
   * The liquid and the end-member solid solutions are never named below the x axis.
+* **Isopleths** follow the same rules for every region, whatever its number of phases: inside it (fitted at 8 pt or
+  more with the margin, turned if that helps); else right below its lowest point inside the axes (60°, crossing no
+  line); else in the nearest free space with a leader line to its thickest point, only where that leader crosses no
+  other label; else left out (listed). Nothing is named outside the axes: the x axis of an isopleth is the alloy's
+  composition, not a phase's, so there are no end-member phases or compositions to point at. Every drawn line is
+  kept clear (also a line end inside a region). A label position is confirmed by an equilibrium, or - where that
+  misses the stable set (γ′, σ above) - by the lower Gibbs energy of the two phase sets. An isopleth drawn with
+  `label_regions: false` can be labelled later with `label_phase_regions` (from the regions stored with the figure;
+  the names on the lines are removed then); `show_code` reproduces isopleth labels only through `label_regions` in
+  the `map_phase_diagram` cell.
 * **Leader lines** are the last resort for single phases. They are used for ternary-only phases (fields that touch
   no edge, and ternary compounds inside the triangle), and for intermediate binary phases with no room below their
   field. The label goes in the nearest free space; inside a ternary that means a free area of the triangle, else
@@ -363,7 +406,7 @@ added, and the labels avoid those points.
   inside the plot. Their name goes outside, right at their composition: below the x axis of a binary (text at
   60°), or beyond the nearest edge of a ternary (60° at the bottom edge, ±30° — square to the edge — at the slanted
   edges). A tick label that such a name covers is hidden; the others stay.
-* **Invariant temperatures** (binary, `label_invariants`) go right above or right below the invariant line, inside
+* **Invariant temperatures** (binary and isopleth, `label_invariants`) go right above or right below the invariant line, inside
   the adjacent region, e.g. "1345 °C", sized to fit and kept `margin` away from other lines. Each line gets at most
   one temperature. Below the minimum size they are left out. Reaction types (eutectic …) are not written.
 * **Editing.** Each label is a single text object with an id like `phase_label:LIQUID.FCC_A1` or

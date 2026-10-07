@@ -3788,6 +3788,9 @@ class OpWriter:
         if not d or "recipe" not in d:
             raise OpCodeError("label_phase_regions: the figure has no phase-diagram recipe")
         rec = dict(d["recipe"])
+        if rec["kind"] == "isopleth":
+            raise OpCodeError("label_phase_regions on an isopleth: its regions come from the map_phase_diagram cell "
+                              "(label_regions there)")
         if rec["kind"] == "binary":       # standalone figures hold the values as displayed (e.g. °C, not K)
             fy, fx = real.yaxis.get_major_formatter(), real.xaxis.get_major_formatter()
             if isinstance(fy, ScaledFormatter):

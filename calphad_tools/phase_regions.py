@@ -1,10 +1,13 @@
-"""Phase regions of a binary T-x diagram or a ternary isotherm, in the coordinates of the plot.
+"""Phase regions of a binary T-x diagram, a ternary isotherm or an isopleth, in the coordinates of the plot.
 
 Needs pycalphad and numpy only.  A *recipe* describes the diagram::
 
-    {"kind": "binary" | "ternary", "elements": [balance, x_el(, y_el)], "phases": [...], "P": 101325,
-     "T_K": 1173.15 (ternary), "tmap": [a, b] (binary: T in K = a * y + b),
+    {"kind": "binary" | "ternary" | "isopleth", "elements": [balance, x_el(, y_el)], "phases": [...], "P": 101325,
+     "T_K": 1173.15 (ternary), "tmap": [a, b] (binary / isopleth: T in K = a * y + b),
      "comp": {"scale": 1 | 100, "weight": False, "masses": {el: g/mol}}}   # plotted composition / scale
+
+An isopleth's recipe also has "axis_element" (x axis), "balance" and "fixed" ({element: mole fraction}); its x is
+the fraction (scale, weight) of the axis element of the whole alloy.  Its regions are built by isopleth_regions.
 
 Region identity is a *key*: the sorted phase names with composition-set markers removed, e.g.
 ('BCC_A2', 'BCC_A2') for a miscibility gap.  An ordered phase whose ordered sublattices are equivalent is named
@@ -16,7 +19,9 @@ after its disordered phase (B2_BCC -> BCC_A2), as in the phase-boundary data.
 * :func:`map_lines` - that ZPF data from a pycalphad mapping (checked and repaired: mapping_check);
   :func:`strategy_lines` - the same from a finished mapping strategy;
 * :func:`equilibrium_grid` - stable phase set on a coarse grid (finds regions the mapping did not trace);
-* :func:`key_at` - phase set at one plotted point (used to confirm every label position).
+* :func:`key_at` - phase set at one plotted point (used to confirm every label position);
+* :func:`lowest_key` - which of two phase sets is stable at a point, by Gibbs energy (where a full equilibrium's
+  global minimisation misses one).
 """
 from __future__ import annotations
 
@@ -99,11 +104,31 @@ def _to_mole(fr: Dict[str, float], masses: Dict[str, float]) -> Dict[str, float]
     return {e: (fr[e] / masses[e]) / tot for e in fr}
 
 
+def iso_axis_fraction(recipe: Dict, x) -> np.ndarray:
+    """Isopleth: mole fraction of the axis element at plotted x (mass fraction / percent converted with the other
+    elements' fixed mole fractions)."""
+    c = recipe.get("comp") or {}
+    w = np.asarray(x, float) / float(c.get("scale", 1.0))
+    if not c.get("weight"):
+        return w
+    m = {e: float(c["masses"][e]) for e in recipe["elements"]}
+    a, b, fixed = recipe["axis_element"], recipe["balance"], recipe["fixed"]
+    C = sum(float(val) * m[e] for e, val in fixed.items())
+    F = sum(float(val) for val in fixed.values())
+    return w * (C + (1.0 - F) * m[b]) / (m[a] * (1.0 - w) + w * m[b])
+
+
 def plot_to_fractions(recipe: Dict, x, y=None) -> Dict[str, np.ndarray]:
-    """Mole fractions of the axis elements at plotted composition(s)."""
+    """Mole fractions of the axis elements (isopleth: of every element) at plotted composition(s)."""
     els = recipe["elements"]
     c = recipe.get("comp") or {}
     s = float(c.get("scale", 1.0))
+    if recipe["kind"] == "isopleth":
+        xa = iso_axis_fraction(recipe, x)
+        fr = {e: np.full_like(xa, float(val)) for e, val in recipe["fixed"].items()}
+        fr[recipe["axis_element"]] = xa
+        fr[recipe["balance"]] = 1.0 - xa - sum(float(val) for val in recipe["fixed"].values())
+        return fr
     if recipe["kind"] == "binary":
         fr = {els[1]: np.asarray(x, float) / s}
         fr[els[0]] = 1.0 - fr[els[1]]
@@ -116,7 +141,8 @@ def plot_to_fractions(recipe: Dict, x, y=None) -> Dict[str, np.ndarray]:
 
 
 def fractions_to_plot(recipe: Dict, X: Dict[str, float]) -> Tuple[float, float]:
-    """Plotted composition(s) of a phase with mole fractions X (ternary: (x, y); binary: x only in [0])."""
+    """Plotted composition(s) of a phase with mole fractions X (ternary: (x, y); binary / isopleth: x only in
+    [0]; isopleth: X is the overall composition)."""
     els = recipe["elements"]
     c = recipe.get("comp") or {}
     s = float(c.get("scale", 1.0))
@@ -127,6 +153,8 @@ def fractions_to_plot(recipe: Dict, X: Dict[str, float]) -> Tuple[float, float]:
         fr = {e: fr[e] * m[e] / tot for e in els}
     if recipe["kind"] == "binary":
         return fr[els[1]] * s, float("nan")
+    if recipe["kind"] == "isopleth":
+        return fr[recipe["axis_element"]] * s, float("nan")
     return fr[els[1]] * s, fr[els[2]] * s
 
 
@@ -143,7 +171,7 @@ def y_of_T(recipe: Dict, T):
 def xy_of(recipe: Dict, X: Dict[str, float], T: float) -> Tuple[float, float]:
     """Plotted point of a phase composition X at temperature T (K)."""
     px, py = fractions_to_plot(recipe, X)
-    if recipe["kind"] == "binary":
+    if recipe["kind"] in ("binary", "isopleth"):
         return px, float(y_of_T(recipe, T))
     return px, py
 
@@ -379,6 +407,11 @@ def conditions_at(recipe: Dict, x, y) -> Dict:
     if recipe["kind"] == "binary":
         conds[v.T] = float(T_of_y(recipe, y))
         conds[v.X(els[1])] = float(np.clip(fr[els[1]], 1e-6, 1 - 1e-6))
+    elif recipe["kind"] == "isopleth":
+        conds[v.T] = float(T_of_y(recipe, y))
+        conds[v.X(recipe["axis_element"])] = float(np.clip(fr[recipe["axis_element"]], 1e-6, 1 - 1e-6))
+        for e, val in recipe["fixed"].items():
+            conds[v.X(e)] = float(val)
     else:
         conds[v.T] = float(recipe["T_K"])
         for e in els[1:]:
@@ -386,25 +419,70 @@ def conditions_at(recipe: Dict, x, y) -> Dict:
     return conds
 
 
-def key_at(db, recipe: Dict, info: Dict[str, tuple], x: float, y: float) -> Optional[tuple]:
-    """Stable phase set (a region key) at a plotted point, or None (outside the diagram / no result)."""
+def key_at(db, recipe: Dict, info: Dict[str, tuple], x: float, y: float,
+           pdens: Optional[int] = None) -> Optional[tuple]:
+    """Stable phase set (a region key) at a plotted point, or None (outside the diagram / no result).  pdens: point
+    sampling of the equilibrium (None: pycalphad's default)."""
     from pycalphad import equilibrium
     els = recipe["elements"]
     fr = plot_to_fractions(recipe, x, y)
-    if any(not (-1e-9 <= float(fr[e]) <= 1 + 1e-9) for e in els):
+    if any(not (-1e-9 <= float(fr[e]) <= 1 + 1e-9) for e in els) or not np.isfinite(float(T_of_y(recipe, y))):
         return None
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        eq = equilibrium(db, sorted(els) + ["VA"], list(recipe["phases"]), conditions_at(recipe, x, y))
+        eq = equilibrium(db, sorted(els) + ["VA"], list(recipe["phases"]), conditions_at(recipe, x, y),
+                         **({"calc_opts": {"pdens": int(pdens)}} if pdens else {}))
     return _keys_from_eq(eq, info)[0]
 
 
+def key_phases(key, phases: Sequence[str], info: Dict[str, tuple]) -> List[str]:
+    """Database phases that give the states of a region key (an ordered phase also for its disordered name)."""
+    out = set()
+    for n in key:
+        b = base_name(n)
+        if b in phases:
+            out.add(b)
+        out |= {o for o, inf in info.items() if inf[0] == b and o in phases}
+    return sorted(out)
+
+
+def lowest_key(db, recipe: Dict, info: Dict[str, tuple], x: float, y: float, keys, tol: float = 0.5,
+               pdens: int = 500) -> Optional[tuple]:
+    """Of candidate phase sets at a plotted point, the one with the lowest Gibbs energy (an equilibrium restricted
+    to each candidate's phases; a candidate whose restricted equilibrium is not that phase set is out; within tol
+    J/mol the earlier candidate wins).  Settles a point where the global minimisation of a full equilibrium
+    misses the stable phase set (e.g. two nearly equal σ descriptions); None if no candidate holds."""
+    from pycalphad import equilibrium
+    comps = sorted(recipe["elements"]) + ["VA"]
+    cand = []
+    for k in keys:
+        k = tuple(k)
+        phs = key_phases(k, list(recipe["phases"]), info)
+        if not phs:
+            continue
+        for pd in (int(pdens), 10 * int(pdens)):     # (a second composition set can need dense sampling)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                eq = equilibrium(db, comps, phs, conditions_at(recipe, x, y), calc_opts={"pdens": pd})
+            gm = float(np.squeeze(eq.GM.values))
+            if _keys_from_eq(eq, info)[0] == k and np.isfinite(gm):
+                cand.append((gm, k))
+                break
+    if not cand:
+        return None
+    g0 = min(g for g, _ in cand)
+    return next(k for g, k in cand if g <= g0 + tol)
+
+
 def equilibrium_grid(db, recipe: Dict, info: Dict[str, tuple], xlim, ylim, n: Tuple[int, int] = (80, 60),
-                     models=None, phase_records=None) -> Dict:
+                     models=None, phase_records=None, pdens: Optional[int] = None) -> Dict:
     """Stable phase sets on a grid over the plotted area: {"xy": [N, 2] plotted points, "keys": [N] int (index
     into "table", -1 = none), "table": [key, ...]}.  models / phase_records: those of a mapping strategy of the
-    same system (saves building and compiling them again; same results)."""
+    same system (saves building and compiling them again; same results).  pdens: point sampling (None:
+    pycalphad's default; an isopleth uses 500, which finds e.g. γ + γ' of one TDB phase)."""
     kw = {"model": models, "phase_records": phase_records} if models is not None else {}
+    if pdens:
+        kw["calc_opts"] = {"pdens": int(pdens)}
     from pycalphad import equilibrium, variables as v
     els = recipe["elements"]
     comps = sorted(els) + ["VA"]
@@ -419,6 +497,27 @@ def equilibrium_grid(db, recipe: Dict, info: Dict[str, tuple], xlim, ylim, n: Tu
             eq = equilibrium(db, comps, list(recipe["phases"]), conds, **kw)
         keys = _keys_from_eq(eq, info)                       # T major, then X
         pts = np.array([[x, y] for y in ys for x in xs], float)
+    elif recipe["kind"] == "isopleth":
+        nx, ny = int(n[0]), int(n[1])
+        xs = xlim[0] + (np.arange(nx) + 0.5) / nx * (xlim[1] - xlim[0])
+        ys = ylim[0] + (np.arange(ny) + 0.5) / ny * (ylim[1] - ylim[0])
+        a = recipe["axis_element"]
+        xa = iso_axis_fraction(recipe, xs)
+        ok_x = (xa > 1e-9) & (1.0 - xa - sum(float(val) for val in recipe["fixed"].values()) > 1e-9)
+        xs = xs[ok_x]
+        conds = {v.P: float(recipe.get("P", 101325.0)), v.N: 1, v.T: T_of_y(recipe, ys), v.X(a): xa[ok_x]}
+        conds.update({v.X(e): float(val) for e, val in recipe["fixed"].items()})
+        keys, pts = [], np.zeros((0, 2))
+        if len(xs):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                eq = equilibrium(db, comps, list(recipe["phases"]), conds, **kw)
+            dims = [str(d) for d in eq.Phase.dims if str(d) != "vertex"]
+            flat = _keys_from_eq(eq, info)
+            idx = np.arange(len(flat)).reshape([eq.Phase.sizes[d] for d in dims])
+            idx = np.moveaxis(idx, [dims.index("T"), dims.index(f"X_{a}")], [0, 1]).reshape(len(ys), len(xs), -1)
+            keys = [flat[i] for i in idx[:, :, 0].ravel()]   # T major, then X
+            pts = np.array([[x, y] for y in ys for x in xs], float)
     else:
         m = int(n[0])
         g = (np.arange(m) + 0.5) / m
