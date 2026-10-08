@@ -128,7 +128,7 @@ UNIT = {"type": "string", "enum": ["K", "C"], "description": "Temperature unit o
 class ToolBox:
     def __init__(self, workdir: str, output_dir: str, ui: UI, python_tool: str = "ask",
                  max_chars: int = 20000, llm_cfg=None, interactive: bool = True, diagram_style: str = "shaded",
-                 save_notebooks: bool = True, hpc=None):
+                 save_notebooks: bool = True, hpc=None, merge_cfg=None):
         import threading
         self.workdir = Path(workdir).resolve()
         self.out = (self.workdir / output_dir).resolve()
@@ -143,6 +143,8 @@ class ToolBox:
         # [hpc] settings (calphad_tools.hpc.HPCConfig): Flux detection / submission and run-size defaults for ESPEI.
         # None (library use, tests, replays): everything runs locally - only the agent passes its config.
         self.hpc = hpc
+        # [merge] settings (agent.config.MergeConfig): tentative-parameter defaults of the merge tools (None: built-in)
+        self.merge_cfg = merge_cfg
         self.stop_waiting = threading.Event()     # set (web "stop waiting" button) to end a wait_job until=done
         self.interactive = interactive            # is a human available to confirm?
         from calphad_tools.diagram_style import check_style
@@ -157,6 +159,11 @@ class ToolBox:
         self._register_all()
 
     # ------------------------------------------------------------------ utils
+    def tentative_default(self):
+        """The merge tools' ``tentative`` when a call gives none: [merge] of the config, else True (defaults)."""
+        cfg = self.merge_cfg
+        return cfg.tentative_setting() if cfg is not None and hasattr(cfg, "tentative_setting") else True
+
     def p(self, path: str) -> str:
         """Resolve a user/LLM supplied path against the working directory."""
         pp = Path(os.path.expanduser(path))
@@ -494,18 +501,23 @@ class ToolBox:
                   "automatically; other conflicts are returned with ids and options. Present pending conflicts to "
                   "the user and call again with their answers in `decisions` (conflict id -> option key; a "
                   "'system:A-B' key answers every parameter conflict of that subsystem). Never invent answers "
-                  "for non-obvious conflicts unless the user said to (then use policy 'first' or 'last').",
+                  "for non-obvious conflicts unless the user said to (then use policy 'first' or 'last'). "
+                  "Tentative L0 terms (TENT_MIX/TENT_VA) are added for new mixings no file describes; an assessed "
+                  "term always replaces a tentative one.",
                   {"tdbs": STRS, "output": S,
                    "decisions": {"type": "object", "additionalProperties": {"type": "string"}},
-                   "policy": {"type": "string", "enum": ["ask", "first", "last"]}},
+                   "policy": {"type": "string", "enum": ["ask", "first", "last"]},
+                   "tentative": {"anyOf": [B, {"type": "object"}],
+                                 "description": "true (default) | false | {mixing_per_atom: 50000, vacancy: 200000}"}},
                   ["tdbs", "output"])
-        def merge_tdbs(tdbs, output, decisions=None, policy: str = "ask"):
+        def merge_tdbs(tdbs, output, decisions=None, policy: str = "ask", tentative=None):
             paths = [self._find_tdb(t) for t in tdbs]
             key = "|".join(paths)
             dec = {**self.merge_decisions.get(key, {}), **(decisions or {})}
             self.merge_decisions[key] = dec
             out = self.outp(output, "merged.tdb")
-            r = merge.merge(paths, out, decisions=dec, policy=policy)
+            r = merge.merge(paths, out, decisions=dec, policy=policy,
+                            tentative=self.tentative_default() if tentative is None else tentative)
             if not r["written"]:
                 return ("NOT WRITTEN - decisions needed. Ask the user (group parameter conflicts by subsystem).\n"
                         + r["report"]), []

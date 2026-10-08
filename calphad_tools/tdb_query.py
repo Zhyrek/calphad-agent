@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .pwinline import MissingRef, inline
-from .tdbparse import (TDB, ExpressionError, Parameter, Phase, Piecewise, parse_piecewise, parse_tdb,
+from .tdbparse import (TDB, ExpressionError, Parameter, Phase, Piecewise, is_tentative, parse_piecewise, parse_tdb,
                        resolve_keyword)
 from .tdbtables import Subsystem, expanded_text, expression_table, is_vv, pw_segments
 
@@ -176,10 +176,12 @@ def phase_summary(tdb: TDB, name: str) -> Dict[str, Any]:
 
 
 def param_row(tdb: TDB, view: Subsystem, p: Parameter, expand: bool) -> Dict[str, Any]:
+    tent = is_tentative(p, tdb)
     row = {"file": tdb.name, "phase": p.key.phase, "group": param_group(p), "parameter": p.raw_name,
            "constituents": ":".join(",".join(sl) for sl in p.key.constituents), "order": p.key.order,
            "elements": "-".join(e.capitalize() for e in param_elements(view, p)),
-           "T_ranges": t_ranges(p.expr), "expression": written(p.expr), "reference": p.reference}
+           "T_ranges": t_ranges(p.expr), "expression": written(p.expr),
+           "reference": (f"{p.reference} · tentative" if tent else p.reference), "tentative": tent}
     if expand:
         segs = inline_parameter(view, p)
         row["expanded"] = expanded_text(segs).replace("\n", " | ") if segs else "(cannot inline: undefined function)"
@@ -374,11 +376,15 @@ def mode_phase(tdb: TDB, phases, elements, expand: bool, group_by: str, max_rows
             counts[r["group"]] = counts.get(r["group"], 0) + 1
         T.add("  parameters: " + (", ".join(f"{g} {n}" for g, n in sorted(counts.items(), key=lambda kv:
                                                                            _group_rank(kv[0]))) or "none"))
+        tl = [r["parameter"] for r in rows if r.get("tentative")]
+        if tl:
+            T.add(f"  TENTATIVE (not assessed; TENT_MIX / TENT_VA): {len(tl)}: " + ", ".join(tl[:6])
+                  + (f", +{len(tl) - 6} more" if len(tl) > 6 else ""))
         if group_by == "type":
             rows = sorted(rows, key=lambda r: (_group_rank(r["group"]), r["constituents"]))
         cols = ["group", "parameter", "T_ranges", "expanded" if expand else "expression", "reference"]
         per = max(3, max_rows // max(1, len(show)))
-        _table_lines(T, rows, cols, per, {"parameter": 34, "expression": 60, "expanded": 70, "reference": 12})
+        _table_lines(T, rows, cols, per, {"parameter": 34, "expression": 60, "expanded": 70, "reference": 22})
     if len(names) > len(show):
         T.add(f"\n... {len(names) - len(show)} more phase(s): {', '.join(names[len(show):][:20])}")
     return {"models": models, "parameters": params}
@@ -407,7 +413,11 @@ def mode_element(tdb: TDB, phases, elements, expand: bool, group_by: str, max_ro
     T.add("  by subsystem: " + ", ".join(f"{s} {n}" for s, n in sorted(systems.items(), key=lambda kv:
                                                                           (kv[0].count("-"), kv[0]))))
     cols = ["phase", "group", "parameter", "T_ranges", "expanded" if expand else "expression", "reference"]
-    _table_lines(T, rows, cols, max_rows, {"parameter": 34, "expression": 55, "expanded": 65, "reference": 12})
+    _table_lines(T, rows, cols, max_rows, {"parameter": 34, "expression": 55, "expanded": 65, "reference": 22})
+    tl = [r["parameter"] for r in rows if r.get("tentative")]
+    if tl:
+        T.add(f"  TENTATIVE (not assessed; TENT_MIX / TENT_VA): {', '.join(tl[:6])}"
+              + (f", +{len(tl) - 6} more" if len(tl) > 6 else ""))
     return {"parameters": rows}
 
 
@@ -640,8 +650,12 @@ def mode_collisions(tdbs: List[TDB], phases, elements, max_rows: int, T: Text, r
                       "identical" if same_text and er.status != "differs" else "numerically equal")
         else:
             status = "identical" if same_text and er.status == "same" else "differs (not evaluated)"
+        tent = [lab for lab in have if is_tentative(er.refs.get(lab, ""), citation=er.citations.get(lab, ""))]
+        if tent and len(tent) < len(have) and status.startswith("differs"):
+            status += f" (tentative in {','.join(tent)}: a merge takes the assessed value)"
         row = {"key": er.key, "phase": er.phase, "parameter": er.label, "in": ",".join(have), "status": status,
-               "max_abs_diff": er.max_diff if math.isfinite(er.max_diff) else "", "note": er.note}
+               "max_abs_diff": er.max_diff if math.isfinite(er.max_diff) else "", "note": er.note,
+               "tentative_in": ",".join(tent)}
         for lab in labels:
             row[lab] = er.shown.get(lab) or ""
         rows.append(row)

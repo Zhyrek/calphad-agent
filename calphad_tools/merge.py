@@ -11,6 +11,10 @@ decisions.  Anything "obvious" is resolved automatically (and logged):
   model *with* the interstitial sublattice
 * same phase with different constituents -> union of constituents
 * magnetic / order-disorder type definitions -> re-lettered so codes never clash
+* tentative parameters (calphad_tools.tentative): an assessed parameter always replaces a tentative one (reference
+  TENT_MIX / TENT_VA) whichever file it comes from; mixings the union creates and no file describes get tentative
+  L0 terms (rule 1: new pair on a sublattice of an intermetallic, rule 2: an element with VA on a substitutional
+  sublattice) unless ``tentative=False``
 
 Everything else becomes a :class:`Conflict` with a stable id (e.g.
 ``function:GHSERCR`` or ``parameter:L(LIQUID,CR,FE;0)``) that needs a
@@ -34,7 +38,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .tdbparse import (TDB, ExpressionError, Function, Parameter, Phase, Piecewise, TypeDef,
+from . import tentative as tent
+from .tdbparse import (TDB, ExpressionError, Function, Parameter, Phase, Piecewise, TypeDef, is_tentative,
                        parse_param_name, parse_tdb, wrap_tdb_line)
 
 # Phase names that are commonly used for the same structure in different databases.
@@ -100,6 +105,11 @@ class MergePlan:
     references: List[str] = field(default_factory=list)
     temp_limits: Tuple[float, float] = (298.15, 6000.0)
     phase_renames: List[Tuple[int, str, str]] = field(default_factory=list)   # (db index, old name, new name)
+    # tentative parameters (calphad_tools.tentative): settings, terms added, replaced tentative terms, notes
+    tentative_settings: Optional[Dict] = None
+    tentative: List["tent.TentTerm"] = field(default_factory=list)
+    tentative_replaced: List["tent.Replacement"] = field(default_factory=list)
+    tentative_notes: List[str] = field(default_factory=list)
 
     def renames_of(self, i: int) -> Dict[str, str]:
         """{old: new} for the phases of db ``i`` that a 'rename' decision renamed."""
@@ -118,6 +128,13 @@ class MergePlan:
         lines += [f"  - {x}" for x in self.log[:max_items]]
         if len(self.log) > max_items:
             lines.append(f"  ... {len(self.log) - max_items} more")
+        if self.tentative or self.tentative_replaced or self.tentative_notes:
+            lines.append(f"Tentative parameters ({tent.settings_text(self.tentative_settings)}; not assessed - "
+                         f"replace with assessed values): {len(self.tentative)} added "
+                         f"({tent.counts_text(self.tentative)}), {len(self.tentative_replaced)} replaced/kept")
+            lines += [f"  + {t.text()}" for t in self.tentative[:max_items]]
+            lines += [f"  - {r.text()}" for r in self.tentative_replaced[:max_items]]
+            lines += [f"  ! {x}" for x in self.tentative_notes[:max_items]]
         pend = self.pending
         lines.append(f"Pending decisions: {len(pend)}")
         groups: Dict[str, List[Conflict]] = {}
@@ -237,14 +254,17 @@ def _decide(c: Conflict, decisions: Dict[str, str], policy: str, default_key: Op
 # ---------------------------------------------------------------------------
 def plan_merge(paths: Sequence[str], decisions: Optional[Dict[str, str]] = None, policy: str = "ask",
                rtol: float = 1e-4, atol: float = 1e-2, t_min: float = 298.15,
-               t_max: float = 3000.0) -> MergePlan:
+               t_max: float = 3000.0, tentative=True) -> MergePlan:
     """Plan a merge.  ``policy`` = 'ask' (leave conflicts pending) | 'first' | 'last'.
 
-    Files earlier in ``paths`` have higher priority for automatic choices.
+    Files earlier in ``paths`` have higher priority for automatic choices - except that an assessed parameter always
+    beats a tentative one.  ``tentative``: True (default) | False | {'mixing_per_atom': 50000, 'vacancy': 200000}
+    (calphad_tools.tentative.settings).
     """
     decisions = dict(decisions or {})
     dbs = [parse_tdb(p) for p in paths]
     plan = MergePlan([str(p) for p in paths], dbs)
+    plan.tentative_settings = tent.settings(tentative)
     T = np.linspace(t_min, t_max, 60)
     n = len(dbs)
     for i, db in enumerate(dbs):
@@ -469,6 +489,7 @@ def plan_merge(paths: Sequence[str], decisions: Optional[Dict[str, str]] = None,
     # ---- 4. parameters ------------------------------------------------------
     per_key: Dict[Tuple, List[Tuple[int, Parameter, str, Tuple]]] = {}
     order_keys: List[Tuple] = []
+    tent_pairs: Dict[Tuple[int, str], set] = {}      # (db, phase) -> pairs it describes only tentatively
     for i, db in enumerate(dbs):
         seen = {}
         for p in db.parameters:
@@ -492,8 +513,31 @@ def plan_merge(paths: Sequence[str], decisions: Optional[Dict[str, str]] = None,
                 per_key[kt] = []
                 order_keys.append(kt)
             per_key[kt].append((i, p, raw, sign))
+            if is_tentative(p, dbs[i]):
+                pr = tent.pair_of(kt[2])
+                if pr is not None:
+                    tent_pairs.setdefault((i, kt[1]), set()).add(pr)
     for kt in order_keys:
         entries = per_key[kt]
+        # tentative precedence: an assessed parameter replaces a tentative one, whatever the order / decisions
+        tflags = [is_tentative(p, dbs[i]) for i, p, raw, s in entries]
+        dropped_tent = []
+        if any(tflags) and not all(tflags):
+            dropped_tent = [e for e, t in zip(entries, tflags) if t]
+            entries = [e for e, t in zip(entries, tflags) if not t]
+        elif len(entries) > 1 and all(tflags):
+            means = []
+            for i, p, raw, s in entries:
+                v = _values(dbs[i], p.expr, T, s)
+                means.append(float(np.nanmean(v)) if v is not None and np.isfinite(v).any() else -math.inf)
+            best = max(range(len(entries)), key=lambda j: (means[j], -j))
+            keep = entries[best]
+            plan.tentative_replaced.append(tent.Replacement(
+                parse_param_name(keep[2])[0].label(), tent.ref_key(keep[1]), ", ".join(
+                    dbs[e[0]].name for e in entries if e is not keep), dbs[keep[0]].name, "both",
+                keep[1].expr.short(40)))
+            plan.log.append(plan.tentative_replaced[-1].text())
+            entries = [keep]
         i0, p0, raw0, s0 = entries[0]
         plan.params[kt] = MergedParam(raw0, p0.expr, i0, kt)
         differing = []
@@ -506,22 +550,30 @@ def plan_merge(paths: Sequence[str], decisions: Optional[Dict[str, str]] = None,
                                 f"(max|Δ|={d:.3g}); kept {dbs[i0].name}")
             else:
                 differing.append((i, p, raw, d))
-        if not differing:
-            continue
-        label = parse_param_name(raw0)[0].label()
-        sub = _subsystem(kt, dbs[i0])
-        opts = [Option(f"db{i0 + 1}", f"{dbs[i0].name}", p0.expr.short(80))]
-        for i, p, raw, d in differing:
-            opts.append(Option(f"db{i + 1}", f"{dbs[i].name}", f"{p.expr.short(80)}  (max|Δ|={d:.3g})"))
-        c = _decide(Conflict(f"parameter:{label}", "parameter", f"{label} differs", opts,
-                             group=f"system:{sub}"), decisions, policy)
-        plan.conflicts.append(c)
-        if c.decision:
-            j = int(c.decision[2:]) - 1
-            for i, p, raw, d in [(i0, p0, raw0, 0)] + differing:
-                if i == j:
-                    plan.params[kt] = MergedParam(raw, p.expr, i, kt)
+        if differing:
+            label = parse_param_name(raw0)[0].label()
+            sub = _subsystem(kt, dbs[i0])
+            opts = [Option(f"db{i0 + 1}", f"{dbs[i0].name}", p0.expr.short(80))]
+            for i, p, raw, d in differing:
+                opts.append(Option(f"db{i + 1}", f"{dbs[i].name}", f"{p.expr.short(80)}  (max|Δ|={d:.3g})"))
+            c = _decide(Conflict(f"parameter:{label}", "parameter", f"{label} differs", opts,
+                                 group=f"system:{sub}"), decisions, policy)
+            plan.conflicts.append(c)
+            if c.decision:
+                j = int(c.decision[2:]) - 1
+                for i, p, raw, d in [(i0, p0, raw0, 0)] + differing:
+                    if i == j:
+                        plan.params[kt] = MergedParam(raw, p.expr, i, kt)
+        for i, p, raw, s in dropped_tent:
+            win = plan.params[kt].src
+            plan.tentative_replaced.append(tent.Replacement(parse_param_name(raw)[0].label(), tent.ref_key(p),
+                                                            dbs[i].name, dbs[win].name, "assessed",
+                                                            plan.params[kt].expr.short(40)))
+            plan.log.append(plan.tentative_replaced[-1].text())
     # parameters that only exist in a non-chosen db for a *group* decision: keep them (they don't conflict)
+
+    # ---- 4b. tentative parameters (calphad_tools.tentative) ---------------
+    _tentative_terms(plan, convert, tent_pairs)
 
     # ---- 5. defaults / references -------------------------------------------
     seen_cmd = set()
@@ -557,6 +609,86 @@ def plan_merge(paths: Sequence[str], decisions: Optional[Dict[str, str]] = None,
     return plan
 
 
+def _phase_ordered(name: str, tds: Sequence[TypeDef], phases: Dict) -> bool:
+    """Order-disorder related: the phase has a DIS_PART type definition, or is another phase's disordered part."""
+    if any(t.kind == "DIS_PART" for t in tds):
+        return True
+    for other, (_, otds, _) in phases.items():
+        for t in otds:
+            m = re.search(r"DIS_P\w*\s+([A-Z0-9_]+)", t.text.upper())
+            if t.kind == "DIS_PART" and m and m.group(1) == name and other != name:
+                return True
+    return False
+
+
+def _tentative_terms(plan: MergePlan, convert: Dict, tent_pairs: Dict) -> None:
+    """Remove tentative parameters whose pair a source now describes, then add the tentative terms the merged
+    phases need (calphad_tools.tentative.plan_phase), as parameters of the plan."""
+    dbs = plan.dbs
+    els_of = tent.default_elements_of(plan.species)
+    for name, (tb, tds, base) in plan.phases.items():
+        srcs = []
+        for i, db in enumerate(dbs):
+            idx_map = convert.get((i, name))
+            if idx_map is None or name not in db.phases:
+                continue
+            ps = db.phases[name]
+            cons = [list(ps.constituents[k]) if k is not None and k < len(ps.constituents) else ["VA"]
+                    for k in idx_map]
+            srcs.append(tent.Source(db.name, cons, tent_pairs.get((i, name), set())))
+        desc = tent.described(srcs)
+        for kt, mp in list(plan.params.items()):
+            if kt[1] != name or kt[0] != "G" or kt[4]:
+                continue
+            if not is_tentative(mp, dbs[mp.src] if mp.src >= 0 else None):
+                continue
+            pr = tent.pair_of(kt[2])
+            if pr is not None and pr in desc:
+                del plan.params[kt]
+                plan.tentative_replaced.append(tent.Replacement(
+                    parse_param_name(mp.raw_name)[0].label(), tent.ref_key(mp), dbs[mp.src].name if mp.src >= 0
+                    else "this merge", ", ".join(desc[pr]), "described"))
+                plan.log.append(plan.tentative_replaced[-1].text())
+        if plan.tentative_settings is None:
+            continue
+
+        def g_source(em, _name=name):
+            mp = plan.params.get(("G", _name, tuple((s,) for s in em), 0, ""))
+            return None if mp is None else (dbs[mp.src].name if mp.src >= 0 else "this merge")
+
+        def exists(full, _name=name):
+            return ("G", _name, tuple(tuple(sl) for sl in full), 0, "") in plan.params
+        terms, notes = tent.plan_phase(name, tb.site_ratios, tb.constituents, srcs, g_source, exists,
+                                       plan.tentative_settings, els_of, _phase_ordered(name, tds, plan.phases))
+        lo, hi = plan.temp_limits
+        for t in terms:
+            t.source_label = " + ".join(d.name for d in dbs)
+            plan.params[t.key] = MergedParam(t.raw_name, t.piecewise(lo, max(hi, 6000.0)), -1, t.key)
+            plan.tentative.append(t)
+            plan.log.append(f"tentative {t.rule}: {t.text()}")
+        plan.tentative_notes += notes
+
+
+def tentative_reference_entries(plan: MergePlan) -> Dict[str, str]:
+    """{TENT_MIX / TENT_VA: citation} for the tentative parameters the merged file has."""
+    params = []
+    for kt, mp in plan.params.items():
+        ref = tent.ref_key(mp)
+        if ref in tent.TENTATIVE_KEYS:
+            ph = plan.phases.get(kt[1])
+            params.append((ref, kt, _const(mp.expr), ph[0].site_ratios if ph else []))
+    items = tent.citation_items(params)
+    srcs = [Path(p).stem for p in plan.paths]
+    return {ref: tent.citation(ref, srcs, items[ref]) for ref in tent.TENTATIVE_KEYS if ref in items}
+
+
+def _const(pw: Piecewise) -> float:
+    try:
+        return float(pw.ranges[0][2]) if len(pw.ranges) == 1 else math.nan
+    except (ValueError, IndexError):
+        return math.nan
+
+
 # ---------------------------------------------------------------------------
 # writing
 # ---------------------------------------------------------------------------
@@ -579,6 +711,11 @@ def render_tdb(plan: MergePlan, allow_pending: bool = False) -> str:
     if plan.log:
         L.append("$ Automatic resolutions / notes:")
         for x in plan.log:
+            L.append(f"$   {x}"[:200])
+    if plan.tentative or plan.tentative_replaced or plan.tentative_notes:
+        L.append(f"$ Tentative parameters ({tent.settings_text(plan.tentative_settings)}): NOT assessed - reference "
+                 f"keys TENT_MIX / TENT_VA, replace them with assessed values")
+        for x in tent.summary_lines(plan.tentative, plan.tentative_replaced, plan.tentative_notes, max_items=40):
             L.append(f"$   {x}"[:200])
     for i, db in enumerate(plan.dbs):
         if db.header_comments:
@@ -631,19 +768,24 @@ def render_tdb(plan: MergePlan, allow_pending: bool = False) -> str:
         L.append(f"$ {nm}")
         ps.sort(key=lambda m: (sum(len(s) for s in m.key[2]), m.key[2], m.key[0], m.key[3]))
         for mp in ps:
+            ref = tent.ref_key(mp)
+            if ref in tent.TENTATIVE_KEYS:
+                L.append(f"$ tentative ({ref}), not assessed: replace with an assessed value")
             L.append(wrap_tdb_line(f" PARAMETER {mp.raw_name:<28s} {mp.expr.to_tdb()} !"))
-    if plan.references:
+    tent_refs = tentative_reference_entries(plan)
+    if plan.references or tent_refs:
         L.append("$")
         L.append("$ ---------------------------------------------------------------- REFERENCES")
         body = []
         seen = set()
         for r in plan.references:
-            for line in r.split("\n")[1:]:
+            for line in tent.strip_entries(r).split("\n")[1:]:
                 s = line.strip()
                 if not s or s.upper().startswith("NUMBER") or s in seen:
                     continue
                 seen.add(s)
                 body.append("  " + s)
+        body += tent.reference_entries(tent_refs)
         if body:
             L.append(" LIST_OF_REFERENCES")
             L.append(" NUMBER  SOURCE")
@@ -700,10 +842,11 @@ def validate(tdb_path: str) -> Dict:
 
 def merge(paths: Sequence[str], output: str, decisions: Optional[Dict[str, str]] = None,
           policy: str = "ask", ask: Optional[Callable[[Conflict, MergePlan], Optional[str]]] = None,
-          rtol: float = 1e-4, max_rounds: int = 50) -> Dict:
-    """Plan (asking via ``ask`` callback if given), write and validate a merged TDB."""
+          rtol: float = 1e-4, max_rounds: int = 50, tentative=True) -> Dict:
+    """Plan (asking via ``ask`` callback if given), write and validate a merged TDB.  ``tentative``: see
+    plan_merge."""
     decisions = dict(decisions or {})
-    plan = plan_merge(paths, decisions, policy, rtol=rtol)
+    plan = plan_merge(paths, decisions, policy, rtol=rtol, tentative=tentative)
     rounds = 0
     while plan.pending and ask is not None and rounds < max_rounds:
         rounds += 1
@@ -712,7 +855,7 @@ def merge(paths: Sequence[str], output: str, decisions: Optional[Dict[str, str]]
         if ans is None:
             break
         decisions[ans[0]] = ans[1]
-        plan = plan_merge(paths, decisions, policy, rtol=rtol)
+        plan = plan_merge(paths, decisions, policy, rtol=rtol, tentative=tentative)
     if plan.pending:
         return {"written": False, "pending": [c.to_dict() for c in plan.pending],
                 "report": plan.report(), "decisions": decisions}
@@ -720,7 +863,8 @@ def merge(paths: Sequence[str], output: str, decisions: Optional[Dict[str, str]]
     Path(output).write_text(render_tdb(plan))
     val = validate(output)
     return {"written": True, "output": output, "report": plan.report(), "validation": val,
-            "decisions": decisions}
+            "decisions": decisions, "tentative": [t.text() for t in plan.tentative],
+            "tentative_replaced": [r.text() for r in plan.tentative_replaced]}
 
 
 def cli_ask(c: Conflict, plan: MergePlan) -> Optional[Tuple[str, str]]:

@@ -11,6 +11,9 @@ Looked up in this order (later wins):
 
 ``[hpc]`` (:class:`calphad_tools.hpc.HPCConfig`): where ESPEI optimisations run - batched on a Flux cluster when one
 is detected, else directly on this machine - and how big the runs are.
+
+``[merge]`` (:class:`MergeConfig`): defaults of the tentative parameters that merge_tdbs / staged_merge /
+combine_databases / extend_phase add for mixings no source describes (calphad_tools.tentative).
 """
 from __future__ import annotations
 
@@ -85,10 +88,26 @@ class AgentConfig:
 
 
 @dataclass
+class MergeConfig:
+    """Tentative parameters added when TDBs are combined (calphad_tools.tentative); a tool call's ``tentative``
+    argument overrides these."""
+    tentative: bool = True                     # false: none are added (an assessed term still beats a tentative one)
+    tentative_mixing_per_atom: float = 50000.0  # rule 1: new pair on a sublattice, J/mol-atom x atoms/formula unit
+    tentative_vacancy: float = 200000.0        # rule 2: L(phase,X,VA:...;0), J/mol (per formula unit, as written)
+
+    def tentative_setting(self):
+        """The ``tentative`` argument these defaults stand for (False or a values dict)."""
+        if not self.tentative:
+            return False
+        return {"mixing_per_atom": float(self.tentative_mixing_per_atom), "vacancy": float(self.tentative_vacancy)}
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     hpc: HPCConfig = field(default_factory=HPCConfig)
+    merge: MergeConfig = field(default_factory=MergeConfig)
     source_files: list = field(default_factory=list)
     profiles: list = field(default_factory=list)
     profile: str = ""
@@ -116,6 +135,7 @@ def load_config(path: Optional[str] = None, profile: Optional[str] = None) -> Co
             _apply(cfg.llm, data.get("llm", {}))
             _apply(cfg.agent, data.get("agent", {}))
             _apply(cfg.hpc, data.get("hpc", {}))
+            _apply(cfg.merge, data.get("merge", {}))
             profiles.update(data.get("profiles", {}))
             cfg.source_files.append(str(p))
     cfg.profiles = sorted(profiles)
@@ -206,6 +226,13 @@ max_tool_rounds = 40
 diagram_style = "shaded"                  # phase diagrams: shaded (black lines, filled two-phase fields) | color
 save_notebooks = true                     # <figure>.ipynb next to every phase diagram: pycalphad code that
                                           # regenerates all of its files (PNG/SVG/PDF, CSVs, JSON)
+
+[merge]
+# Tentative parameters (reference keys TENT_MIX / TENT_VA) added by merge_tdbs, staged_merge, combine_databases and
+# extend_phase where the combined model creates a mixing no source describes; an assessed term always replaces them.
+tentative = true                          # false = add none
+tentative_mixing_per_atom = 50000         # rule 1: new pair on a sublattice of an intermetallic, J/mol-atom x atoms/fu
+tentative_vacancy = 200000                # rule 2: L(phase,X,VA:...;0) on a substitutional sublattice, J/mol as written
 
 [hpc]
 # ESPEI optimisations (optimize_system): batched on a Flux cluster when one is detected, else run here.

@@ -20,14 +20,18 @@ from .codegen_compare import module_source
 
 
 def _helpers(ctx: Ctx, with_compat: bool = False) -> str:
-    from . import merge, pwinline, tdbparse, tdbstage, tdbtables
+    from . import merge, pwinline, tdbparse, tdbstage, tdbtables, tentative
+    ctx.need("import types")
     src = (module_source(ctx, tdbparse, "TDB text parser (keeps expressions exactly as written)")
            + module_source(ctx, pwinline, "piecewise-in-T algebra: inline FUNCTIONs, merge T ranges")
            + module_source(ctx, tdbtables, "subsystem selection, written expressions")
+           + module_source(ctx, tentative, "tentative parameters (TENT_MIX / TENT_VA) for mixings no source "
+                                           "describes")
+           + "tent = types.SimpleNamespace(**{k: v for k, v in dict(globals()).items() if not k.startswith('__')})"
+             "\n\n\n"
            + module_source(ctx, merge, "merge planning / TDB writer (merge_tdbs)")
            + module_source(ctx, tdbstage, "staged-merge building blocks: views, version diff, substitutions, "
                                           "normalisation"))
-    ctx.need("import types")
     src += "ts = types.SimpleNamespace(**{k: v for k, v in dict(globals()).items() if not k.startswith('__')})\n\n\n"
     if with_compat:
         from . import compatibility
@@ -105,10 +109,13 @@ versions["B1"] = write_tdb(B1, str(OUT / f"B1_{Path(ADD).stem}+{Path(BASE).stem}
 B2, log = substitute_unaries(parse_tdb(versions["B1"]), VA, StageView(parse_tdb(versions["B1"]), "B1"), shared)
 versions["B2"] = write_tdb(B2, str(OUT / f"B2_{Path(ADD).stem}+{Path(BASE).stem}-unaries.tdb"), log)
 a_sub = write_tdb(restrict_tdb(dbA, shared, max_elements=2), str(OUT / "A_shared_unary_binary.tdb"))
-plan, text = merged_text([a_sub, versions["B2"]], alias_separate([a_sub, versions["B2"]], DECISIONS), "first")
+plan, text = merged_text([a_sub, versions["B2"]], alias_separate([a_sub, versions["B2"]], DECISIONS), "first",
+                         tentative=TENTATIVE)
 versions["B3"] = str(OUT / f"B3_{Path(ADD).stem}+{Path(BASE).stem}-unaries-binaries.tdb")
 Path(versions["B3"]).write_text(text)
-plan, text = merged_text([A, B], DECISIONS, POLICY)
+plan, text = merged_text([A, B], DECISIONS, POLICY, tentative=TENTATIVE)
+for t in plan.tentative:
+    print("Q tentative:", t.text())
 if text is None:
     raise SystemExit("decisions still needed for Q:\n" + plan.report())
 versions["Q"] = str(OUT / f"Q_{Path(BASE).stem}+{Path(ADD).stem}.tdb")
@@ -118,7 +125,7 @@ if BUILD_A12:
     for lab, n_el in (("A1", 1), ("A2", 2)):
         part = write_tdb(restrict_tdb(Bn, Bn.real_elements, max_elements=n_el, constituents_from_params=True),
                          str(OUT / f"B_{n_el}_element_terms.tdb"))
-        plan, text = merged_text([A, part], alias_separate([A, part], DECISIONS), "first")
+        plan, text = merged_text([A, part], alias_separate([A, part], DECISIONS), "first", tentative=TENTATIVE)
         versions[lab] = str(OUT / f"{lab}_{Path(BASE).stem}+{Path(ADD).stem}.tdb")
         Path(versions[lab]).write_text(text)
     versions["A"] = A_ORIG
@@ -148,6 +155,11 @@ print("\nwrote", ", ".join(str(p) for p in versions.values()))
 '''
 
 
+def _tent_default(ctx: Ctx):
+    f = getattr(getattr(ctx, "tb", None), "tentative_default", None)
+    return f() if callable(f) else True
+
+
 @generator("staged_merge")
 def _gen_staged(args, ctx: Ctx) -> str:
     if args.get("extend"):
@@ -172,6 +184,8 @@ def _gen_staged(args, ctx: Ctx) -> str:
              f"PHASE_MAP = {Ctx.py(args.get('phase_map') or {})}\n"
              f"SUBLATTICE_MAP = {Ctx.py(args.get('sublattice_map') or {})}\n"
              f"POLICY = {args.get('policy', 'ask')!r}\n"
+             f"TENTATIVE = {Ctx.py(args['tentative'] if args.get('tentative') is not None else _tent_default(ctx))}"
+             f"   # tentative L0 terms for new mixings (TENT_MIX / TENT_VA): True | False | values\n"
              f"FORCE_REPLOT = {Ctx.py(args.get('force_replot') or False)}   # replot exact-only subsystems too\n"
              f"BUILD_A12 = {build_a12!r}\n"
              f"TERNARY_T_C = {Ctx.py([1000.0] if temps is None else list(temps))}\n"

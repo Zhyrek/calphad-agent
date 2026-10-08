@@ -42,14 +42,18 @@ def merge_step(k, a, b, step):
         # [calphad_tools] 'extend' decisions (phase harmonisation): A's phase extended with B's components,
         # B's source phase left out of the merge - harmonize.staged_extensions has no standalone copy
         from calphad_tools.harmonize import staged_extensions
-        ext = staged_extensions(a_eff, b_eff, step["extensions"], str(OUT / f"step{k}_extend"), shared, verify=False)
+        ext = staged_extensions(a_eff, b_eff, step["extensions"], str(OUT / f"step{k}_extend"), shared, verify=False,
+                                tentative=step.get("tentative", True))
         a_eff, b_eff = ext["A_ext"], ext["B_merge"]
         for x in ext["reports"]:
             print(f"step {k} extend: " + x["text"].split("\n")[0])
     dec = alias_separate([a_eff, b_eff], step["decisions"])
     auto = auto_decisions(plan_merge([a_eff, b_eff], dec, "ask"), shared)
     dec = {**auto, **dec, **step["decisions"]}
-    plan, text = merged_text([a_eff, b_eff], dec, "ask")
+    # tentative parameters (TENT_MIX / TENT_VA) as the tool added them: step["tentative"] = its setting
+    plan, text = merged_text([a_eff, b_eff], dec, "ask", tentative=step.get("tentative", True))
+    for t in plan.tentative:
+        print(f"step {k} tentative: {t.text()}")
     if text is None:
         raise SystemExit(f"step {k}: decisions still needed\n" + plan.report())
     q = OUT / f"Q{k}_{Path(str(b)).stem}.tdb"
@@ -186,6 +190,7 @@ def cells(state: Dict[str, Any], src: Callable[[str], str], ctx: Ctx) -> List[Tu
     order = [Path(s["path"]).stem for s in state["sources"]]
     srcs = "{\n" + "".join(f"    {Path(s['path']).stem!r}: {src(s['path'])},\n" for s in state["sources"]) + "}"
     steps = [{"phase_map": st["phase_map"], "sublattice_map": st["sublattice_map"], "decisions": st["decisions"],
+              "tentative": st.get("tentative", True),
               **({"extensions": st["extensions"]} if st.get("extensions") else {})} for st in state["steps"]]
     ext = any(st.get("extensions") for st in state["steps"])
     consts = (f"SOURCES = {srcs}\n"

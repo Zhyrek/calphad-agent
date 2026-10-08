@@ -11,6 +11,9 @@ formula-unit size (see :func:`calphad_tools.tdbstage.normalize_to_base`) - then:
 5. Phase models of the phases both have: site ratios, constituents, the merged (union) model, the NEW end-members
    it creates inside each database's own subsystems (and whether anything provides their G), magnetic and
    order-disorder settings, phases that newly appear in the other database's space, name candidates.
+   It also lists the tentative parameters the merge will add (calphad_tools.tentative): rule 1 (TENT_MIX, a new
+   pair on a substitutional sublattice of an intermetallic) and rule 2 (TENT_VA, an element with VA on a
+   substitutional sublattice), with values, and the tentative terms an assessed one replaces.
 6. Replot decision: the A-priority merge (A's value wins every conflict, as staged_merge does) is built with
    merge.plan_merge, and each binary/ternary of A and of B is compared with it (tdbstage.diff_versions): a
    subsystem is provably unchanged when all its parameters are numerically equal and its phase models identical.
@@ -439,7 +442,30 @@ def _zero_g_warning(ph: str, em, where) -> str:
     return f"{ph} {':'.join(em)} has no G (pycalphad uses 0; {_examples(where, 2)})"
 
 
-def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol) -> Tuple[Stage, List[str]]:
+def _tentative_rows(plan) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Stage-5 rows and line parts: the tentative terms the predicted merge adds (rule 1 / rule 2), replacements."""
+    rows, parts = [], []
+    if plan is None:
+        return rows, parts
+    for t in plan.tentative:
+        rows.append({"phase": t.phase, "tentative": t.label, "rule": f"{t.rule} ({t.ref})", "value": t.value,
+                     "provided by": f"tentative {t.value:+g} ({t.describe()}); {t.evidence}"})
+    for r in plan.tentative_replaced:
+        rows.append({"phase": r.label.split("(", 1)[1].split(",", 1)[0], "tentative": r.label,
+                     "rule": "replaced" if r.kind != "both" else "both tentative", "provided by": r.text()})
+    for ref, title in (("TENT_MIX", "rule 1 (TENT_MIX)"), ("TENT_VA", "rule 2 (TENT_VA)")):
+        xs = [t for t in plan.tentative if t.ref == ref]
+        if xs:
+            parts.append(f"tentative {title} will add {_examples([f'{t.label} = {t.value:+g}' for t in xs], 3)}")
+    if plan.tentative_replaced:
+        parts.append("assessed terms replace tentative ones: "
+                     + _examples([r.text().replace("rule:tentative-replaced: ", "") for r in plan.tentative_replaced],
+                                 2))
+    parts += plan.tentative_notes[:2]
+    return rows, parts
+
+
+def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol, plan=None) -> Tuple[Stage, List[str]]:
     """Phase models.  A new end-member of the merged model with no G in either database (pycalphad uses G = 0):
 
     * INCOMPATIBLE when the database whose space it lies in already describes the phase in a binary containing
@@ -562,6 +588,11 @@ def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol) -> Tuple[Stage
         rows.append({"phase": n.phase, "name candidate": n.detail})
     if cands:
         parts.append(f"name candidates (not merged): {_examples([n.phase + ' ' + n.detail.split(';')[0] for n in cands], 2)}")
+    trows, tparts = _tentative_rows(plan)
+    rows += trows
+    parts += tparts
+    if tparts and verdict == "OK":
+        verdict = "CHANGES"
     if warnings and verdict in ("OK", "CHANGES"):
         verdict = "WARNING"
     line = (f"{verdict}: " + "; ".join(parts)) if parts else "OK (shared phases have identical models)"
@@ -570,10 +601,15 @@ def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol) -> Tuple[Stage
     return st, []
 
 
-def _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir,
-            a_rescaled=()) -> Tuple[Stage, Dict[str, List[ts.SubsystemDiff]], str]:
+def predicted_merge(a_path, bn_path, tentative=True):
+    """The A-priority merge staged_merge would build (alias names kept separate): (plan, text)."""
     dec = ts.alias_separate([a_path, bn_path])
-    plan, text = ts.merged_text([a_path, bn_path], dec, "first")
+    return ts.merged_text([a_path, bn_path], dec, "first", tentative=tentative)
+
+
+def _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir,
+            a_rescaled=(), predicted=None) -> Tuple[Stage, Dict[str, List[ts.SubsystemDiff]], str]:
+    plan, text = predicted or predicted_merge(a_path, bn_path)
     mpath = str(Path(workdir) / f"predicted_merge_{Path(a_path).stem}+{Path(bn_path).stem}.tdb")
     Path(mpath).write_text(text)
     M = parse_tdb(mpath)
@@ -616,7 +652,7 @@ def _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir,
 
 def evaluate_pair(a_path: str, b_path: str, *, phase_map: Optional[Dict[str, str]] = None,
              sublattice_map: Optional[Dict] = None, unary50: Optional[str] = "auto", allow_download: bool = True,
-             rtol: float = ts.STAGE_RTOL, workdir: Optional[str] = None) -> Evaluation:
+             rtol: float = ts.STAGE_RTOL, workdir: Optional[str] = None, tentative=True) -> Evaluation:
     A, B = parse_tdb(a_path), parse_tdb(b_path)
     workdir = Path(workdir or tempfile.mkdtemp(prefix="compat_"))
     workdir.mkdir(parents=True, exist_ok=True)
@@ -655,10 +691,11 @@ def evaluate_pair(a_path: str, b_path: str, *, phase_map: Optional[Dict[str, str
             s2 = _param_stage(2, "other unaries", VA, VB, shared, (1,), rtol, V50, ser_keys)
     s3 = _param_stage(3, "binaries", VA, VB, shared, (2,), rtol)
     s4 = _param_stage(4, "ternary+", VA, VB, shared, tuple(range(3, 12)), rtol)
-    s5, _ = _stage5(VA, VB, notes, rtol)
+    predicted = predicted_merge(an_path, bn_path, tentative)
+    s5, _ = _stage5(VA, VB, notes, rtol, predicted[0])
     stages = [s1, s2, s3, s4, s5]
     VA0 = ts.StageView(A, "A") if a_rescaled else VA
-    s6, replot, mpath = _stage6(an_path, bn_path, VA0, VB, rtol, stages, workdir, a_rescaled)
+    s6, replot, mpath = _stage6(an_path, bn_path, VA0, VB, rtol, stages, workdir, a_rescaled, predicted)
     stages.append(s6)
     ev = Evaluation(str(a_path), str(b_path), shared, stages, notes, replot, unote,
                     bn_path if bn_path != b_path else "", mpath)
@@ -788,6 +825,9 @@ def write_pptx(ev: Evaluation, path: str) -> str:
                          C(r.get("model there", "")), C("")])
         elif r.get("name candidate"):
             prow.append([C(r["phase"]), C("name candidate (not merged)"), C(r["name candidate"], span=2)])
+        elif r.get("tentative"):
+            prow.append([C(r["phase"]), C(f"tentative {r['rule']}: {r['tentative']}"),
+                         C(r.get("provided by", ""), span=2, fill="differs")])
         elif r.get("issue") or r.get("merged model") and r.get("new end-members"):
             prow.append([C(r["phase"]), C(f"A {r.get('A model', '')}\nB {r.get('B model', '')}"),
                          C(r.get("merged model", "") and f"merged {r['merged model']}"),
@@ -831,6 +871,7 @@ def run(a_path: str, b_path: str, out_prefix: str, **kw) -> Evaluation:
 
 # =============================================================================================== tool
 def register(tb) -> None:
+    from .staged_merge import tentative_arg
     S = {"type": "string"}
 
     @tb.add("evaluate_compatibility",
@@ -853,5 +894,6 @@ def register(tb) -> None:
         a, b = tb._find_tdb(base_tdb), tb._find_tdb(add_tdb)
         prefix = tb.outp(output, f"compat_{Path(a).stem}+{Path(b).stem}")
         prefix = str(Path(prefix).with_suffix("")) if Path(prefix).suffix in (".xlsx", ".pptx") else prefix
-        ev = run(a, b, prefix, phase_map=phase_map, sublattice_map=sublattice_map, unary50=unary50, rtol=rtol)
+        ev = run(a, b, prefix, phase_map=phase_map, sublattice_map=sublattice_map, unary50=unary50, rtol=rtol,
+                 tentative=tentative_arg(tb, None))
         return summary_text(ev, tb.rel), []

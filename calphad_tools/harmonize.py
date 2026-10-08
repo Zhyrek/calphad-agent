@@ -16,7 +16,9 @@ constituents (and only the parameters that involve them) of another database's v
   add's parameters that involve a component imported (end-members and interactions; base parameters made of base
   elements are never touched), collisions resolved by policy, FUNCTIONs copied (renamed on clashes), type
   definitions synced, end-members without G listed, and GM checked: the base phase restricted to base elements is
-  unchanged (1e-9) and the add phase is reproduced on its subsystems with the components.
+  unchanged (1e-9) and the add phase is reproduced on its subsystems with the components.  Tentative parameters
+  (calphad_tools.tentative): on a collision an assessed parameter beats a tentative one whatever ``collision`` says,
+  and mixings the extension creates that neither database describes get TENT_MIX / TENT_VA terms (``tentative``).
 * Formula-unit basis (``magnetic='auto'``, the default): when exactly one side is magnetic (TC/BMAGN parameters in
   the extended phase), the basis is the MAGNETIC side's - whichever database it is in - and the non-magnetic side
   is rescaled to it (exact), so a magnetic phase is never rescaled and a base phase never overwrites the other
@@ -40,8 +42,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from . import tdbstage as ts
+from . import tentative as tent
 from .merge import TYPE_CODE_POOL
-from .tdbparse import TDB, Parameter, TypeDef, fmt_ratio, parse_param_name, parse_tdb, scale_piecewise
+from .tdbparse import (TDB, Parameter, TypeDef, fmt_ratio, is_tentative, parse_param_name, parse_tdb,
+                       scale_piecewise)
 
 GM_RTOL = 1e-9                         # relative GM tolerance of an exact transformation
 T_RANGE = (300.0, 2900.0)              # K, where GM is compared (inside the usual 3000 K upper limit)
@@ -647,7 +651,7 @@ def extend_phase_db(base: TDB, add: TDB, base_phase: str, add_phase: Optional[st
                     components: Optional[Sequence[str]] = None, sublattice_map=None, normalization: str = "base",
                     collision: str = "base", magnetic: str = "auto", include_functions: bool = True,
                     add_constituents: Optional[Dict] = None, base_label: str = "base",
-                    add_label: str = "add") -> Tuple[TDB, Dict[str, Any]]:
+                    add_label: str = "add", tentative=True) -> Tuple[TDB, Dict[str, Any]]:
     """The extension without verification or writing: (new base TDB, report).  See extend_phase."""
     from .merge import _split_raw_name
     if normalization not in ("base", "per_atom"):
@@ -677,7 +681,9 @@ def extend_phase_db(base: TDB, add: TDB, base_phase: str, add_phase: Optional[st
     if missing:
         raise HarmonizeError(f"{add_label}'s {Q} has no {', '.join(missing)}")
     rep: Dict[str, Any] = {"base_phase": P, "add_phase": Q, "components": comps, "base_label": base_label,
-                           "add_label": add_label, "notes": []}
+                           "add_label": add_label, "notes": [], "tentative": [], "tentative_replaced": [],
+                           "tentative_notes": []}
+    cfg = tent.settings(tentative)
     # ---- names: add's phase is called P from here on (a different add phase already called P moves aside)
     if Q != P:
         if P in D.phases:
@@ -714,6 +720,7 @@ def extend_phase_db(base: TDB, add: TDB, base_phase: str, add_phase: Optional[st
             if p.key.phase == P:
                 p.raw_name = ts._permute_raw(p.raw_name, new_from_old)
                 p.key, p.sign, p.order_map = parse_param_name(p.raw_name)
+    add_tent_pairs = _tent_pairs(D, P)          # add's pairs described only by tentative terms (all its parameters)
     # ---- what is imported: add's parameters of the phase with a component (others dropped from the scratch copy)
     imp_all = _imported(D, P, comps)
     rest = [p for p in D.parameters if p.key.phase == P and p not in imp_all]
@@ -803,7 +810,26 @@ def extend_phase_db(base: TDB, add: TDB, base_phase: str, add_phase: Optional[st
                 va, vb = B.evaluate(bp.expr, T) * bp.sign, D.evaluate(p.expr, T) * p.sign
                 d = float(np.nanmax(np.abs(va - vb)))
             except Exception:  # noqa: BLE001
+                va = vb = None
                 d = math.nan
+            bt, at = is_tentative(bp, B), is_tentative(p, D)
+            if bt or at:
+                # tentative precedence: the assessed term wins, whatever ``collision`` says; both tentative: larger
+                if bt and at:
+                    add_wins = va is not None and float(np.nanmean(vb)) > float(np.nanmean(va))
+                    rep["tentative_replaced"].append(tent.Replacement(
+                        p.key.label(), tent.ref_key(bp), add_label if not add_wins else base_label,
+                        add_label if add_wins else base_label, "both", (p if add_wins else bp).expr.short(40)))
+                else:
+                    add_wins = bt
+                    rep["tentative_replaced"].append(tent.Replacement(
+                        p.key.label(), tent.ref_key(bp if bt else p), base_label if bt else add_label,
+                        add_label if bt else base_label, "assessed"))
+                if not add_wins:
+                    continue
+                B.parameters = [x for x in B.parameters if x is not bp]
+                to_add.append(p)
+                continue
             if collision == "error":
                 raise HarmonizeError(f"collision: {p.key.label()} is in both ({base_label} and {add_label}, max "
                                      f"|Δ| {d:.4g}); choose collision='base' or 'add'")
@@ -878,10 +904,51 @@ def extend_phase_db(base: TDB, add: TDB, base_phase: str, add_phase: Optional[st
             rep["notes"].append(f"{base_label}'s MAGNETIC type definition kept ({tb_def.text}); {add_label}'s "
                                 f"({td_def.text}) differs - the imported TC/BMAGN use the base's AFM / structure "
                                 f"factors (the {add_label} GM check shows the effect)")
+    # ---- tentative parameters: base terms whose pair add describes go; new mixings get TENT_MIX / TENT_VA terms
+    _extension_tentative(B, D, P, base_cons, add_tent_pairs, cfg, rep, base_label, add_label)
     # ---- end-members without G
     rep["missing_g"] = missing_endmembers(B, P, comps, D, base_label, add_label, base_cons)
     rep["phase_after"] = ts._subl_text(pb)
     return B, rep
+
+
+def _tent_pairs(db: TDB, phase: str) -> set:
+    return {pr for p in db.parameters if p.key.phase == phase and is_tentative(p, db)
+            for pr in [tent.pair_of(p.key.constituents)] if pr is not None}
+
+
+def _extension_tentative(B: TDB, D: TDB, P: str, base_cons, add_tent_pairs, cfg, rep: Dict[str, Any],
+                         base_label: str, add_label: str) -> None:
+    """Tentative rules on the extended phase: the base (its constituents before the extension) and add (its own
+    constituents, in the base's sublattice order) are the sources."""
+    srcs = [tent.Source(base_label, [list(c) for c in base_cons], _tent_pairs(B, P)),
+            tent.Source(add_label, [list(c) for c in D.phases[P].constituents], set(add_tent_pairs))]
+    desc = tent.described(srcs)
+    keep = []
+    for p in B.parameters:
+        if p.key.phase == P and p.key.ptype == "G" and is_tentative(p, B):
+            pr = tent.pair_of(p.key.constituents)
+            if pr is not None and pr in desc:
+                rep["tentative_replaced"].append(tent.Replacement(p.key.label(), tent.ref_key(p), base_label,
+                                                                  ", ".join(desc[pr]), "described"))
+                continue
+        keep.append(p)
+    B.parameters = keep
+    if cfg is not None:
+        imported = set(rep.get("imported") or [])
+        origin = {p.key.as_tuple(): (add_label if p.key.label() in imported else base_label)
+                  for p in B.parameters if p.key.phase == P}
+        terms, notes = tent.tdb_phase_terms(B, P, srcs, cfg, origin=origin)
+        lo, hi = B.temp_limits
+        for t in terms:
+            t.source_label = f"{base_label} + {add_label}"
+            k2, sign, _ = parse_param_name(t.raw_name)
+            B.parameters.append(Parameter(t.raw_name, k2, sign, None, t.piecewise(lo, max(hi, 6000.0))))
+            rep["tentative"].append(t)
+        rep["tentative_notes"] += notes
+    if rep["tentative"] or rep["tentative_replaced"]:
+        tent.refresh_references(B, [Path(x.path).stem if x.path and x.path != "<string>" else lab
+                                    for x, lab in ((B, base_label), (D, add_label))])
 
 
 def _base_wins(B: TDB, D: TDB, P: str, rest: List[Parameter], bc: Dict[str, Any], base_label: str,
@@ -981,15 +1048,16 @@ def extend_phase(base_tdb, add_tdb, base_phase: str, add_phase: Optional[str] = 
                  components: Optional[Sequence[str]] = None, sublattice_map=None, normalization: str = "base",
                  collision: str = "base", magnetic: str = "auto", include_functions: bool = True,
                  output_tdb: Optional[str] = None, add_constituents: Optional[Dict] = None,
-                 verify: bool = True) -> Dict[str, Any]:
+                 verify: bool = True, tentative=True) -> Dict[str, Any]:
     """Keep ``base_phase`` of ``base_tdb`` authoritative and introduce ``components`` (default: the elements add's
     phase has and the base's lacks) from ``add_tdb``'s ``add_phase`` (default the same name): see the module
     docstring.  Writes ``output_tdb`` (the base database with the extended phase) and returns the report with the
-    GM checks (``checks['base']``: the base phase on base elements; ``checks['add']``: add's subsystems)."""
+    GM checks (``checks['base']``: the base phase on base elements; ``checks['add']``: add's subsystems).
+    ``tentative``: True (default) | False | {'mixing_per_atom': 50000, 'vacancy': 200000} (calphad_tools.tentative)."""
     base = base_tdb if isinstance(base_tdb, TDB) else parse_tdb(str(base_tdb))
     add = add_tdb if isinstance(add_tdb, TDB) else parse_tdb(str(add_tdb))
     new, rep = extend_phase_db(base, add, base_phase, add_phase, components, sublattice_map, normalization,
-                               collision, magnetic, include_functions, add_constituents)
+                               collision, magnetic, include_functions, add_constituents, tentative=tentative)
     if verify:
         rep["checks"] = _check_extension(base, add, new, rep)
     if output_tdb:
@@ -1056,6 +1124,8 @@ def report_lines(rep: Dict[str, Any]) -> List[str]:
     if rep["collisions"]:
         L.append("collisions: " + "; ".join(f"{c['parameter']} kept {c['kept']}'s (max |Δ| {c['max_diff']:.4g})"
                                             for c in rep["collisions"]))
+    L += tent.summary_lines(rep.get("tentative") or [], rep.get("tentative_replaced") or [],
+                            rep.get("tentative_notes") or [])
     if rep["skipped"]:
         L.append("not imported: " + "; ".join(rep["skipped"][:4]))
     L += rep["functions"][:4] + rep["notes"]
@@ -1250,7 +1320,7 @@ def _drop_phases(db: TDB, phases: Sequence[str]) -> TDB:
 
 def staged_extensions(a_eff: str, b_eff: str, specs: Dict[str, Dict], out_dir: str, shared: Sequence[str],
                       verify: bool = True, a_label: str = "A", b_label: str = "B",
-                      progress=lambda s: None) -> Dict[str, Any]:
+                      progress=lambda s: None, tentative=True) -> Dict[str, Any]:
     """An ``extend`` decision inside staged_merge / combine_databases: A's phase extended from B2 (B with A's SER and
     unaries of the shared elements, as the staged merge builds it - so imported parameters use the base's unary
     functions), written as ``A0x_<A>_extended.tdb``; B without the source phases for the merge
@@ -1269,7 +1339,7 @@ def staged_extensions(a_eff: str, b_eff: str, specs: Dict[str, Dict], out_dir: s
                                    spec.get("sublattice_map"), spec.get("normalization", "base"),
                                    spec.get("collision", "base"), spec.get("magnetic", "auto"),
                                    spec.get("include_functions", True), spec.get("add_constituents"),
-                                   base_label=a_label, add_label=b_label)
+                                   base_label=a_label, add_label=b_label, tentative=tentative)
         if verify:
             rep["checks"] = _check_extension(cur, B2, new, rep)
             rep["validator"] = external_validation(cur, new, [rep["base_phase"]],
@@ -1305,11 +1375,15 @@ def jsonable_report(rep: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("rescale_base", "rescale_add"):
         r = rep.get(key) or {}
         out[key] = {k: r.get(k) for k in ("k", "k_text", "old", "new", "scaled", "magnetic", "text")}
+    out["tentative"] = [t.text() if hasattr(t, "text") else str(t) for t in rep.get("tentative") or []]
+    out["tentative_replaced"] = [r.text() if hasattr(r, "text") else str(r) for r in rep.get("tentative_replaced") or []]
+    out["tentative_notes"] = list(rep.get("tentative_notes") or [])
     return out
 
 
 # =============================================================================================== tools
 def register(tb) -> None:
+    from .staged_merge import TENTATIVE_SCHEMA, tentative_arg
     S = {"type": "string"}
 
     @tb.add("normalize_phase_formula_unit",
@@ -1340,14 +1414,16 @@ def register(tb) -> None:
              "normalization": {"type": "string", "enum": ["base", "per_atom"]},
              "collision": {"type": "string", "enum": ["base", "add", "error"]},
              "magnetic": {"type": "string", "enum": list(MAGNETIC_MODES)}, "include_functions": {"type": "boolean"},
-             "add_constituents": {"type": "object"}, "output_tdb": S}, ["base_tdb", "add_tdb", "base_phase"])
+             "add_constituents": {"type": "object"}, "output_tdb": S, "tentative": TENTATIVE_SCHEMA},
+            ["base_tdb", "add_tdb", "base_phase"])
     def extend_tool(base_tdb, add_tdb, base_phase, add_phase=None, components=None, sublattice_map=None,
                     normalization="base", collision="base", magnetic="auto", include_functions=True,
-                    add_constituents=None, output_tdb=None):
+                    add_constituents=None, output_tdb=None, tentative=None):
         a, b = tb._find_tdb(base_tdb), tb._find_tdb(add_tdb)
         out = Path(tb.p(output_tdb)) if output_tdb else tb.out / f"{Path(a).stem}_{base_phase.upper()}_extended.tdb"
         r = extend_phase(a, b, base_phase, add_phase, components, sublattice_map, normalization, collision,
-                         magnetic, include_functions, str(out), add_constituents)
+                         magnetic, include_functions, str(out), add_constituents,
+                         tentative=tentative_arg(tb, tentative))
         errs = (r.get("load") or {}).get("errors") or []
         return r["text"] + (f"\npycalphad: {'; '.join(errs[:2])}" if errs else "") + \
             f"\nFiles: {tb.rel(r['output'])}", []

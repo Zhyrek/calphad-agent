@@ -2,7 +2,8 @@
 every source -> one report, on the bundled example TDBs:
 
 * Fe-Nb (90Hua) + Fe-W (15Jac) + Nb-W (97Hua): the μ model conflict (decision 'rename') and C14 gaining Fe:Fe from
-  Fe-W, which changes Fe-Nb (explained by the constituent-union rule);
+  Fe-W (constituent-union rule); the tentative L(C14_LAVES,FE:FE,NB;0) = +150000 (TENT_MIX) keeps Fe-Nb's C14
+  stoichiometric, so Fe-Nb is reproduced (without it C14 reaches X(Nb) 0.321 and invariants move ~5 K);
 * Cr-Ni (06Hal) + Fe-Ni (00Ans) + Cr-Fe (82Her): no shared binaries; Cr-Ni and Fe-Ni reproduced, Cr-Fe changed by the
   base's fcc-Cr lattice stability (82Her is pre-SGTE), the Cr-Fe-Ni ternary listed as predicted, not validated;
 * a hand-edited combined TDB re-validated: CHANGED, UNEXPLAINED.
@@ -119,7 +120,8 @@ def _row(state, sub):
 def test_trio_runs_and_reply_is_short(trio):
     t = trio["text"]
     assert len(t) <= 2200 and t.startswith("combine_databases: FeNb-90Hua-LB -> FeW-15Jac-static -> NbW-97Hua-LB")
-    assert "Verdicts: 2 reproduced, 1 changed (explained), 0 CHANGED (unexplained)" in t
+    assert "Verdicts: 3 reproduced, 0 changed (explained), 0 CHANGED (unexplained)" in t
+    assert "Tentative (not assessed, 2): L(C14_LAVES,FE:FE,NB;0) = +150000 (TENT_MIX)" in t
     assert "Fe-Nb-W" in t and trio["images"]
 
 
@@ -134,7 +136,13 @@ def test_decision_log_who_why_evidence(trio):
     assert c14["who"] == "rule" and "union" in c14["reason"] and c14["affected"] == ["Fe-Nb"]
     ev = " ".join(c14["evidence"])
     assert "G(C14_LAVES,FE:FE;0) added" in ev and "FE:FE in A's space (Fe-Nb): G from B" in ev
-    assert re.search(r"A → A1 Fe-Nb: .*ΔT=\+\d", ev) and c14["refs"]               # invariant shift + figure
+    # the tentative Fe,Nb term the union needs: one rule entry, with the end-members as evidence
+    t1 = log["step1:rule:tentative:L(C14_LAVES,FE:FE,NB;0)"]
+    assert t1["who"] == "rule" and t1["kind"] == "tentative" and t1["chosen"] == "+150000 (TENT_MIX, tentative)"
+    assert "rule 1 (TENT_MIX)" in t1["reason"] and t1["affected"] == ["Fe-Nb"]
+    assert any("G(C14_LAVES,FE:FE) from FeW-15Jac-static.tdb and G(C14_LAVES,FE:NB) from FeNb-90Hua-LB.tdb" in x
+               for x in t1["evidence"])
+    assert "step1:rule:tentative:L(C14_LAVES,FE:NB,W;0)" in log
     z = [e for e in log.values() if e["kind"] == "zero-g"]
     assert z and "C14_LAVES not stable in the mapped Nb-W" in z[0]["evidence"][0] and z[0]["affected"] == ["Nb-W"]
     assert log["step1:rule:forced:Fe-W"]["evidence"][0].endswith("max invariant ΔT 0.00 K, Δx 0.0000")
@@ -143,8 +151,14 @@ def test_decision_log_who_why_evidence(trio):
 def test_trio_validation_verdicts(trio):
     st = trio["state"]
     fenb = _row(st, "Fe-Nb")
-    assert fenb["verdict"] == "changed, explained" and fenb["explained_by"][0] == "step1:rule:constituents:C14_LAVES"
-    assert not fenb["unexplained"] and fenb["inv_max_dT"] > 0.5
+    # C14 (Fe)2(Fe,Nb) with the tentative +150000: Fe-Nb as assessed (without it: ΔT 4.97 K, C14 down to 0.321)
+    assert fenb["verdict"] == "reproduced" and fenb["explained_by"] == [
+        "step1:rule:constituents:C14_LAVES", "step1:rule:tentative:L(C14_LAVES,FE:FE,NB;0)"]
+    assert not fenb["unexplained"] and fenb["inv_max_dT"] <= 0.5 and fenb["grid"] >= 0.995
+    assert fenb["tentative"] == ["L(C14_LAVES,FE:FE,NB;0)"] and "Fe-Nb is reproduced" in fenb["tentative_note"]
+    data = json.loads(Path(fenb["F_png"]).with_suffix(".json").read_text())
+    xs = [v for reg in data["regions"] for ph, r in reg["X_ranges"].items() if ph.startswith("C14") for v in r["X(NB)"]]
+    assert abs(min(xs) - 1 / 3) < 1e-3 and abs(max(xs) - 1 / 3) < 1e-3
     few = _row(st, "Fe-W")
     assert few["verdict"] == "reproduced" and few["basis"].startswith("identical description")
     assert few["inv_max_dT"] <= 0.5 and few["grid"] >= 0.995
@@ -175,11 +189,15 @@ def test_report_files_and_tdb_header(trio):
     md = Path(st["files"]["report"]).read_text()
     assert "## Decision log" in md and "## What this proves and what it cannot" in md
     assert "validation/overlays/S0_Fe-Nb.png" in md and "step1:rule:constituents:C14_LAVES" in md
+    assert "## Tentative parameters" in md and "`L(C14_LAVES,FE:FE,NB;0)` | +150000 | TENT_MIX" in md
     lines = Path(st["final"]).read_text().splitlines()
     end = [i for i, ln in enumerate(lines) if ln.startswith("$ ====")][1]
     h = "\n".join(lines[:end + 1])
     assert "Combined by calphad_tools combine_databases" in h and "step1:phase:MU_D85 -> rename; user:" in h
-    assert "Validation against every source: 2 reproduced, 1 changed (explained)" in h
+    assert "Validation against every source: 3 reproduced, 0 changed (explained)" in h
+    assert "L(C14_LAVES,FE:FE,NB;0) = +150000 (TENT_MIX; step1:rule:tentative:L(C14_LAVES,FE:FE,NB;0))" in h
+    F = parse_tdb(st["final"])
+    assert F.reference_list["TENT_MIX"].startswith("Tentative parameter added by calphad_tools when combining")
     assert "!" not in h
     from pycalphad import Database
     import warnings

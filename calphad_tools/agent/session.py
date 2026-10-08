@@ -137,7 +137,7 @@ class Agent:
                                cfg.agent.max_tool_output_chars, llm_cfg=cfg.llm, interactive=interactive,
                                diagram_style=cfg.agent.diagram_style,
                                save_notebooks=getattr(cfg.agent, "save_notebooks", True),
-                               hpc=getattr(cfg, "hpc", None))
+                               hpc=getattr(cfg, "hpc", None), merge_cfg=getattr(cfg, "merge", None))
         self.turns: List = []
         self.session_start_turn = 0         # reports cover the turns since the last reset
         self.current_turn = None

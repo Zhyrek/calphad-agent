@@ -31,7 +31,7 @@ import numpy as np
 import symengine as se
 
 from .pwinline import P, T, MissingRef, evaluate, fmt_expr, inline
-from .tdbparse import TDB, ExpressionError, short_citation, tokenize
+from .tdbparse import TDB, ExpressionError, is_tentative, short_citation, tokenize
 
 VV_RE = re.compile(r"^VV\d+$")
 MATH_NAMES = {"LN", "LOG", "EXP", "SQRT", "ABS"}
@@ -653,9 +653,12 @@ class ExprRow:
 
 
 def ref_display(ref: str, citation: str = "", width: int = 30) -> str:
-    """Reference shorthand as written plus, when resolved, the short citation: '82Her · Hertzman & Sundman 1982'."""
+    """Reference shorthand as written plus, when resolved, the short citation: '82Her · Hertzman & Sundman 1982';
+    a tentative parameter (TENT_MIX / TENT_VA, or a citation starting "Tentative") shows 'TENT_MIX · tentative'."""
     if not ref:
         return ""
+    if is_tentative(ref, citation=citation):
+        return f"{ref} · tentative"
     short = short_citation(citation, width) if citation else ""
     return f"{ref} · {short}" if short and short.lower() != ref.lower() else ref
 

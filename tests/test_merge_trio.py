@@ -4,7 +4,8 @@ datasets from phasediagrams.org (examples/tdbs).
 * MU_D85 is (FE)7(NB)2(FE,NB)4 in Fe-Nb and (FE,W)1(W)4(FE,W)2(FE,W)6 in Fe-W: evaluate_compatibility reports it
   instead of stopping, and the merge decision 'rename' keeps Fe-W's model as MU_D85_2 (phase, constituents,
   parameters) so Fe-W in Q is B's Fe-W diagram.
-* C14_LAVES is (FE)2(NB) in Fe-Nb and (FE,W)2(FE,W) in Fe-W: B's FE:FE end-member widens Fe-Nb's C14.
+* C14_LAVES is (FE)2(NB) in Fe-Nb and (FE,W)2(FE,W) in Fe-W: B's FE:FE end-member would widen Fe-Nb's C14
+  (ideal Fe,Nb mixing on sublattice 2); the tentative L(C14_LAVES,FE:FE,NB;0) = +150000 keeps it stoichiometric.
 * Q + Nb-W: C14 enters Nb-W as (W)2(NB,W) with no G for W:NB - a warning in the overall verdict.
 """
 import shutil
@@ -69,18 +70,23 @@ def test_rename_keeps_mu_d85_2_and_fe_w_unchanged(fenb_few):
     assert "MU_D85 removed" not in s and "FAILED" not in s
 
 
-def test_c14_fe_fe_widens_fe_nb(fenb_few, tmp_path):
+def test_c14_fe_fe_tentative_keeps_fe_nb(fenb_few, tmp_path):
     r = fenb_few
     a_min, a_max = _c14_xnb(r["plots"][("A", "Fe-Nb")])
     a1_min, a1_max = _c14_xnb(r["plots"][("A1", "Fe-Nb")])
     assert abs(a_min - 1 / 3) < 1e-3 and abs(a_max - 1 / 3) < 1e-3
-    assert a1_min < 0.33 and abs(a1_max - 1 / 3) < 1e-3
+    # the tentative Fe,Nb term (+50000 J/mol-atom x 3) keeps C14 stoichiometric (without it: down to X(Nb) 0.321)
+    assert abs(a1_min - 1 / 3) < 1e-3 and abs(a1_max - 1 / 3) < 1e-3
+    added = {a["label"]: a for a in r["tentative"]["added"]}
+    assert added["L(C14_LAVES,FE:FE,NB;0)"]["value"] == 150000.0 and added["L(C14_LAVES,FE:FE,NB;0)"]["ref"] == "TENT_MIX"
+    assert "Tentative TENT_MIX (rule 1, new mixing; not assessed): L(C14_LAVES,FE:FE,NB;0) = +150000" in summary_text(r)
     st = next(s for s in r["steps"] if s.title == "A → A1")
     m = [x for x in st.diff.get(("FE", "NB")).models if x.phase == "C14_LAVES"][0]
     assert m.old == "(FE)2(NB)1" and m.new == "(FE)2(FE,NB)1" and m.new_endmembers == ["FE:FE"] and not m.missing_g
-    assert "G(C14_LAVES,FE:FE;0)" in {p.key for p in st.diff.params}
+    assert {"G(C14_LAVES,FE:FE;0)", "G(C14_LAVES,FE:FE,NB;0)"} <= {p.key for p in st.diff.params}
     ev = compat_run(FENB, FEW, str(tmp_path / "compat"), unary50="off")
     assert "new FE:FE in A's space (Fe-Nb; G from B)" in ev.stages[4].line
+    assert "tentative rule 1 (TENT_MIX) will add L(C14_LAVES,FE:FE,NB;0) = +150000" in ev.stages[4].line
 
 
 def test_evaluate_without_sublattice_map_reports_mu_d85(tmp_path):

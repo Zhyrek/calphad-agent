@@ -800,9 +800,9 @@ def auto_decisions(plan, shared: Sequence[str], max_elements: int = 2) -> Dict[s
     return out
 
 
-def merged_text(paths: Sequence[str], decisions: Dict[str, str], policy: str = "first"):
-    """(plan, text or None if decisions are pending)."""
-    plan = plan_merge(list(paths), decisions, policy)
+def merged_text(paths: Sequence[str], decisions: Dict[str, str], policy: str = "first", tentative=True):
+    """(plan, text or None if decisions are pending).  ``tentative``: merge.plan_merge's."""
+    plan = plan_merge(list(paths), decisions, policy, tentative=tentative)
     if plan.pending:
         return plan, None
     return plan, render_tdb(plan)

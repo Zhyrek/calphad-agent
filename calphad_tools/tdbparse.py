@@ -694,6 +694,43 @@ def parse_reference_command(cmd: str) -> Dict[str, str]:
     return out
 
 
+# Tentative parameters (calphad_tools.tentative): temporary interaction terms a TDB combination adds where no source
+# assesses a new mixing; recognised by these reference keys, or by a citation that starts with "Tentative".
+TENT_MIX = "TENT_MIX"            # rule 1: new mixing of two constituents on one sublattice
+TENT_VA = "TENT_VA"              # rule 2: vacancies mixing with an element on a substitutional sublattice
+TENTATIVE_KEYS = (TENT_MIX, TENT_VA)
+
+
+def _ref_of(param) -> str:
+    if isinstance(param, str):
+        return " ".join(param.split())
+    ref = getattr(param, "reference", None)
+    if not ref:
+        ref = getattr(getattr(param, "expr", param), "reference", "") or ""
+    return " ".join(str(ref).split())
+
+
+def is_tentative(param, tdb: Optional["TDB"] = None, citation: Optional[str] = None) -> bool:
+    """True if ``param`` (a Parameter, a merge plan's parameter, a Piecewise or a reference key) is tentative - not
+    assessed: its reference key is TENT_MIX / TENT_VA, or its citation (``citation``, else from ``tdb``'s reference
+    list) starts with "Tentative", so hand-written tentative terms count too."""
+    ref = _ref_of(param)
+    if not ref:
+        return False
+    if ref.split()[0].upper() in TENTATIVE_KEYS:
+        return True
+    cit = citation if citation is not None else (tdb.citation(ref) if tdb is not None else "")
+    return bool(cit) and cit.strip().lower().startswith("tentative")
+
+
+def calc_text(text: str) -> str:
+    """TDB text without what cannot change a calculation - comment lines and LIST_OF_REFERENCES / ADD_REFERENCES
+    commands - for content-hash caches (a reference list that carries a date must not invalidate them)."""
+    lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith("$")]
+    body = "\n".join(lines)
+    return re.sub(r"(?im)^\s*(LIST[_-]OF[_-]REF\w*|ADD[_-]REF\w*)\b[^!]*!", "", body)
+
+
 def comment_references(comments: Sequence[str], keys: Iterable[str]) -> Dict[str, str]:
     """Citations for ``keys`` found in $-comment lines: ``$ [KEY] citation`` or ``$ KEY: citation`` /
     ``$ KEY citation`` (the unbracketed forms only for keys with a digit, e.g. REF283, 91Din).  The citation may

@@ -11,6 +11,10 @@ exception: a magnetic B phase with ~1 atom/fu keeps its site ratios and A's non-
 * Q  = A + B (merge.plan_merge; conflicts the stages above settle go to A, the rest are asked like merge_tdbs)
 * A1 = A + B's unary terms, A2 = A + B's unary and binary terms (only if B has unary/binary terms A lacks)
 
+B3, Q, A1 and A2 get the merge's tentative parameters (calphad_tools.tentative; ``tentative=False`` turns them
+off): an assessed parameter always replaces a tentative one, and mixings the union creates that no database
+describes get TENT_MIX / TENT_VA terms - listed in the summary and the version logs.
+
 Every version is written to the output folder.  For B, B1, B2, B3, Q all binaries and ternary isotherms of B's
 system are mapped (shaded style), but a subsystem that tdbstage.diff_versions proves unchanged from the previous
 version is not recomputed - its figure and invariants are reused.  For A, A1, A2 only A's subsystems that change
@@ -70,7 +74,7 @@ def _stem(p: str) -> str:
 # =============================================================================================== versions
 def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, sublattice_map=None,
                    decisions: Optional[Dict[str, str]] = None, policy: str = "ask",
-                   extensions: Optional[Dict[str, Dict]] = None,
+                   extensions: Optional[Dict[str, Dict]] = None, tentative=True,
                    progress: Callable[[str], None] = lambda s: None) -> Dict[str, Any]:
     """``extensions`` {A phase: spec (harmonize.extension_spec)}: 'extend' decisions - A's phase extended with B's
     components (harmonize.staged_extensions; A_eff = the extended A, and B's source phase is left out of the
@@ -129,7 +133,7 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
                 specs[tgt.upper()] = extension_spec(tgt, {**{k: x for k, x in sp.items() if k in (
                     "sublattice_map", "add_constituents", "components", "normalization", "collision", "magnetic",
                     "include_functions") and x is not None}, "phase": sp["phase"]}, An, Bn)
-        ext = staged_extensions(a_eff, b_eff, specs, str(out), shared, progress=progress)
+        ext = staged_extensions(a_eff, b_eff, specs, str(out), shared, progress=progress, tentative=tentative)
         a_eff, b_merge = ext["A_ext"], ext["B_merge"]
         ext["reports"] = [jsonable_report(x) for x in ext["reports"]]
     # decisions for Q: name aliases stay separate (names only via normalisation / phase_map), what the stages
@@ -155,14 +159,16 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
                       [f"B2 = B1 with every unary parameter of {', '.join(shared)} from {Path(a_path).name} "
                        f"(phases both have)"] + log2)
     versions["B2"] = Version("B2", p2, STEP_DESC["B2"], log2)
-    plan = ts.plan_merge([a_eff, b_merge], dec, policy)
+    plan = ts.plan_merge([a_eff, b_merge], dec, policy, tentative=tentative)
     result: Dict[str, Any] = {"versions": versions, "notes": notes, "shared": shared, "decisions": dec,
                               "auto_decisions": auto, "A": a_path, "A_eff": a_eff, "B": b_eff,
                               "B_original": b_path, "B_merge": b_merge,
                               # 'extend' decisions: reports and {B phase: A phase} of the source phases
                               "extensions": ext, "extension_renames": (ext or {}).get("renames", {}),
                               # B's phases a 'rename' decision kept under a new name in Q: {B name: Q name}
-                              "phase_renames": plan.renames_of(1)}
+                              "phase_renames": plan.renames_of(1),
+                              # tentative parameters of Q (calphad_tools.tentative)
+                              "tentative_cfg": tentative, "tentative": tentative_info(plan)}
     if plan.pending:
         result["pending"] = plan
         return result
@@ -171,7 +177,7 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
     a_src = parse_tdb(a_eff) if ext else An           # the extended A when an 'extend' decision applies
     a_sub = ts.write_tdb(ts.restrict_tdb(a_src, shared, max_elements=2), str(work / f"{sa}_shared_unary_binary.tdb"))
     d3 = ts.alias_separate([a_sub, p2], dec)
-    plan3, text3 = ts.merged_text([a_sub, p2], d3, "first")
+    plan3, text3 = ts.merged_text([a_sub, p2], d3, "first", tentative=tentative)
     p3 = str(out / f"B3_{sb}+{sa}-unaries-binaries.tdb")
     Path(p3).write_text(text3)
     versions["B3"] = Version("B3", p3, STEP_DESC["B3"], list(plan3.log))
@@ -193,7 +199,7 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
             bpart = ts.write_tdb(ts.restrict_tdb(Bn, sorted(EB), max_elements=n_el, constituents_from_params=True),
                                  str(work / f"{sb}_{desc.replace(' and ', '_')}.tdb"))
             d = ts.alias_separate([a_eff, bpart], dec)
-            pl, txt = ts.merged_text([a_eff, bpart], d, "first")
+            pl, txt = ts.merged_text([a_eff, bpart], d, "first", tentative=tentative)
             p = str(out / f"{lab}_{sa}+{sb}-{desc.replace(' and ', '-').replace('unary', 'unaries').replace('binary', 'binaries')}.tdb")
             Path(p).write_text(txt)
             versions[lab] = Version(lab, p, STEP_DESC[lab], list(pl.log))
@@ -203,9 +209,40 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
     return result
 
 
+def tentative_info(plan) -> Dict[str, Any]:
+    """The tentative parameters of a merge plan as plain data (terms added, replacements, notes)."""
+    from .tentative import settings_text
+    return {"settings": settings_text(plan.tentative_settings),
+            "added": [{"label": t.label, "ref": t.ref, "rule": t.rule, "value": t.value, "phase": t.phase,
+                       "text": t.text(), "evidence": t.evidence} for t in plan.tentative],
+            "replaced": [{"label": r.label, "ref": r.ref, "from": r.tentative_from, "by": r.by, "kind": r.kind,
+                          "text": r.text()} for r in plan.tentative_replaced],
+            "notes": list(plan.tentative_notes)}
+
+
+def tentative_lines(info: Optional[Dict[str, Any]], max_items: int = 6) -> List[str]:
+    if not info or not (info.get("added") or info.get("replaced") or info.get("notes")):
+        return []
+    L = []
+    for ref, title in (("TENT_MIX", "rule 1, new mixing"), ("TENT_VA", "rule 2, vacancies")):
+        xs = [a for a in info["added"] if a["ref"] == ref]
+        if xs:
+            L.append(f"Tentative {ref} ({title}; not assessed): " + "; ".join(
+                f"{a['label']} = {a['value']:+g}" for a in xs[:max_items])
+                + (f"; +{len(xs) - max_items} more" if len(xs) > max_items else ""))
+    rep = info.get("replaced") or []
+    if rep:
+        L.append("Tentative replaced: " + "; ".join(r["text"].replace("rule:tentative-replaced: ", "")
+                                                   for r in rep[:max_items])
+                 + (f"; +{len(rep) - max_items} more" if len(rep) > max_items else ""))
+    L += [f"Tentative note: {n}" for n in (info.get("notes") or [])[:2]]
+    return L
+
+
 # =============================================================================================== plots
 def _content_key(tdb: str, item: Item, settings: Dict) -> str:
-    text = "\n".join(ln for ln in Path(tdb).read_text(errors="replace").splitlines() if not ln.lstrip().startswith("$"))
+    from .tdbparse import calc_text
+    text = calc_text(Path(tdb).read_text(errors="replace"))
     h = hashlib.sha256(text.encode())
     h.update(json.dumps([list(item.elements), item.T_c, settings], sort_keys=True).encode())
     h.update(b"mapping-check-1")        # diagrams made before the mapping check are not reused
@@ -713,18 +750,21 @@ def write_xlsx(steps: List[Step], plots, versions: Dict[str, Version], path: str
 
 # =============================================================================================== driver
 def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, sublattice_map=None, decisions=None,
-                 policy: str = "ask", extensions: Optional[Dict[str, Dict]] = None, ternary_temperatures_c: Sequence[float] = (1000.0,), tmin_c: float = 300.0,
+                 policy: str = "ask", extensions: Optional[Dict[str, Dict]] = None, tentative=True,
+                 ternary_temperatures_c: Sequence[float] = (1000.0,), tmin_c: float = 300.0,
                  tmax_c: float = 3000.0, composition_step: float = 0.02, temperature_step: float = 10.0,
                  ternary_step: float = 0.02, plot: bool = True, tol_K: float = 5.0, tol_x: float = 0.01,
                  n_workers: Optional[int] = None, timeout_s: float = 900.0, force_replot=False,
                  progress: Callable[[str], None] = lambda s: None) -> Dict[str, Any]:
     """force_replot: True (every subsystem whose change is exact / nil is mapped again in each step instead of being
-    reused), a list of subsystem names ('Fe-Mo', 'Fe-Mo-W'), or False (default)."""
+    reused), a list of subsystem names ('Fe-Mo', 'Fe-Mo-W'), or False (default).  tentative: True (default) | False
+    | {'mixing_per_atom': 50000, 'vacancy': 200000} (calphad_tools.tentative)."""
     forced = force_matcher(force_replot)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     r = build_versions(a_path, b_path, str(out), phase_map=phase_map, sublattice_map=sublattice_map,
-                       decisions=decisions, policy=policy, extensions=extensions, progress=progress)
+                       decisions=decisions, policy=policy, extensions=extensions, tentative=tentative,
+                       progress=progress)
     versions: Dict[str, Version] = r["versions"]
     if r.get("unmapped"):
         r["written"] = False
@@ -887,6 +927,7 @@ def summary_text(r: Dict[str, Any], rel=lambda p: p) -> str:
         L.append("Not normalised: " + "; ".join(cands[:3]) + (f" (+{len(cands) - 3})" if len(cands) > 3 else ""))
     for st in r["steps"]:
         L.append(step_line(st, r["tol_K"]))
+    L += tentative_lines(r.get("tentative"))
     if "A1" not in r["versions"]:
         L.append("A1/A2 not built: B has no unary or binary terms that A lacks.")
     if r.get("force_unknown"):
@@ -914,12 +955,25 @@ def summary_text(r: Dict[str, Any], rel=lambda p: p) -> str:
 
 
 # =============================================================================================== tool
+TENTATIVE_SCHEMA = {"anyOf": [{"type": "boolean"}, {"type": "object"}],
+                    "description": "tentative L0 terms for new mixings: true (default) | false | "
+                                   "{mixing_per_atom: 50000, vacancy: 200000}"}
+
+
+def tentative_arg(tb, value):
+    """A tool call's tentative argument, the [merge] config defaults when not given."""
+    if value is not None:
+        return value
+    f = getattr(tb, "tentative_default", None)
+    return f() if callable(f) else True
+
+
 def register(tb) -> None:
     S = {"type": "string"}
     N = {"type": "number"}
 
     @tb.add("staged_merge",
-            "Merge add_tdb (B) into base_tdb (A) step by step, with diagrams per step. B1 = B with A's SGTE unaries, "
+            "Merge add_tdb (B) into base_tdb (A) step by step, diagrams per step. B1 = B with A's SGTE unaries, "
             "B2 = + A's other unaries, B3 = + A's shared binaries, Q = full merge (A wins what the stages settle; other "
             "conflicts are asked like merge_tdbs: re-call with decisions), A1/A2 = A + B's unary / binary terms; "
             "A0 = A rescaled to a magnetic 1-atom/fu B phase's site ratios when needed. "
@@ -938,20 +992,21 @@ def register(tb) -> None:
              "tol_K": {**N, "description": "invariant shift threshold, default 5 K"}, "n_workers": {"type": "integer"},
              "force_replot": {"anyOf": [{"type": "boolean"}, {"type": "array", "items": S}],
                               "description": "true or ['Fe-Mo', ...]: recompute subsystems whose change is exact "
-                                             "(e.g. a rescale) instead of reusing them, and show the invariant shift"}},
+                                             "(e.g. a rescale) instead of reusing them, and show the invariant shift"},
+             "tentative": TENTATIVE_SCHEMA},
             ["base_tdb", "add_tdb"])
     def staged_merge_tool(base_tdb, add_tdb, output_dir=None, decisions=None, policy: str = "ask", phase_map=None,
                           sublattice_map=None, ternary_temperatures_c=None, tmin_c: float = 300.0,
                           tmax_c: float = 3000.0, composition_step: float = 0.02, temperature_step: float = 10.0,
                           plot: bool = True, tol_K: float = 5.0, n_workers: Optional[int] = None,
-                          force_replot=False, extend=None):
+                          force_replot=False, extend=None, tentative=None):
         a, b = tb._find_tdb(base_tdb), tb._find_tdb(add_tdb)
         key = f"staged|{a}|{b}"
         dec = {**tb.merge_decisions.get(key, {}), **(decisions or {})}
         tb.merge_decisions[key] = dec
         od = tb.outdir(output_dir, f"staged_merge_{Path(a).stem}+{Path(b).stem}")
         r = staged_merge(a, b, str(od), phase_map=phase_map, sublattice_map=sublattice_map, decisions=dec,
-                         policy=policy, extensions=extend or None,
+                         policy=policy, extensions=extend or None, tentative=tentative_arg(tb, tentative),
                          ternary_temperatures_c=(1000.0,) if ternary_temperatures_c is None
                          else ternary_temperatures_c, tmin_c=tmin_c, tmax_c=tmax_c,
                          composition_step=composition_step, temperature_step=temperature_step, plot=plot,

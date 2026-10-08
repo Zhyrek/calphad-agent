@@ -82,6 +82,43 @@ def cannot_prove_lines(ex: Dict, vt) -> List[str]:
 
 
 # =============================================================================================== TDB header
+def tentative_terms(state: Dict) -> List[Dict]:
+    """Tentative parameters of the combined TDB: [{'label', 'ref', 'value', 'id' (decision-log entry)}]."""
+    from .tdbparse import is_tentative, parse_tdb
+    from .tentative import ref_key
+    final = state.get("run_final") or state.get("final")
+    if not final or not Path(final).exists():
+        return []
+    F = parse_tdb(final)
+    ids = {e["subject"]: e["id"] for e in state.get("log", []) if e.get("kind") == "tentative"}
+    out = []
+    for p in F.parameters:
+        if is_tentative(p, F):
+            out.append({"label": p.key.label(), "ref": ref_key(p), "value": p.expr.short(30),
+                        "id": ids.get(p.key.label(), "")})
+    return out
+
+
+def tentative_summary(state: Dict, V: Optional[Dict] = None) -> List[str]:
+    """Short lines: the tentative terms in the combined TDB, replacements, how close they bring each source."""
+    terms = tentative_terms(state)
+    rep_ = [e for e in state.get("log", []) if e.get("kind") == "tentative-replaced"]
+    if not terms and not rep_:
+        return []
+    L = []
+    if terms:
+        L.append(f"Tentative (not assessed, {len(terms)}): " + "; ".join(f"{t['label']} = {t['value']} ({t['ref']})"
+                                                                         for t in terms[:4])
+                 + (f"; +{len(terms) - 4} more" if len(terms) > 4 else ""))
+    if rep_:
+        L.append("Tentative replaced by assessed terms: " + "; ".join(e["subject"] for e in rep_[:4])
+                 + (f"; +{len(rep_) - 4} more" if len(rep_) > 4 else ""))
+    for r in (V or {}).get("rows", []):
+        if r.get("tentative_note"):
+            L.append(f"  {r['source']}: {clip(r['tentative_note'], 230)}")
+    return L
+
+
 def tdb_header(state: Dict, V: Optional[Dict]) -> List[str]:
     now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     L = ["=" * 100, f"Combined by calphad_tools combine_databases on {now}", "Sources (merge order):"]
@@ -96,6 +133,11 @@ def tdb_header(state: Dict, V: Optional[Dict]) -> List[str]:
     rules = [e for e in state["log"] if e["who"] == "rule"]
     L.append(f"  + {len(rules)} automatic rule entries (unaries, normalisation, constituent unions, ...): see the "
              f"report")
+    terms = tentative_terms(state)
+    if terms:
+        L.append(f"Tentative parameters ({state.get('tentative_settings', '')}): NOT assessed, reference keys "
+                 f"TENT_MIX / TENT_VA - replace with assessed values:")
+        L += [f"  {t['label']} = {t['value']} ({t['ref']}; {t['id'] or 'carried from a source'})" for t in terms[:30]]
     if V:
         L.append("Validation against every source: " + verdict_line(V["counts"]))
         for r in V["rows"]:
@@ -312,6 +354,8 @@ def row_details(r: Dict) -> str:
               if pm else ""))
     if r["explained_by"]:
         L.append("Explained by: " + ", ".join(r["explained_by"]))
+    if r.get("tentative_note"):
+        L.append("Tentative: " + clip(r["tentative_note"], 300))
     if r["unexplained"]:
         L.append("UNEXPLAINED: " + "; ".join(clip(x, 160) for x in r["unexplained"][:4]))
     for c in r.get("changes", [])[:4]:
@@ -465,6 +509,29 @@ def write_md(state: Dict, V: Dict, files: Dict[str, str], path: str) -> str:
                  f"{esc(e['reason']) if e['reason'] else 'NOT GIVEN'} | {esc(clip(ev, 400))} {refs} | "
                  f"{esc(', '.join(e['affected']))} |")
     L.append("")
+    terms = tentative_terms(state)
+    trep = [e for e in state["log"] if e.get("kind") == "tentative-replaced"]
+    if terms or trep:
+        L += ["## Tentative parameters", "",
+              f"Settings: {state.get('tentative_settings', '')}. Interaction terms the combination added where the "
+              f"combined model creates a mixing no source describes - rule 1 (TENT_MIX): a new pair on a "
+              f"substitutional sublattice of an intermetallic, L0 = the rule-1 value per mole of atoms x atoms per "
+              f"formula unit; rule 2 (TENT_VA): an element with VA on a substitutional sublattice, L0(X,VA) = the "
+              f"rule-2 value as written (per formula unit). They are **not "
+              f"assessed**: the reference list of the TDB marks them (TENT_MIX / TENT_VA), and an assessed term "
+              f"always replaces them in any later merge.", ""]
+        if terms:
+            L += ["| Parameter | Value | Reference | Decision-log entry |", "|---|---|---|---|"]
+            L += [f"| `{t['label']}` | {esc(t['value'])} | {t['ref']} | `{t['id'] or 'carried from a source'}` |"
+                  for t in terms]
+            L.append("")
+        for e in trep:
+            L.append(f"- replaced: `{e['subject']}` {esc(e['chosen'])} (`{e['id']}`)")
+        notes = [r for r in V["rows"] if r.get("tentative_note")]
+        if notes:
+            L += ["", "How close the tentative terms bring each affected source subsystem:", ""]
+            L += [f"- {r['source']} {r['subsystem']}: {esc(r['tentative_note'])}" for r in notes]
+        L.append("")
     L += ["## Steps (staged merges)", ""]
     for st in state["steps"]:
         L.append(f"- step {st['k']}: {st['pair']} -> [{Path(st['Q']).name}]({rel(st['Q'])}); deck "

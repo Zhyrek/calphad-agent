@@ -31,7 +31,8 @@ import numpy as np
 import symengine as se
 
 from . import pwinline as pwi
-from .tdbparse import TDB, ExpressionError, Piecewise, parse_param_name, parse_tdb, short_citation, tokenize
+from .tdbparse import (TDB, ExpressionError, Piecewise, is_tentative, parse_param_name, parse_tdb, short_citation,
+                       tokenize)
 from .tdbtables import (ExprRow, ParamRow, PhaseView, Subsystem, database_functions, database_keys,  # noqa: F401
                         database_table, differences, equal_rows, expression_table, key_constituents, make_key,
                         make_label, phase_order, row_sort_key, tdb_to_se)
@@ -787,14 +788,21 @@ def summary_text(cmp: SystemComparison, files: Dict[str, str], rel=lambda p: p, 
     if len(pick) > max_examples:
         L.append(f"  ... {len(pick) - max_examples} more in the Differences slides / sheet")
     refs = []
+    tent_rows = []
     for lab in cmp.labels:
         v = cmp.view(lab)
         n_ref = sum(1 for r in v.rows.values() if r.reference)
         n_cit = sum(1 for k in v.rows if v.citation(k))
         refs.append(f"{idx[lab]} {n_ref}/{len(v.rows)}"
                     + (f" ({n_cit} resolved by its reference list)" if n_cit else ""))
+        tl = [r.label for k, r in v.rows.items() if r.reference and is_tentative(r.reference, citation=v.citation(k))]
+        if tl:
+            tent_rows.append(f"{idx[lab]}: {', '.join(tl[:4])}" + (f" +{len(tl) - 4}" if len(tl) > 4 else ""))
     L.append("Parameter references (key after the last T range; shown under each cell, full citations in Excel): "
              + ", ".join(refs) + ".")
+    if tent_rows:
+        L.append("TENTATIVE parameters (not assessed; TENT_MIX / TENT_VA, marked 'tentative' under the cell): "
+                 + "; ".join(tent_rows) + ".")
     applied = {lab: m for lab, m in cmp.phase_map.items() if m}
     if applied:
         L.append("phase_map applied: " + "; ".join(f"{lab}: " + ", ".join(f"{a}->{b}" for a, b in m.items())
@@ -910,6 +918,8 @@ def _ref_cols(v: Subsystem, key: str, r: Optional[ParamRow]) -> List[str]:
     if r is None or not r.reference:
         return ["", "", ""]
     cit = v.citation(key)
+    if is_tentative(r.reference, citation=cit):
+        return [r.reference, "tentative", cit]
     return [r.reference, short_citation(cit) if cit else "", cit]
 
 
@@ -1218,8 +1228,9 @@ def write_pptx(cmp: SystemComparison, path: str, diagram_png: Optional[str] = No
             if er is not None and er.kind == "value":
                 note = "value differs between databases"
             cit = v.citation(key)
+            tsub = "tentative" if is_tentative(pr.reference, citation=cit) else ""
             rows.append([GridCell(pr.label, mono=True, size=8, sub=note), GridCell(w.text, mono=True),
-                         GridCell(pr.reference, size=8, sub=short_citation(cit, 24) if cit else "")])
+                         GridCell(pr.reference, size=8, sub=tsub or (short_citation(cit, 24) if cit else ""))])
         has_refs = any(r.reference for r in v.rows.values())
         if not has_refs:                                   # e.g. ESPEI output: no reference column
             rows = [r if isinstance(r, tuple) else r[:2] for r in rows]

@@ -32,6 +32,11 @@ Stages
 4. **Report**.  One deck, one Excel workbook, ``combine_report.md``, the final TDB with a header summarising
    sources, order, decisions and verdicts, ``combine.ipynb`` (rebuilds F; regenerates the validation) and
    ``combine_state.json`` (re-validate a hand-edited F with :func:`validate_from_state`).
+
+Tentative parameters (calphad_tools.tentative, ``tentative``): every merge of the chain adds TENT_MIX / TENT_VA L0
+terms for mixings no source describes and lets an assessed term replace a tentative one (a term added at step k goes
+when a later source assesses it).  The plan lists the terms each step will add, the decision log has one rule entry
+per term added and per replacement, and the validation attributes the changes they make to those entries.
 """
 from __future__ import annotations
 
@@ -47,8 +52,9 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from . import tdbstage as ts
+from . import tentative as tent
 from .compatibility import clip
-from .tdbparse import parse_tdb
+from .tdbparse import is_tentative, parse_tdb
 
 KELVIN = 273.15
 TOL_T, TOL_X, TOL_GRID, TOL_B = 0.5, 1e-3, 0.995, 2e-3     # reproduced: invariants, grid agreement, boundaries
@@ -78,9 +84,9 @@ def _sha(path: str) -> str:
 
 
 def _content(path: str) -> str:
-    """TDB text without comment lines (what the content-hash caches key on)."""
-    return "\n".join(ln for ln in Path(path).read_text(errors="replace").splitlines()
-                     if not ln.lstrip().startswith("$"))
+    """TDB text without comment lines and reference lists (what the content-hash caches key on)."""
+    from .tdbparse import calc_text
+    return calc_text(Path(path).read_text(errors="replace"))
 
 
 def parse_reason(value) -> Tuple[str, str]:
@@ -312,7 +318,8 @@ def _phase_subsystems(view: ts.StageView, phase: str) -> List[str]:
 
 # =============================================================================================== step plans
 def _step_plan(a: str, b: str, pm: Dict, sm: Dict, dec_user: Dict, work: Path, k: int,
-               ext_raw: Optional[Dict[str, Any]] = None, ext_global: Sequence[str] = ()) -> Dict[str, Any]:
+               ext_raw: Optional[Dict[str, Any]] = None, ext_global: Sequence[str] = (),
+               tentative=True) -> Dict[str, Any]:
     """What staged_merge's build_versions does before the merge, without writing versions: normalisation, 'extend'
     decisions (harmonize.staged_extensions), alias separation, the automatic (staged) decisions and the merge plan's
     conflicts.  ``ext_raw`` {A phase: decision value}; targets in ``ext_global`` (given without a step) are skipped
@@ -345,7 +352,8 @@ def _step_plan(a: str, b: str, pm: Dict, sm: Dict, dec_user: Dict, work: Path, k
         specs[tgt] = sp
     b_merge, ext = b_eff, None
     if specs:
-        ext = staged_extensions(a_eff, b_eff, specs, str(work / "extend"), shared, verify=False)
+        ext = staged_extensions(a_eff, b_eff, specs, str(work / "extend"), shared, verify=False,
+                                tentative=tentative)
         a_eff, b_merge = ext["A_ext"], ext["B_merge"]
     dec = ts.alias_separate([a_eff, b_merge], dec_user)
     plan0 = ts.plan_merge([a_eff, b_merge], dec, "ask")
@@ -584,6 +592,7 @@ class CombinePlan:
     steps: List[StepSpec]
     policy: str = "ask"
     files: Dict[str, str] = field(default_factory=dict)
+    tentative: Any = True                        # the tentative-parameter setting (calphad_tools.tentative)
 
     @property
     def needed(self) -> List[Needed]:
@@ -598,7 +607,7 @@ def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] 
                      order: Optional[Sequence[str]] = None, decisions: Optional[Dict] = None,
                      decision_reasons: Optional[Dict] = None, phase_map=None, sublattice_map=None,
                      policy: str = "ask", unary50: Optional[str] = "auto", phase_harmonization=None,
-                     progress: Callable[[str], None] = lambda s: None) -> CombinePlan:
+                     tentative=True, progress: Callable[[str], None] = lambda s: None) -> CombinePlan:
     from .compatibility import evaluate_pair, write_xlsx as compat_xlsx
     paths = [str(p) for p in paths]
     if len(paths) < 2:
@@ -621,7 +630,7 @@ def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] 
                 continue
             progress(f"combine: compatibility {infos[a]['stem']} + {infos[b]['stem']}")
             stem = f"compat_{infos[a]['stem']}+{infos[b]['stem']}"
-            ev = evaluate_pair(a, b, unary50=unary50, workdir=str(work / stem))
+            ev = evaluate_pair(a, b, unary50=unary50, workdir=str(work / stem), tentative=tentative)
             ev.files["xlsx"] = compat_xlsx(ev, str(work / f"{stem}.xlsx"))
             pair_eval[(a, b)] = ev
 
@@ -635,6 +644,7 @@ def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] 
         raise ValueError("order must list every input exactly once")
     seq, why = propose_order(infos, pair_eval, find(base) if base else None, ordered)
     plan = CombinePlan(paths, infos, seq, why, pair_eval, [], policy)
+    plan.tentative = tentative
     from .harmonize import is_extend
     harm = {str(t).upper(): v for t, v in (phase_harmonization or {}).items()}
     a = seq[0]
@@ -682,8 +692,8 @@ def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] 
         ev = None
         for _ in range(4):          # normalisation answers (names, sublattices) can raise new merge questions
             ev = evaluate_pair(a, b, phase_map=pm or None, sublattice_map=sm or None, unary50=unary50,
-                               workdir=str(work / f"step{k}_compat"))
-            sp = _step_plan(a, b, pm, sm, merge_user, work / f"step{k}", k, ext_raw, ext_global)
+                               workdir=str(work / f"step{k}_compat"), tentative=tentative)
+            sp = _step_plan(a, b, pm, sm, merge_user, work / f"step{k}", k, ext_raw, ext_global, tentative)
             for n in _needed_from_plan(sp, k, st.pair, a_label, bstem, ev):
                 if n.id in needed:
                     continue
@@ -733,7 +743,9 @@ def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] 
                         "harmonize": [r["basis"]["text"] for r in (sp.get("ext") or {}).get("reports", [])]}
         # provisional Q_k for planning the next step
         decs = {**sp["auto"], **sp["alias"], **st.decisions}
-        pl = ts.plan_merge([sp["a_eff"], sp["b_eff"]], decs, "first")
+        pl = ts.plan_merge([sp["a_eff"], sp["b_eff"]], decs, "first", tentative=tentative)
+        from .staged_merge import tentative_info
+        st.plan_info["tentative"] = tentative_info(pl)
         from .merge import render_tdb
         qp = work / f"step{k}" / f"provisional_Q{k}.tdb"
         qp.write_text(render_tdb(pl))
@@ -770,7 +782,25 @@ def plan_text(plan: CombinePlan, rel=lambda p: p) -> str:
     for st in plan.steps:
         L += [f"  NOTE {w}" for w in st.warnings]
         L += [f"  HARMONISE step {st.k}: {h}" for h in st.plan_info.get("harmonize", [])]
+        L += [f"  TENTATIVE step {st.k}: {x}" for x in tentative_plan_lines(st.plan_info.get("tentative"))]
     return "\n".join(L)
+
+
+def tentative_plan_lines(info: Optional[Dict[str, Any]], max_items: int = 6) -> List[str]:
+    """What a step's merge will do with tentative parameters: rule 1 and rule 2 terms (values), replacements."""
+    if not info:
+        return []
+    L = []
+    for ref, title in (("TENT_MIX", "rule 1 (new mixing, TENT_MIX)"), ("TENT_VA", "rule 2 (vacancies, TENT_VA)")):
+        xs = [a for a in info.get("added", []) if a["ref"] == ref]
+        if xs:
+            L.append(f"{title} will add " + "; ".join(f"{a['label']} = {a['value']:+g}" for a in xs[:max_items])
+                     + (f"; +{len(xs) - max_items} more" if len(xs) > max_items else ""))
+    rp = info.get("replaced") or []
+    if rp:
+        L.append("replaces " + "; ".join(r["text"].replace("rule:tentative-replaced: ", "") for r in rp[:max_items]))
+    L += list(info.get("notes") or [])[:2]
+    return L
 
 
 def pending_text(plan: CombinePlan, rel=lambda p: p) -> str:
@@ -814,6 +844,7 @@ def run_steps(plan: CombinePlan, out: Path, settings: Dict[str, Any], *, n_worke
         progress(f"combine: step {st.k}/{len(plan.steps)}: {st.pair}")
         r = staged_merge(a, st.b, str(od), phase_map=st.phase_map or None, sublattice_map=st.sublattice_map or None,
                          decisions=st.decisions, policy="ask", extensions=st.extensions or None,
+                         tentative=plan.tentative,
                          ternary_temperatures_c=list(ternary_temperatures_c),
                          tmin_c=settings["tmin_c"], tmax_c=settings["tmax_c"],
                          composition_step=settings["x_step"], temperature_step=settings["t_step"],
@@ -831,9 +862,12 @@ def run_steps(plan: CombinePlan, out: Path, settings: Dict[str, Any], *, n_worke
 
 
 # =============================================================================================== decision log
-STEP_KINDS = {("B", "B1"): ("unaries",), ("B1", "B2"): ("unaries", "function"), ("B2", "B3"): ("binary", "parameter"),
-              ("B3", "Q"): ("phase_model", "constituents", "from-base", "binary", "parameter", "typedef"),
-              ("A", "A1"): ("from-added", "constituents"), ("A1", "A2"): ("from-added", "constituents")}
+STEP_KINDS = {("B", "B1"): ("unaries",), ("B1", "B2"): ("unaries", "function"),
+              ("B2", "B3"): ("binary", "parameter", "tentative", "tentative-replaced"),
+              ("B3", "Q"): ("phase_model", "constituents", "from-base", "binary", "parameter", "typedef", "tentative",
+                            "tentative-replaced"),
+              ("A", "A1"): ("from-added", "constituents", "tentative", "tentative-replaced"),
+              ("A1", "A2"): ("from-added", "constituents", "tentative", "tentative-replaced")}
 
 
 class StepContext:
@@ -844,7 +878,8 @@ class StepContext:
         self.tag = f"step {k}: {a_label} + {b_label}"
         self.a_label, self.b_label = a_label, b_label
         self.shared = set(r["shared"])
-        self.plan = ts.plan_merge([r["A_eff"], r.get("B_merge") or r["B"]], r["decisions"], "ask")
+        self.plan = ts.plan_merge([r["A_eff"], r.get("B_merge") or r["B"]], r["decisions"], "ask",
+                                  tentative=r.get("tentative_cfg", True))
         # 'extend' decisions: every change of the extended phase (and of B's source phase) is theirs
         self.extended: Dict[str, str] = {}
         for x in (r.get("extensions") or {}).get("reports", []):
@@ -876,6 +911,9 @@ class StepContext:
     def classify_param(self, p: ts.ParamChange, side: str, X: ts.StageView, Y: ts.StageView) -> Optional[str]:
         k = self.k
         ph = p.phase
+        tid = self._tentative_entry(p, X, Y)
+        if tid:
+            return tid
         if ph in self.extended:
             return self.extended[ph]
         if p.kind == "value":
@@ -941,6 +979,51 @@ class StepContext:
                                              "are the base's, plus those only the other database has", "typedef",
                           chosen=f"{m.old} -> {m.new}")
         e.add_evidence(why)
+        return eid
+
+    # ------------------------------------------------------------------ tentative parameters
+    def _tentative_entry(self, p: ts.ParamChange, X: ts.StageView, Y: ts.StageView) -> Optional[str]:
+        """A change made by a tentative term: one added (or kept the larger of two) -> its 'tentative' entry; a
+        tentative term replaced by an assessed one or removed -> its 'tentative-replaced' entry."""
+        rx, ry = X.rows.get(p.key), Y.rows.get(p.key)
+        tx = rx is not None and is_tentative(rx.reference, X.tdb)
+        ty = ry is not None and is_tentative(ry.reference, Y.tdb)
+        if ty and not tx:
+            return self.tentative_added(p.label)
+        if tx:
+            return self.tentative_replaced(p.label)
+        return None
+
+    def tentative_added(self, label: str, term=None) -> str:
+        eid = f"step{self.k}:rule:tentative:{label}"
+        e = self.log.get(eid)
+        if e is None:
+            t = term or next((x for x in self.plan.tentative if x.label == label), None)
+            ref = t.ref if t is not None else tent.TENT_MIX
+            cfg = self.plan.tentative_settings or tent.DEFAULTS
+            why = tent.RULE_TEXT[ref].format(mixing_per_atom=cfg.get("mixing_per_atom") or 0,
+                                             vacancy=cfg.get("vacancy") or 0)
+            chosen = f"{t.value:+g} ({t.ref}, tentative)" if t is not None else "tentative (from an earlier merge)"
+            e = self.log.rule(eid, self.tag, label, why, "tentative", chosen=chosen,
+                              options=[chosen, "tentative=false: no term (ideal mixing)",
+                                       "an assessed value (replaces it automatically when a source has one)"])
+            if t is not None:
+                e.add_evidence(t.text(), t.evidence)
+            else:
+                e.add_evidence(f"{label}: tentative term carried into Q{self.k} (TENT_MIX / TENT_VA; e.g. from an "
+                               f"'extend' decision or an earlier step)")
+        return eid
+
+    def tentative_replaced(self, label: str, rp=None) -> str:
+        eid = f"step{self.k}:rule:tentative-replaced:{label}"
+        e = self.log.get(eid)
+        if e is None:
+            rp = rp or next((x for x in self.plan.tentative_replaced if x.label == label), None)
+            chosen = (rp.text().replace(f"rule:tentative-replaced: {label} ", "") if rp is not None
+                      else "assessed value replaces the tentative term")
+            e = self.log.rule(eid, self.tag, label, "rule: " + tent.PRECEDENCE, "tentative-replaced", chosen=chosen,
+                              options=["the assessed value (always)", "the tentative value (never offered)"])
+            e.add_evidence(rp.text() if rp is not None else f"rule:tentative-replaced: {label}")
         return eid
 
     # ------------------------------------------------------------------ entries made on demand
@@ -1169,6 +1252,15 @@ def build_decision_log(plan: CombinePlan, results: List[Dict[str, Any]], log: De
                       "magnetic-exception": "base rescaled", "not_rescaled": "not rescaled",
                       "incompatible": "kept as is", "kept": "kept as is", "unmapped": "kept as is"}.get(act, act)
             log.add(Entry(eid, tag, nn.phase, [], chosen, who, reason, "normalisation", evidence=[nn.detail]))
+        # tentative parameters: one rule entry per term the merge added and per replacement
+        for t in sc.plan.tentative:
+            sc.tentative_added(t.label, t)
+        for rp in sc.plan.tentative_replaced:
+            if rp.kind == "both":
+                e = log.get(sc.tentative_added(rp.label))
+                e.add_evidence(rp.text())
+            else:
+                sc.tentative_replaced(rp.label, rp)
         # unary / SER replacement (rule) - evidence from the compatibility rows and the B1/B2 build logs
         for el in sorted(sc.shared):
             ser = [x for x in r["versions"]["B1"].log if x.startswith(f"{el}:")]
@@ -1705,7 +1797,7 @@ def _item_changes(sd: Optional[ts.SubsystemDiff], X, Y, attr, edited) -> Tuple[L
 
 
 RANK_KIND = {"unaries": 1, "function": 1, "binary": 1, "parameter": 1, "phase_model": 1, "constituents": 2,
-             "typedef": 2, "from-base": 3, "from-added": 3}
+             "typedef": 2, "tentative": 2, "tentative-replaced": 2, "from-base": 3, "from-added": 3}
 
 
 def _id_rank(i: str, kinds: Dict[str, Tuple[str, str]]):
@@ -1768,6 +1860,8 @@ def draw_overlay(ax, it, s_res, f_res, name_map, s_label: str, row: Dict, settin
         why = "\nunexplained: " + clip(row["unexplained"][0].split(": ")[0], 48)
     elif v == "changed, explained" and row.get("explained_by"):
         why = "\nby " + clip(", ".join(row["explained_by"]), 60)
+    elif row.get("tentative"):
+        why = "\nwith tentative " + clip(", ".join(row["tentative"]), 52)
     ax.set_title(f"{it.name}: {v}{why}", fontsize=14 if not why else 13, color=VERDICT_COLOR.get(v, "black"),
                  fontweight="bold" if v.startswith("CHANGED") else "normal")
     handles = [Line2D([], [], **S_STYLE, label=f"{s_label} (source)"),
@@ -1924,6 +2018,17 @@ def validate(state: Dict[str, Any], final: str, *, n_workers=None, lint: bool = 
                 row["verdict"] = "changed, explained"
                 row["basis"] = "; ".join(why_not)
             row["why_not"] = why_not
+            tids = [i for i in row["explained_by"] if ":rule:tentative" in i]
+            if tids:
+                labels = sorted({i.split(":rule:", 1)[1].split(":", 1)[1] for i in tids})
+                row["tentative"] = labels
+                row["tentative_note"] = (
+                    f"{'replaced / ' if any('tentative-replaced' in i for i in tids) else ''}tentative "
+                    f"{', '.join(labels)}: with {'them' if len(labels) > 1 else 'it'} {it.name} is "
+                    f"{row['verdict']} - max invariant ΔT {row['inv_max_dT']:.2f} K, Δx {row['inv_max_dx']:.4f}, "
+                    f"boundaries {row['boundary']:.4f}, grid "
+                    + (f"{100 * row['grid']:.1f} %" if row.get("grid") == row.get("grid") else "—")
+                    + " of the source")
             src_rows.append((it, row))
             rows.append(row)
         # one overlay per subsystem + one grid per source
@@ -2069,7 +2174,8 @@ def build_state(plan: CombinePlan, results: List[Dict], log: DecisionLog, attr, 
                       "extensions": _jsonable(st.extensions),
                       "phase_renames": r.get("phase_renames") or {}, "shared": r["shared"],
                       "needed": [asdict(n) for n in st.needed], "warnings": st.warnings,
-                      "deck": r["files"].get("deck", ""),
+                      "deck": r["files"].get("deck", ""), "tentative": _jsonable(r.get("tentative_cfg", True)),
+                      "tentative_terms": r.get("tentative") or {},
                       "xlsx": r["files"]["xlsx"], "images": list(r.get("images") or [])})
     pairs = [{"pair": f"{plan.infos[a]['stem']} + {plan.infos[b]['stem']}", "overall": ev.overall,
               "xlsx": ev.files.get("xlsx", "")} for (a, b), ev in plan.pair_eval.items()]
@@ -2080,7 +2186,8 @@ def build_state(plan: CombinePlan, results: List[Dict], log: DecisionLog, attr, 
             "validate_temperatures_c": [float(t) for t in (validate_t or [])], "steps": steps,
             "sources": sources, "final": str(final), "run_final": str(run_final), "attr": attr,
             "unattributed": unattr, "exactness": _jsonable(exact), "log": [e.to_dict() for e in log],
-            "hash_seed": child_seed()}
+            "tentative": _jsonable(plan.tentative), "tentative_settings": tent.settings_text(tent.settings(
+                plan.tentative)), "hash_seed": child_seed()}
 
 
 def _write_reports(state: Dict, V: Dict, results: Optional[List[Dict]], out: Path) -> Dict[str, str]:
@@ -2110,9 +2217,11 @@ def combine_databases(tdbs: Sequence[str], output_dir: str, *, base: Optional[st
                       force_replot=False, unary50: Optional[str] = "auto", tmin_c: float = 300.0,
                       tmax_c: float = 3000.0, composition_step: float = 0.02, temperature_step: float = 10.0,
                       ternary_step: float = 0.02, lint: bool = True, phase_harmonization=None,
-                      progress: Callable[[str], None] = lambda s: None,
+                      tentative=True, progress: Callable[[str], None] = lambda s: None,
                       on_decisions: Optional[Callable[[List[Dict]], None]] = None) -> Dict[str, Any]:
-    """Plan -> (decisions) -> staged merges -> validation -> reports.  Returns {'written': bool, 'text': ...}."""
+    """Plan -> (decisions) -> staged merges -> validation -> reports.  Returns {'written': bool, 'text': ...}.
+    ``tentative``: True (default) | False | {'mixing_per_atom': 50000, 'vacancy': 200000} (calphad_tools.tentative)."""
+    tent.settings(tentative)                    # validates the argument before anything runs
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     paths = [str(Path(p).resolve()) for p in tdbs]
@@ -2123,8 +2232,9 @@ def combine_databases(tdbs: Sequence[str], output_dir: str, *, base: Optional[st
     plan = plan_combination(paths, str(out / "plan"), base=base, order=order, decisions=decisions,
                             decision_reasons=reasons, phase_map=phase_map, sublattice_map=sublattice_map,
                             policy=policy, unary50=unary50, phase_harmonization=phase_harmonization,
-                            progress=progress)
+                            tentative=tentative, progress=progress)
     plan_json = {"order": plan.order, "order_reasons": plan.order_reasons,
+                 "tentative": {f"step{st.k}": st.plan_info.get("tentative") for st in plan.steps},
                  "needed": [asdict(n) for n in plan.needed], "pairs": {f"{_stem(a)} + {_stem(b)}": ev.overall
                                                                       for (a, b), ev in plan.pair_eval.items()}}
     (out / "plan" / "combine_plan.json").write_text(json.dumps(plan_json, indent=1, default=str))
@@ -2198,6 +2308,7 @@ def summary_text(state: Dict, V: Dict, files: Dict[str, str], rel=lambda p: p) -
         L.append("Changed, explained: " + "; ".join(
             f"{r['subsystem']} ({r['source']}; {clip(r['basis'].split('; ')[0], 90)}) by "
             f"{', '.join(r['explained_by'][:3])}" for r in ex[:4]))
+    L += cr.tentative_summary(state, V)
     fl = cr.flagged(state["log"])
     L.append(f"Decision log: {len(state['log'])} entries ({cr.who_counts(state['log'])})"
              + (f"; reason NOT GIVEN: {', '.join(e['id'] for e in fl[:5])}" if fl else ""))
@@ -2216,12 +2327,13 @@ def summary_text(state: Dict, V: Dict, files: Dict[str, str], rel=lambda p: p) -
 
 # =============================================================================================== tool
 def register(tb) -> None:
+    from .staged_merge import TENTATIVE_SCHEMA, tentative_arg
     S = {"type": "string"}
     N = {"type": "number"}
     NUMS = {"type": "array", "items": N}
 
     @tb.add("combine_databases",
-            "Merge N TDBs end to end, with a decision log and validation against every source. Plan: pairwise "
+            "Merge N TDBs end to end: decision log, validation against every source. Plan: pairwise "
             "compatibility, proposed base/order with reasons, EVERY decision needed listed once with stable ids "
             "and consequences - ask the user once, re-call with decisions and decision_reasons {id: 'user: why'}. "
             "Then staged merges in order, decision log (who/why/evidence, automatic rules too), validation "
@@ -2247,13 +2359,15 @@ def register(tb) -> None:
              "force_replot": {"anyOf": [{"type": "boolean"}, {"type": "array", "items": S}]},
              "tmin_c": N, "tmax_c": N, "unary50": S,
              "validate_only": {"type": "boolean", "description": "re-validate an existing run (e.g. F edited)"},
+             "tentative": TENTATIVE_SCHEMA,
              "final_tdb": {**S, "description": "with validate_only: the TDB to validate"}},
             ["tdbs"])
     def combine_databases_tool(tdbs, base=None, order=None, decisions=None, decision_reasons=None, policy="ask",
                                phase_map=None, sublattice_map=None, ternary_temperatures_c=None,
                                validate_temperatures_c=None, output_dir=None, n_workers=None, force_replot=False,
                                tmin_c: float = 300.0, tmax_c: float = 3000.0, unary50: str = "auto",
-                               validate_only: bool = False, final_tdb=None, phase_harmonization=None):
+                               validate_only: bool = False, final_tdb=None, phase_harmonization=None,
+                               tentative=None):
         paths = [tb._find_tdb(t) for t in tdbs or []]
         od = tb.outdir(output_dir, default_output_dir(paths))
         if validate_only:
@@ -2276,7 +2390,8 @@ def register(tb) -> None:
                               ternary_temperatures_c=ternary_temperatures_c or [],
                               validate_temperatures_c=validate_temperatures_c, n_workers=n_workers,
                               force_replot=force_replot, unary50=unary50, tmin_c=tmin_c, tmax_c=tmax_c,
-                              phase_harmonization=phase_harmonization, progress=tb.ui.progress,
+                              phase_harmonization=phase_harmonization, tentative=tentative_arg(tb, tentative),
+                              progress=tb.ui.progress,
                               on_decisions=lambda entries: _record(tb, entries, "combine_databases"))
         if not r["written"]:
             return r["text"], []
