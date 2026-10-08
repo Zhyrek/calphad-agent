@@ -611,14 +611,20 @@ def plan_merge(paths: Sequence[str], decisions: Optional[Dict[str, str]] = None,
 
 def _phase_ordered(name: str, tds: Sequence[TypeDef], phases: Dict) -> bool:
     """Order-disorder related: the phase has a DIS_PART type definition, or is another phase's disordered part."""
+    return _order_role(name, tds, phases) is not None
+
+
+def _order_role(name: str, tds: Sequence[TypeDef], phases: Dict) -> Optional[str]:
+    """"ordered": the phase has a DIS_PART type definition (e.g. BCC_B2); "disordered": it is another phase's
+    disordered part (e.g. BCC_A2 of BCC_B2); None: neither."""
     if any(t.kind == "DIS_PART" for t in tds):
-        return True
+        return "ordered"
     for other, (_, otds, _) in phases.items():
         for t in otds:
             m = re.search(r"DIS_P\w*\s+([A-Z0-9_]+)", t.text.upper())
             if t.kind == "DIS_PART" and m and m.group(1) == name and other != name:
-                return True
-    return False
+                return "disordered"
+    return None
 
 
 def _tentative_terms(plan: MergePlan, convert: Dict, tent_pairs: Dict) -> None:
@@ -658,8 +664,14 @@ def _tentative_terms(plan: MergePlan, convert: Dict, tent_pairs: Dict) -> None:
 
         def exists(full, _name=name):
             return ("G", _name, tuple(tuple(sl) for sl in full), 0, "") in plan.params
+        # the ordered phase of an order-disorder pair is left alone (its disordered contribution comes from its
+        # disordered part); the disordered part (e.g. BCC_A2 of BCC_B2) is where vacancy / mixing terms belong
+        role = _order_role(name, tds, plan.phases)
         terms, notes = tent.plan_phase(name, tb.site_ratios, tb.constituents, srcs, g_source, exists,
-                                       plan.tentative_settings, els_of, _phase_ordered(name, tds, plan.phases))
+                                       plan.tentative_settings, els_of, role == "ordered")
+        if role == "ordered":
+            notes = notes + [f"{name}: ordered phase of an order-disorder pair - no tentative terms here; its "
+                             f"disordered part gets them"]
         lo, hi = plan.temp_limits
         for t in terms:
             t.source_label = " + ".join(d.name for d in dbs)

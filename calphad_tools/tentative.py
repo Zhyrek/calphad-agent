@@ -18,8 +18,9 @@ of the pair is a tentative term does not count.  For a pair the combination crea
   not stabilised by mixing with vacancies.  A missing vacancy end-member G(phase,VA:...) is reported, not invented.
 
 A substitutional ("main") sublattice holds at least one element that is not an interstitial (B, C, H, N, O): in
-(Fe,Cr,Ni,Va)(Va) the first sublattice is one, in (Fe)(C,Va) the second is not, so it never triggers rule 2.  Phases
-with an order-disorder (DIS_PART) relation or ionic species are left alone.
+(Fe,Cr,Ni,Va)(Va) the first sublattice is one, in (Fe)(C,Va) the second is not, so it never triggers rule 2.  The ordered
+phase of an order-disorder (DIS_PART) pair and phases with ionic species are left alone; the disordered part (e.g.
+BCC_A2 of BCC_B2) is treated like any other phase.
 
 Every tentative parameter carries the reference key TENT_MIX or TENT_VA, and the written TDB lists them in its
 reference list ("Tentative parameter added by calphad_tools when combining <sources> (<date>): ...").

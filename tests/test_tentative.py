@@ -377,3 +377,32 @@ def test_combine_chain_replaces_step1_tentative_term(tmp_path):
     assert "## Tentative parameters" in md and "L(C14_LAVES,FE:MO,W;0)" in md
     assert "Tentative" in r["text"]
     json.dumps(st)                                                       # the state stays JSON
+
+
+def test_rule2_on_the_disordered_part_of_an_order_disorder_pair(tmp_path):
+    """BCC_A2 as the DIS_PART of BCC_B2 (common in Fe-Mo-Zr-type databases): the disordered BCC_A2 still gets
+    L(BCC_A2,CO,VA:VA;0) when (CE,FE,MO,ZR,VA:VA) meets (CE,CO,FE:VA); the ordered BCC_B2 gets a note, no terms.
+    (Regression: the whole pair used to be skipped silently.)"""
+    from calphad_tools import merge
+    head = ("ELEMENT VA VACUUM 0 0 0 !\nELEMENT CE FCC_A1 140.12 0 0 !\nELEMENT CO HCP_A3 58.93 0 0 !\n"
+            "ELEMENT FE BCC_A2 55.85 0 0 !\nELEMENT MO BCC_A2 95.94 0 0 !\nELEMENT ZR HCP_A3 91.22 0 0 !\n"
+            "TYPE_DEFINITION % SEQ * !\n")
+    a = head + ("TYPE_DEFINITION B GES A_P_D BCC_B2 DIS_PART BCC_A2 !\n"
+                "PHASE BCC_A2 % 2 1 3 !\nCONSTITUENT BCC_A2 :CE,FE,MO,ZR,VA:VA: !\n"
+                + "".join(f"PARAMETER G(BCC_A2,{x}:VA;0) 298.15 0; 6000 N REF1 !\n"
+                          for x in ("CE", "FE", "MO", "ZR", "VA"))
+                + "".join(f"PARAMETER L(BCC_A2,{x},VA:VA;0) 298.15 200000; 6000 N REF1 !\n"
+                          for x in ("CE", "FE", "MO", "ZR"))
+                + "PHASE BCC_B2 %B 3 0.5 0.5 3 !\n"
+                  "CONSTITUENT BCC_B2 :CE,FE,MO,ZR,VA:CE,FE,MO,ZR,VA:VA: !\n"
+                  "PARAMETER G(BCC_B2,FE:MO:VA;0) 298.15 -1000; 6000 N REF1 !\n"
+                  "PARAMETER G(BCC_B2,MO:FE:VA;0) 298.15 -1000; 6000 N REF1 !\n")
+    b = head + ("PHASE BCC_A2 % 2 1 3 !\nCONSTITUENT BCC_A2 :CE,CO,FE:VA: !\n"
+                + "".join(f"PARAMETER G(BCC_A2,{x}:VA;0) 298.15 0; 6000 N REF2 !\n" for x in ("CE", "CO", "FE")))
+    (tmp_path / "a.tdb").write_text(a)
+    (tmp_path / "b.tdb").write_text(b)
+    for order in (("a.tdb", "b.tdb"), ("b.tdb", "a.tdb")):
+        plan = merge.plan_merge([str(tmp_path / f) for f in order], tentative=True)
+        assert [t.label for t in plan.tentative] == ["L(BCC_A2,CO,VA:VA;0)"], order
+        assert plan.tentative[0].value == 200000
+        assert any(n.startswith("BCC_B2: ordered phase") for n in plan.tentative_notes), plan.tentative_notes
