@@ -34,7 +34,6 @@ import itertools
 import math
 import re
 import warnings
-from decimal import Decimal, localcontext
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -45,7 +44,7 @@ from . import tdbstage as ts
 from . import tentative as tent
 from .merge import TYPE_CODE_POOL
 from .tdbparse import (TDB, Parameter, TypeDef, fmt_ratio, is_tentative, parse_param_name, parse_tdb,
-                       scale_piecewise)
+                       ratios_proportional, scale_piecewise, sum_one_decimals)
 
 GM_RTOL = 1e-9                         # relative GM tolerance of an exact transformation
 T_RANGE = (300.0, 2900.0)              # K, where GM is compared (inside the usual 3000 K upper limit)
@@ -84,19 +83,7 @@ def sum_to_one_ratios(ratios: Sequence[float]) -> List[float]:
     sum (what pycalphad adds) is 1 to 1e-15: 2:17 -> 0.105263157894737 / 0.894736842105263."""
     fr = [Fraction(fmt_ratio(r)) for r in ratios]
     tot = sum(fr)
-    with localcontext() as ctx:
-        ctx.prec = 15
-        dec = [+(Decimal(x.numerator) / Decimal(x.denominator)) for x in (f / tot for f in fr)]
-    big = max(range(len(dec)), key=lambda i: dec[i])
-    dec[big] = Decimal(1) - sum(d for i, d in enumerate(dec) if i != big)
-    out = [float(str(d)) for d in dec]
-    if abs(sum(out) - 1.0) > 1e-15:          # nudge the largest by one unit in the last place
-        for step in (1, -1, 2, -2):
-            trial = list(out)
-            trial[big] = float(str(dec[big] + Decimal(step) * Decimal(10) ** (dec[big].adjusted() - 14)))
-            if abs(sum(trial) - 1.0) <= 1e-15:
-                return trial
-    return out
+    return sum_one_decimals([f / tot for f in fr])
 
 
 def integer_ratios(ratios: Sequence[float]) -> List[float]:
@@ -542,6 +529,7 @@ def normalize_phase_formula_unit(tdb, phases: Sequence[str], target="sum_to_one"
         if ph_name not in db.phases:
             raise HarmonizeError(f"{ph_name} is not a phase of {db.name}")
         ph = db.phases[ph_name]
+        snapped = None
         if match_tdb:
             other = match_tdb if isinstance(match_tdb, TDB) else parse_tdb(str(match_tdb))
             mph = (match_phase or ph_name).upper()
@@ -553,16 +541,33 @@ def normalize_phase_formula_unit(tdb, phases: Sequence[str], target="sum_to_one"
                 raise HarmonizeError(f"{ph_name} {ts._subl_text(ph)} and {other.name}'s {mph} "
                                      f"{ts._subl_text(other.phases[mph])}: site ratios not proportional")
             perm, _ = m
+            if m.a_snap is not None:              # this phase's ratios are a rounded form of simple fractions
+                snapped = ts.snap_phase_in(db, ph_name, m.a_snap)
             o_real = _real(other.phases[mph])
+            o_vals = m.b_snap.values if m.b_snap is not None else [other.phases[mph].site_ratios[i] for i in o_real]
             new = list(ph.site_ratios)
             for t, i in enumerate(_real(ph)):
-                new[i] = other.phases[mph].site_ratios[o_real[perm[t]]]
+                new[i] = o_vals[perm[t]]
             kk = sum(new[i] for i in _real(ph)) / sum(ph.site_ratios[i] for i in _real(ph))
             for i in _va_only(ph):
                 new[i] = ph.site_ratios[i] * kk
         else:
+            sn = ts.phase_snap(ph)
+            if sn is not None and sn.changed:
+                real = _real(ph)
+                if isinstance(target, str):
+                    want = True
+                else:
+                    tg = [float(x) for x in target]
+                    tg = [tg[i] for i in real] if len(tg) == len(ph.site_ratios) else tg
+                    want = len(tg) == len(real) and not ratios_proportional([ph.site_ratios[i] for i in real], tg)
+                if want:
+                    snapped = ts.snap_phase_in(db, ph_name, sn)     # 0.333:0.667 read as 1/3:2/3 first
             new = phase_ratio_target(ph, target)
         rep = rescale_phase(db, ph_name, new, magnetic)
+        if snapped:
+            rep["snap"] = snapped["text"]
+            rep["text"] = f"{ph_name}: {snapped['text']}; then " + rep["text"]
         if isinstance(target, str) and target.lower() in ("sum_to_one", "sum1", "per_atom", "one") and not match_tdb:
             rep["sum_text"] = " + ".join(fmt_ratio(db.phases[ph_name].site_ratios[i]) for i in _real(ph))
         reports.append(rep)
@@ -720,6 +725,22 @@ def extend_phase_db(base: TDB, add: TDB, base_phase: str, add_phase: Optional[st
             if p.key.phase == P:
                 p.raw_name = ts._permute_raw(p.raw_name, new_from_old)
                 p.key, p.sign, p.order_map = parse_param_name(p.raw_name)
+        if len(new_from_old) == 2:
+            rep["notes"].append(f"flipped sublattices to match: {add_label}'s {Q} {ts._subl_text(add.phases[Q])} "
+                                f"in {base_label}'s order")
+    # site ratios written as a rounded form of simple fractions (0.333:0.667): read as those fractions on each side
+    # first (rule, not a question), so the formula-unit change below is exact; the GM checks then compare with the
+    # exact-fraction versions and the snap's own (tiny) GM change is reported
+    rep["snaps"] = []
+    for db, ph, sn, lab, orig, oname in ((B, P, m.a_snap, base_label, base, P), (D, P, m.b_snap, add_label, add, Q)):
+        if sn is None:
+            continue
+        r = ts.snap_phase_in(db, ph)
+        if r:
+            rep["snaps"].append(f"{oname} ({lab}): {r['text']}")
+            ref = copy.deepcopy(orig)
+            ts.snap_phase_in(ref, oname)
+            rep["_base_ref" if db is B else "_add_ref"] = ref
     add_tent_pairs = _tent_pairs(D, P)          # add's pairs described only by tentative terms (all its parameters)
     # ---- what is imported: add's parameters of the phase with a component (others dropped from the scratch copy)
     imp_all = _imported(D, P, comps)
@@ -1018,6 +1039,8 @@ def _check_extension(base: TDB, add: TDB, new: TDB, rep: Dict[str, Any], n: int 
     """GM checks: base restricted to base elements unchanged; add reproduced on its subsystems with the
     components."""
     P, Q, comps = rep["base_phase"], rep["add_phase"], rep["components"]
+    base = rep.get("_base_ref") or base             # site ratios read as exact fractions (snapped): compare with that
+    add = rep.get("_add_ref") or add
     dbn = pyc_db(new)
     base_comps = phase_comps(base, P)
     out = {"base": gm_compare(pyc_db(base), P, dbn, P, base_comps, n=n)}
@@ -1070,6 +1093,8 @@ def extend_phase(base_tdb, add_tdb, base_phase: str, add_phase: Optional[str] = 
         rep["validator"] = external_validation(base, str(output_tdb), [rep["base_phase"]],
                                                ["only affected phases changed", "base subsystems unchanged"],
                                                {rep["base_phase"]: rep["rescale_base"]["k"]})
+    rep.pop("_base_ref", None)
+    rep.pop("_add_ref", None)
     rep["tdb"] = new
     rep["text"] = "\n".join(report_lines(rep))
     return rep
@@ -1112,7 +1137,9 @@ def base_label_of(rep: Dict[str, Any]) -> str:
 def report_lines(rep: Dict[str, Any]) -> List[str]:
     P, bl, al = rep["base_phase"], rep["base_label"], rep["add_label"]
     L = [f"{P}: {bl}'s phase extended with {', '.join(rep['components'])} from {al}'s {rep['add_phase']} -> "
-         f"{rep.get('phase_after', '')}", rep["mapping"], "basis: " + rep["basis"]["text"]]
+         f"{rep.get('phase_after', '')}", rep["mapping"]]
+    L += [f"site ratios read exactly: {x}" for x in rep.get("snaps") or []]
+    L.append("basis: " + rep["basis"]["text"])
     for key in ("rescale_base", "rescale_add"):
         r = rep.get(key)
         if r and abs(r["k"] - 1) > 1e-15 and r.get("text"):
@@ -1229,8 +1256,11 @@ _YAML_KEYS = {"source_phase": "phase", "add_phase": "phase", "phase": "phase", "
 
 
 def is_extend(value) -> bool:
+    """'extend', 'extend:<source phase>' (an option of a pairing question with several candidates) or a dict
+    {'extend': {...}} / phase_harmonization entry."""
     if isinstance(value, str):
-        return value.strip().lower() == "extend"
+        v = value.strip().lower()
+        return v == "extend" or (v.startswith("extend:") and len(v) > 7)
     return isinstance(value, dict) and ("extend" in value or "source_phase" in value)
 
 
@@ -1243,6 +1273,9 @@ def extension_spec(target: str, value, A: Optional[TDB] = None, B: Optional[TDB]
     if isinstance(value, dict):
         raw = value.get("extend") if isinstance(value.get("extend"), dict) else {
             k: v for k, v in value.items() if k != "extend"}
+    elif isinstance(value, str) and ":" in value:
+        raw = {"phase": value.split(":", 1)[1].strip()}         # 'extend:<source phase>'
+
     raw = raw or {}
     unknown = [k for k in raw if k not in _YAML_KEYS]
     if unknown:
@@ -1360,13 +1393,15 @@ def staged_extensions(a_eff: str, b_eff: str, specs: Dict[str, Dict], out_dir: s
                            [f"{Path(b_eff).name} without {', '.join(s['phase'] for s in specs.values())} (taken into "
                             f"the base's extended phase(s) by the 'extend' decision)"])
     for r in reports:
-        r.pop("tdb", None)
+        for key in ("tdb", "_base_ref", "_add_ref"):
+            r.pop(key, None)
     return {"A_ext": a_ext, "B_merge": b_merge, "reports": reports, "renames": renames}
 
 
 def jsonable_report(rep: Dict[str, Any]) -> Dict[str, Any]:
     keep = ("base_phase", "add_phase", "components", "mapping", "new_from_old", "added_constituents", "imported",
-            "skipped", "collisions", "functions", "notes", "missing_g", "phase_after", "text", "spec", "validator")
+            "skipped", "collisions", "functions", "notes", "missing_g", "phase_after", "text", "spec", "validator",
+            "snaps")
     out = {k: rep.get(k) for k in keep}
     out["basis"] = {k: v for k, v in rep["basis"].items()}
     out["added_constituents"] = {str(k): v for k, v in (rep.get("added_constituents") or {}).items()}

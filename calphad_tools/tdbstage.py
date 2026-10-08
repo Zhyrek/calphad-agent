@@ -31,8 +31,8 @@ import numpy as np
 
 from .merge import _build_raw_name, _split_raw_name, plan_merge, render_tdb
 from .pwinline import MissingRef, evaluate, inline, scale
-from .tdbparse import (TDB, Function, Parameter, Piecewise, parse_param_name, parse_tdb, scale_piecewise,
-                       wrap_tdb_line)
+from .tdbparse import (SNAP_RTOL, TDB, Function, Parameter, Piecewise, RatioSnap, fmt_ratio, parse_param_name,
+                       parse_tdb, ratios_proportional, scale_piecewise, snap_ratios, wrap_tdb_line)
 from .tdbtables import Subsystem, key_constituents, make_key, pw_segments, row_sort_key
 
 STAGE_GRID = (298.15, 6000.0)          # temperature range of SER (SGTE unary) comparisons (K)
@@ -347,25 +347,43 @@ def _written(view: StageView, key: str) -> str:
         return r.raw_text if r is not None else ""
 
 
-def phase_rescales(X: StageView, Y: StageView) -> Dict[str, float]:
-    """Phases whose site ratios differ only by a factor k (Y = k*X, vacancy-only sublattices ignored) and that have
-    no magnetic parameters in X and no order-disorder link: comparing Y's G/L terms with k*X's is then exact (GM per
-    mole of atoms is unchanged by such a rescale)."""
+def phase_rescale_info(X: StageView, Y: StageView) -> Dict[str, Tuple[float, str]]:
+    """{phase: (k, snap text)} for phases whose site ratios differ only by a factor k (Y = k*X, vacancy-only
+    sublattices ignored) - as written, or once ratios written as rounded fractions are read exactly (snap text
+    '0.333:0.667 read as 1/3:2/3 ...', else '') - with no magnetic parameters in X (unless k = 1) and no order-disorder
+    link: comparing Y's G/L terms with k*X's is then exact (GM per mole of atoms is unchanged by such a rescale; a
+    snap moves only the configurational-entropy weights, by the amount the text gives)."""
     out = {}
     for ph in set(X.phases) & set(Y.phases):
         px, py = X.phases[ph], Y.phases[ph]
         if px.dis_part or py.dis_part or px.disordered_of or py.disordered_of:
             continue
-        rx, ry = px.reduced_ratios(), py.reduced_ratios()
+        rx = [r for i, r in enumerate(px.site_ratios) if i not in px.va_only]
+        ry = [r for i, r in enumerate(py.site_ratios) if i not in py.va_only]
         if len(rx) != len(ry) or rx == ry or not rx:
             continue
         k = sum(ry) / sum(rx)
-        if abs(k - 1.0) < 1e-9 or any(abs(b - a * k) > 1e-3 * max(ry) for a, b in zip(rx, ry)):
+        snap = ""
+        if not ratios_proportional(rx, ry):
+            sx, sy = snap_ratios(rx), snap_ratios(ry)
+            if sx is not None and sy is not None and sx.normalised() == sy.normalised():
+                cons = [c for i, c in enumerate(px.constituents) if i not in px.va_only]
+                gm = snap_gm_change(cons, rx, ry)
+                snap = (f"site ratios {sx.given_text()} -> {sy.given_text()} read as {sy.text()} (GM changes by at "
+                        f"most {gm:.2g} J/mol of atoms, configurational-entropy weights)")
+            elif abs(k - 1.0) < 1e-9 or any(abs(b - a * k) > 1e-3 * max(ry) for a, b in zip(rx, ry)):
+                continue
+        elif abs(k - 1.0) < 1e-9:
             continue
-        if any(r.phase == ph and r.ptype in MAGNETIC_PTYPES for r in X.rows.values()):
+        if abs(k - 1.0) > 1e-9 and any(r.phase == ph and r.ptype in MAGNETIC_PTYPES for r in X.rows.values()):
             continue
-        out[ph] = k
+        out[ph] = (k, snap)
     return out
+
+
+def phase_rescales(X: StageView, Y: StageView) -> Dict[str, float]:
+    """{phase: k}: see phase_rescale_info."""
+    return {ph: k for ph, (k, _) in phase_rescale_info(X, Y).items()}
 
 
 def param_changes(X: StageView, Y: StageView, rtol: float = STAGE_RTOL,
@@ -426,13 +444,21 @@ def model_change(X: StageView, Y: StageView, phase: str, elements,
 def diff_versions(X: StageView, Y: StageView, subsystems: Sequence[Sequence[str]],
                   rtol: float = STAGE_RTOL) -> VersionDiff:
     """Which of ``subsystems`` change from version X to version Y (see module docstring for the rule)."""
-    scales = phase_rescales(X, Y)
+    info = phase_rescale_info(X, Y)
+    scales = {ph: k for ph, (k, _) in info.items()}
     changes = param_changes(X, Y, rtol, scales=scales)
-    notes = {ph: (f"{ph}: {X.label} {X.phases[ph].ratios_text()} -> {Y.label} {Y.phases[ph].ratios_text()} is a "
-                  f"proportional rescale (x{k:.6g}) with G/L x{k:.6g} and no magnetic terms in {X.label}: exact, "
-                  f"not a change")
-             for ph, k in scales.items()
-             if not any(c.phase == ph and c.kind == "value" for c in changes)}
+    notes = {}
+    for ph, (k, snap) in info.items():
+        if any(c.phase == ph and c.kind == "value" for c in changes):
+            continue
+        if snap:
+            notes[ph] = (f"{ph}: {snap}" + (f", a proportional rescale (x{k:.6g}) with G/L x{k:.6g}"
+                                             if abs(k - 1.0) > 1e-9 else "")
+                         + ": the exact form of the same model, not a change")
+        else:
+            notes[ph] = (f"{ph}: {X.label} {X.phases[ph].ratios_text()} -> {Y.label} {Y.phases[ph].ratios_text()} is "
+                         f"a proportional rescale (x{k:.6g}) with G/L x{k:.6g} and no magnetic terms in {X.label}: "
+                         f"exact, not a change")
     phases = sorted(set(X.phases) | set(Y.phases))
     subs = []
     for S in subsystems:
@@ -848,13 +874,60 @@ def _subl_text(ph) -> str:
     return "".join(f"({','.join(c)}){r:g}" for c, r in zip(ph.constituents, ph.site_ratios))
 
 
-def sublattice_mapping(pa, pb, override=None, tol: float = 1e-3):
-    """How B's phase ``pb`` maps onto A's ``pa``: (perm, k) with perm[t] = B's non-vacancy sublattice that goes to
-    A's t-th non-vacancy sublattice and k = A's total sites / B's.  None if the site ratios are not proportional
-    (a genuinely different model).  Raises SublatticeMapError when the assignment is ambiguous or contradicted."""
+@dataclass
+class SublatticeMatch:
+    """How B's phase maps onto A's: perm[t] = B's non-vacancy sublattice that goes to A's t-th one, k = A's total
+    sites / B's (from the exact fractions when the ratios had to be read as such), and the snaps: A's / B's ratios
+    read as exact fractions (tdbparse.snap_ratios; None where nothing changes).  Unpacks as (perm, k)."""
+    perm: List[int]
+    k: float
+    mode: str = "exact"                          # 'exact' | 'snapped'
+    a_snap: Optional[RatioSnap] = None
+    b_snap: Optional[RatioSnap] = None
+
+    def __iter__(self):
+        return iter((self.perm, self.k))
+
+    @property
+    def flipped(self) -> bool:
+        return self.perm != list(range(len(self.perm)))
+
+
+def _real_idx(ph) -> List[int]:
+    va = _va_only(ph)
+    return [i for i in range(len(ph.site_ratios)) if i not in va]
+
+
+def phase_snap(ph, rtol: float = SNAP_RTOL) -> Optional[RatioSnap]:
+    """The phase's non-vacancy site ratios read as exact fractions (None when they are not a rounded simple
+    formula)."""
+    return snap_ratios([ph.site_ratios[i] for i in _real_idx(ph)], rtol)
+
+
+def _ratio_views(rA, rB, rtol: float):
+    """[(mode, xA, xB, eq, k, a_snap, b_snap)]: the normalised ratios as written ('exact', 1e-9) and, if that does
+    not make them proportional, read as exact fractions ('snapped')."""
+    sa, sb = sum(rA), sum(rB)
+    xa, xb = [x / sa for x in rA], [x / sb for x in rB]
+    scale = max(xa)
+    views = [("exact", xa, xb, lambda x, y: abs(x - y) <= 1e-9 * scale, sa / sb, None, None)]
+    A_s, B_s = snap_ratios(rA, rtol), snap_ratios(rB, rtol)
+    if A_s is not None and B_s is not None and (A_s.changed or B_s.changed):
+        k = (float(sum(A_s.fractions) / sum(B_s.fractions)) if A_s.fractions is not None and B_s.fractions is not None
+             else sum(A_s.values) / sum(B_s.values))
+        views.append(("snapped", A_s.normalised(), B_s.normalised(), lambda x, y: x == y, k,
+                      A_s if A_s.changed else None, B_s if B_s.changed else None))
+    return views
+
+
+def sublattice_mapping(pa, pb, override=None, rtol: float = SNAP_RTOL) -> Optional[SublatticeMatch]:
+    """How B's phase ``pb`` maps onto A's ``pa`` (SublatticeMatch, unpacks as (perm, k)), or None if the site ratios
+    are not proportional under any sublattice order (a genuinely different model).  The non-vacancy ratios are
+    compared normalised (each divided by its sum) in every order: as written, else read as the exact fractions they
+    are rounded from (0.333:0.667 = 1/3:2/3 ~ 2:1 flipped, k = 3).  Equal-size sublattices are told apart by element
+    overlap; SublatticeMapError when that is ambiguous (no shared element, or overlap pointing both ways)."""
     name = pa.name
-    a_idx = [i for i in range(len(pa.site_ratios)) if i not in _va_only(pa)]
-    b_idx = [i for i in range(len(pb.site_ratios)) if i not in _va_only(pb)]
+    a_idx, b_idx = _real_idx(pa), _real_idx(pb)
     hint = (f"give sublattice_map {{'{name}': [...]}} (B's sublattice i -> A's position; vacancy-only sublattices "
             f"stay in place) or {{'{name}': 'keep'}} to leave B's model unchanged, or ask the user")
     if len(a_idx) != len(b_idx):
@@ -862,7 +935,7 @@ def sublattice_mapping(pa, pb, override=None, tol: float = 1e-3):
                                  f"{_subl_text(pb)} has {len(b_idx)}: cannot map them; {hint}")
     rA = [pa.site_ratios[i] for i in a_idx]
     rB = [pb.site_ratios[i] for i in b_idx]
-    k = sum(rA) / sum(rB)
+    views = _ratio_views(rA, rB, rtol)
     if override is not None:
         ov = [int(x) for x in override]                 # B's sublattice i -> A's position (as in A's PHASE line)
         if len(ov) == len(pb.site_ratios) and len(ov) != len(b_idx):
@@ -874,46 +947,94 @@ def sublattice_mapping(pa, pb, override=None, tol: float = 1e-3):
         perm = [0] * len(b_idx)
         for j, t in enumerate(ov):
             perm[t] = j
-        ok = all(abs(rB[perm[t]] * k - rA[t]) <= tol * max(rA) for t in range(len(rA)))
-        return (perm, k) if ok else None
-    # size classes
-    match = [[t for t in range(len(rA)) if abs(rB[j] * k - rA[t]) <= tol * max(rA)] for j in range(len(rB))]
-    if any(not m for m in match):
+        for mode, xA, xB, eq, k, sa, sb in views:
+            if all(eq(xB[perm[t]], xA[t]) for t in range(len(xA))):
+                return SublatticeMatch(perm, k, mode, sa, sb)
         return None
-    groups: Dict[Tuple[int, ...], List[int]] = {}
-    for j, m in enumerate(match):
-        groups.setdefault(tuple(m), []).append(j)
-    perm = [None] * len(rA)
     A_cons = [set(pa.constituents[i]) - {"VA"} for i in a_idx]
     B_cons = [set(pb.constituents[i]) - {"VA"} for i in b_idx]
-    for ts, js in groups.items():
-        if len(ts) != len(js):
-            return None
-        if len(ts) == 1:
-            perm[ts[0]] = js[0]
+    for mode, xA, xB, eq, k, sa, sb in views:
+        # size classes: B's sublattices that can go to each of A's (every order is tried; equal sizes by overlap)
+        match = [[t for t in range(len(xA)) if eq(xB[j], xA[t])] for j in range(len(xB))]
+        if any(not m for m in match):
             continue
-        best, scored = None, []
-        for p in itertools.permutations(js):
-            score = sum(len(A_cons[t] & B_cons[j]) for t, j in zip(ts, p))
-            scored.append((score, p))
-        top = max(s for s, _ in scored)
-        tied = [p for s, p in scored if s == top]
-        a_same = len({frozenset(A_cons[t]) for t in ts}) == 1
-        b_same = len({frozenset(B_cons[j]) for j in js}) == 1
-        sizes = "/".join(f"{rA[t]:g}" for t in ts)
-        if top == 0 and not (a_same or b_same):
-            raise SublatticeMapError(
-                f"{name}: B's equal-size sublattices ({sizes} sites) "
-                f"{' vs '.join('(' + ','.join(sorted(B_cons[j])) + ')' for j in js)} share no element with A's "
-                f"{' vs '.join('(' + ','.join(sorted(A_cons[t])) + ')' for t in ts)}: which is which is undecidable; {hint}")
-        if len(tied) > 1 and not (a_same or b_same):
-            raise SublatticeMapError(
-                f"{name}: element overlap of B's equal-size sublattices ({sizes} sites) points both ways "
-                f"(A {_subl_text(pa)}, B {_subl_text(pb)}); {hint}")
-        best = tied[0] if len(tied) == 1 else min(tied, key=lambda p: sum(abs(a - b) for a, b in zip(p, js)))
-        for t, j in zip(ts, best):
-            perm[t] = j
-    return perm, k
+        groups: Dict[Tuple[int, ...], List[int]] = {}
+        for j, m in enumerate(match):
+            groups.setdefault(tuple(m), []).append(j)
+        if any(len(ts_) != len(js) for ts_, js in groups.items()):
+            continue
+        perm = [None] * len(xA)
+        for ts_, js in groups.items():
+            if len(ts_) == 1:
+                perm[ts_[0]] = js[0]
+                continue
+            scored = []
+            for p in itertools.permutations(js):
+                scored.append((sum(len(A_cons[t] & B_cons[j]) for t, j in zip(ts_, p)), p))
+            top = max(s for s, _ in scored)
+            tied = [p for s, p in scored if s == top]
+            a_same = len({frozenset(A_cons[t]) for t in ts_}) == 1
+            b_same = len({frozenset(B_cons[j]) for j in js}) == 1
+            sizes = "/".join(f"{rA[t]:g}" for t in ts_)
+            if top == 0 and not (a_same or b_same):
+                raise SublatticeMapError(
+                    f"{name}: B's equal-size sublattices ({sizes} sites) "
+                    f"{' vs '.join('(' + ','.join(sorted(B_cons[j])) + ')' for j in js)} share no element with A's "
+                    f"{' vs '.join('(' + ','.join(sorted(A_cons[t])) + ')' for t in ts_)}: which is which is "
+                    f"undecidable; {hint}")
+            if len(tied) > 1 and not (a_same or b_same):
+                raise SublatticeMapError(
+                    f"{name}: element overlap of B's equal-size sublattices ({sizes} sites) points both ways "
+                    f"(A {_subl_text(pa)}, B {_subl_text(pb)}); {hint}")
+            best = tied[0] if len(tied) == 1 else min(tied, key=lambda p: sum(abs(a - b) for a, b in zip(p, js)))
+            for t, j in zip(ts_, best):
+                perm[t] = j
+        return SublatticeMatch(perm, k, mode, sa, sb)
+    return None
+
+
+R_GAS = 8.314462618
+
+
+def snap_gm_change(constituents: Sequence[Sequence[str]], old: Sequence[float], new: Sequence[float],
+                   T: float = PARAM_GRID[1]) -> float:
+    """Largest change of GM (J/mol of atoms) when a phase's non-vacancy site ratios go from ``old`` to ``new`` with
+    G/L scaled by sum(new)/sum(old): only the weights of the configurational entropy move,
+    R*T*sum_s |new_s/sum(new) - old_s/sum(old)| * ln(constituents on s), at ``T``."""
+    so, sn = sum(old), sum(new)
+    tot = sum(abs(b / sn - a / so) * math.log(len(c)) for c, a, b in zip(constituents, old, new) if len(c) > 1)
+    return R_GAS * T * tot
+
+
+def snap_phase_in(db: TDB, phase: str, snap: Optional[RatioSnap] = None) -> Optional[Dict[str, object]]:
+    """In place: ``phase``'s non-vacancy site ratios set to their exact fractions (``snap``, default phase_snap),
+    G/L x sum(new)/sum(old) when the total moves (0.333:0.666 -> 1/3:2/3) so the energy part of GM per atom is
+    unchanged.  Returns {'old', 'new', 'snap', 'k', 'gm', 'magnetic', 'text'} or None when nothing changes."""
+    ph = db.phases[phase]
+    snap = snap or phase_snap(ph)
+    if snap is None or not snap.changed:
+        return None
+    idx = _real_idx(ph)
+    old = [ph.site_ratios[i] for i in idx]
+    k = sum(snap.values) / sum(old)
+    for i, v in zip(idx, snap.values):
+        ph.site_ratios[i] = v
+    n = 0
+    if abs(k - 1.0) > 1e-12:
+        for p in db.parameters:
+            if p.key.phase == phase and p.key.ptype in SCALED_PTYPES:
+                p.expr = scale_piecewise(p.expr, k)
+                n += 1
+    gm = snap_gm_change([ph.constituents[i] for i in idx], old, snap.values)
+    mag = _has_magnetic_params(db, phase)
+    text = (f"site ratios {snap.given_text()} read as {snap.text()}"
+            + (f" (written {':'.join(fmt_ratio(v) for v in snap.values)})" if snap.text() != ":".join(
+                fmt_ratio(v) for v in snap.values) else "")
+            + (f", G/L x{k:.6g} ({n} term(s): total sites {sum(old):g} -> {sum(snap.values):g})" if n else "")
+            + f": GM changes by at most {gm:.2g} J/mol of atoms (configurational-entropy weights, "
+              f"{PARAM_GRID[1]:g} K)"
+            + (f"; the magnetic term (per formula unit) x{1 / k:.6g} per atom" if mag and abs(k - 1.0) > 1e-12 else ""))
+    return {"old": old, "new": list(snap.values), "snap": snap, "k": k, "gm": gm, "magnetic": mag, "text": text}
 
 
 def _scale_pw(pw: Piecewise, k: float) -> Piecewise:
@@ -948,7 +1069,23 @@ def _order_disorder_related(db: TDB, phase: str) -> bool:
 
 
 A_RESCALED = "A rescaled to B (magnetic exception)"
-NORM_CHANGES = ("renamed", "reordered", "rescaled", A_RESCALED)
+A_SNAPPED = "A snapped"
+NORM_CHANGES = ("renamed", "reordered", "rescaled", A_RESCALED)       # listed in summaries (snaps are silent)
+B_CHANGES = ("renamed", "reordered", "rescaled", "snapped")           # B's normalised copy differs from B
+A_CHANGES = (A_RESCALED, A_SNAPPED)                                   # A's copy (A0) differs from A
+
+
+def b_changed(notes) -> bool:
+    return any(n.action in B_CHANGES for n in notes)
+
+
+def a_changed(notes) -> bool:
+    return any(n.action in A_CHANGES for n in notes)
+
+
+def snap_notes(notes) -> List["NormNote"]:
+    """The 'site ratios read as exact fractions' notes (both sides): rule entries, never questions."""
+    return [n for n in notes if n.action in ("snapped", A_SNAPPED)]
 
 
 def _dis_part_of(db: TDB, phase: str) -> Optional[str]:
@@ -981,10 +1118,12 @@ def magnetic_exception(A: TDB, B: TDB, phase: str) -> Optional[str]:
 
 
 def normalize_phase_model(A: TDB, B: TDB, phase: str, override=None) -> List[NormNote]:
-    """Make B's ``phase`` use A's sublattice order and formula unit (in place).  G and L terms are multiplied by
-    k = A's sites / B's sites; TC/BMAGN are not (pycalphad's IHJ magnetic term R*T*ln(beta+1)*f(tau) is per
-    formula unit and not linear in BMAGN, so a magnetic phase with magnetic parameters is only reordered, never
-    rescaled).  Order-disorder phases are left alone unless nothing changes."""
+    """Make B's ``phase`` use A's sublattice order and formula unit (in place).  Site ratios that are a rounded
+    form of simple fractions (0.333:0.667) are first read as those fractions on either side (A in place too; a rule
+    note 'snapped' / A_SNAPPED with the - tiny - GM change), so 0.333:0.667 vs 2:1 is a flip with k = 3.  G and L
+    terms are multiplied by k = A's sites / B's sites; TC/BMAGN are not (pycalphad's IHJ magnetic term
+    R*T*ln(beta+1)*f(tau) is per formula unit and not linear in BMAGN, so a magnetic phase with magnetic parameters
+    is only reordered, never rescaled).  Order-disorder phases are left alone unless nothing changes."""
     pa, pb = A.phases[phase], B.phases[phase]
     if isinstance(override, str) and override.lower() == "keep":
         return [NormNote(phase, "kept", f"B's model {_subl_text(pb)} left unchanged (sublattice_map 'keep')")]
@@ -998,16 +1137,32 @@ def normalize_phase_model(A: TDB, B: TDB, phase: str, override=None) -> List[Nor
     if m is None:
         return [NormNote(phase, "incompatible", f"site ratios not proportional: A {_subl_text(pa)} vs B "
                                                 f"{_subl_text(pb)}")]
-    perm, k = m
-    b_idx = [i for i in range(len(pb.site_ratios)) if i not in _va_only(pb)]
+    perm, k = m.perm, m.k
+    b_idx = _real_idx(pb)
     new_from_old = list(range(len(pb.site_ratios)))
     for t, j in enumerate(perm):
         new_from_old[b_idx[t]] = b_idx[j]
     reorder = new_from_old != list(range(len(pb.site_ratios)))
     rescale = abs(k - 1.0) > 1e-12
-    if not reorder and not rescale:
+    snapping = m.a_snap is not None or m.b_snap is not None
+    if not reorder and not rescale and not snapping:
         return []
     notes = []
+    before = _subl_text(pb)
+    if snapping and (_order_disorder_related(B, phase) or _order_disorder_related(A, phase)):
+        return [NormNote(phase, "incompatible", f"order-disorder phase: B {before} not snapped/reordered/rescaled "
+                                                f"to A {_subl_text(pa)}")]
+    # ratios written as rounded fractions: read as the exact fractions first (rule notes, not questions)
+    if m.b_snap is not None:
+        r = snap_phase_in(B, phase, m.b_snap)
+        if r:
+            notes.append(NormNote(phase, "snapped", r["text"].replace("site ratios ", "site ratios (B) ", 1)))
+    if m.a_snap is not None:
+        r = snap_phase_in(A, phase, m.a_snap)
+        if r:
+            notes.append(NormNote(phase, A_SNAPPED, r["text"].replace("site ratios ", "site ratios (A) ", 1)))
+    if not reorder and not rescale:
+        return notes
     before = _subl_text(pb)
     rescale_a, k_b = False, k
     if rescale and _has_magnetic_params(B, phase):
@@ -1028,11 +1183,11 @@ def normalize_phase_model(A: TDB, B: TDB, phase: str, override=None) -> List[Nor
     pb.constituents = [pb.constituents[o] for o in new_from_old]
     if pb.majors and len(pb.majors) == len(new_from_old):
         pb.majors = [pb.majors[o] for o in new_from_old]
-    # site ratios exactly A's where they correspond (k*B may differ in the last digits, e.g. 0.6667*3)
+    # site ratios exactly A's where they correspond (k*B may differ in the last digits, e.g. 2/3*3)
+    a_real = _real_idx(pa)
     for t, i in enumerate(b_idx):
-        a_i = [x for x in range(len(pa.site_ratios)) if x not in _va_only(pa)][t]
-        if rescale and abs(pb.site_ratios[i] - pa.site_ratios[a_i]) <= 1e-3 * max(pa.site_ratios):
-            pb.site_ratios[i] = pa.site_ratios[a_i]
+        if rescale and abs(pb.site_ratios[i] - pa.site_ratios[a_real[t]]) <= 1e-9 * max(pa.site_ratios):
+            pb.site_ratios[i] = pa.site_ratios[a_real[t]]
     n_par = 0
     for p in B.parameters:
         if p.key.phase != phase:
@@ -1044,19 +1199,19 @@ def normalize_phase_model(A: TDB, B: TDB, phase: str, override=None) -> List[Nor
             p.expr = _scale_pw(p.expr, k)
         n_par += 1
     if reorder:
-        notes.append(NormNote(phase, "reordered", f"sublattices {before} -> "
+        how = "flipped" if len(b_idx) == 2 else "permuted"
+        notes.append(NormNote(phase, "reordered", f"({how} sublattices to match A's order) {before} -> "
                               f"{''.join(f'({c})' for c in (','.join(x) for x in pb.constituents))} "
                               f"(B's sublattice order {new_from_old}); {n_par} parameter(s) permuted"))
     if rescale:
-        notes.append(NormNote(phase, "rescaled", f"x{k:g} sites to A's {_subl_text(pa)}: G/L terms x{k:g} "
-                                                 f"(per formula unit), TC/BMAGN unchanged"))
+        notes.append(NormNote(phase, "rescaled", f"x{k:g} sites to A's {_subl_text(pa)}: G/L terms "
+                                                 f"x{k:g} (per formula unit), TC/BMAGN unchanged"))
     if rescale_a:
         # A takes B's site ratios (in A's sublattice order); A's G/L x 1/k is exact since A has no magnetic terms
         ka = 1.0 / k_b
         a_before = _subl_text(pa)
-        a_idx = [i for i in range(len(pa.site_ratios)) if i not in _va_only(pa)]
         pa.site_ratios = [r * ka for r in pa.site_ratios]
-        for t, i in enumerate(a_idx):
+        for t, i in enumerate(a_real):
             pa.site_ratios[i] = pb.site_ratios[b_idx[t]]
         n_a = 0
         for p in A.parameters:
@@ -1072,7 +1227,8 @@ def normalize_phase_model(A: TDB, B: TDB, phase: str, override=None) -> List[Nor
 def normalize_pair(A: TDB, B: TDB, phase_map: Optional[Dict[str, str]] = None,
                    sublattice_map: Optional[Dict] = None, on_error: str = "raise") -> Tuple[TDB, TDB, List[NormNote]]:
     """(A', B', notes): B in A's conventions (normalize_to_base); A' is A, except for phases where the magnetic
-    exception applies (B magnetic with ~1 atom/fu, A not magnetic): there A is rescaled to B's site ratios."""
+    exception applies (B magnetic with ~1 atom/fu, A not magnetic: A is rescaled to B's site ratios) or where A's
+    site ratios are a rounded form of simple fractions that had to be read exactly to match B's (A_SNAPPED)."""
     An = copy.deepcopy(A)
     Bn, notes = normalize_to_base(An, B, phase_map, sublattice_map, on_error)
     return An, Bn, notes
@@ -1088,10 +1244,13 @@ def normalize_to_base(A: TDB, B: TDB, phase_map: Optional[Dict[str, str]] = None
                       sublattice_map: Optional[Dict] = None, on_error: str = "raise") -> Tuple[TDB, List[NormNote]]:
     """Copy of B in A's conventions.  Phase names: an explicit phase_map {B name: A name}, else a clear alias
     (identical structure tokens - LAVES_C15 / C15_LAVES / C15, SIGMA / SIGMA_D8B, A2_BCC / BCC_A2 - one phase on
-    each side, the A name unused in B, and proportional site ratios).  Weaker matches are returned as 'candidate'
-    notes, never applied.  Then each phase present in both is reordered / rescaled to A's model - except a magnetic
-    B phase with ~1 atom/fu against a non-magnetic A phase: there ``A`` itself (modified in place; normalize_pair
-    works on a copy) is rescaled to B's site ratios.
+    each side, the A name unused in B, and proportional site ratios - read as exact fractions where written rounded,
+    in any sublattice order).  Pairing is one-to-one and confident pairings come first (same names, phase_map,
+    clear aliases); weaker matches among the phases still unpaired are returned as 'candidate' notes, never applied.
+    Then each phase present in both is reordered / rescaled to A's model (ratios written as rounded fractions are
+    first read exactly - rule notes 'snapped' / A_SNAPPED) - except a magnetic B phase with ~1 atom/fu against a
+    non-magnetic A phase: there ``A`` itself (modified in place; normalize_pair works on a copy) is rescaled to B's
+    site ratios.
 
     on_error: 'raise' (a phase whose sublattice correspondence is ambiguous raises SublatticeMapError) or 'keep'
     (that phase keeps B's model unchanged and gets an 'unmapped' note with the error - evaluate_compatibility and
@@ -1115,7 +1274,7 @@ def normalize_to_base(A: TDB, B: TDB, phase_map: Optional[Dict[str, str]] = None
         if not tb:
             continue
         cands = [a for a in A.phases if a not in out.phases and a not in mapping.values() and phase_tokens(a) == tb]
-        same_b = [x for x in out.phases if phase_tokens(x) == tb and x not in A.phases]
+        same_b = [x for x in out.phases if phase_tokens(x) == tb and x not in A.phases and x not in mapping]
         if len(cands) == 1 and len(same_b) == 1:
             a = cands[0]
             try:
@@ -1131,7 +1290,7 @@ def normalize_to_base(A: TDB, B: TDB, phase_map: Optional[Dict[str, str]] = None
     for b, a in mapping.items():
         rename_phases(out, {b: a})
         notes.append(NormNote(b, "renamed", f"-> {a}" + (" (phase_map)" if b in user else " (same structure)")))
-    # weaker candidates (shared structure token), listed only
+    # weaker candidates (shared structure token), listed only - between phases neither side has paired yet
     for b in sorted(out.phases):
         if b in A.phases:
             continue

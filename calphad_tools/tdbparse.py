@@ -13,6 +13,8 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal, localcontext
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -135,6 +137,134 @@ def fmt_ratio(r: float) -> str:
     """A site ratio as written in a PHASE line: up to 15 significant digits, so a value parsed from text (or set from
     an exact decimal such as 0.105263157894737) is written back unchanged ('{:g}' would cut it to 6 digits)."""
     return f"{float(r):.15g}"
+
+
+# ---------------------------------------------------------------------------
+# Site ratios written as rounded decimals (0.333:0.667 for 1/3:2/3)
+# ---------------------------------------------------------------------------
+SNAP_RTOL = 2e-3          # a ratio matches a simple fraction within this relative error (or is it, rounded) ...
+SNAP_MAX_DEN = 30         # ... and the smallest integer formula has at most this many sites in total
+
+
+def sum_one_decimals(fractions: Sequence[Fraction]) -> List[float]:
+    """Exact fractions summing to 1 as 15-significant-digit decimals whose decimal sum is exactly 1 and whose float sum
+    (what pycalphad adds) is 1 to 1e-15: 1/3, 2/3 -> 0.333333333333333 / 0.666666666666667."""
+    with localcontext() as ctx:
+        ctx.prec = 15
+        dec = [+(Decimal(x.numerator) / Decimal(x.denominator)) for x in fractions]
+    big = max(range(len(dec)), key=lambda i: dec[i])
+    dec[big] = Decimal(1) - sum(d for i, d in enumerate(dec) if i != big)
+    out = [float(str(d)) for d in dec]
+    if abs(sum(out) - 1.0) > 1e-15:          # nudge the largest by one unit in the last place
+        for step in (1, -1, 2, -2):
+            trial = list(out)
+            trial[big] = float(str(dec[big] + Decimal(step) * Decimal(10) ** (dec[big].adjusted() - 14)))
+            if abs(sum(trial) - 1.0) <= 1e-15:
+                return trial
+    return out
+
+
+@dataclass
+class RatioSnap:
+    """Site ratios read as exact fractions (see snap_ratios)."""
+    ratios: List[float]                       # as given
+    integers: List[int]                       # the smallest integer formula (0.333:0.667 -> 1:2)
+    fractions: Optional[List[Fraction]]       # exact values (None when the total is not a simple number)
+    values: List[float]                       # what to write: exact decimals (summing to exactly 1 if the total is 1)
+    changed: bool                             # values differ from the given ratios
+
+    def normalised(self) -> List[Fraction]:
+        n = sum(self.integers)
+        return [Fraction(i, n) for i in self.integers]
+
+    def text(self) -> str:
+        if self.fractions is None:
+            return ":".join(fmt_ratio(v) for v in self.values)
+        return ":".join(str(f) for f in self.fractions)
+
+    def given_text(self) -> str:
+        return ":".join(fmt_ratio(r) for r in self.ratios)
+
+
+def _ratio_digits(r: float) -> Optional[Tuple[int, int]]:
+    """(significant digits, decimals) of ``r`` as written (fmt_ratio), None for exponent notation."""
+    s = fmt_ratio(r)
+    if "e" in s.lower():
+        return None
+    return len(s.lstrip("-").replace(".", "").lstrip("0")), (len(s.split(".", 1)[1]) if "." in s else 0)
+
+
+def _ratio_matches(r: float, t, rtol: float) -> bool:
+    """``r`` is ``t`` within ``rtol`` (relative), or ``t`` rounded to the decimals ``r`` is written with (at least 3
+    significant digits: 0.105 is 2/19 = 0.10526 rounded; 0.41 is too short to stand for 9/22)."""
+    tf = float(t)
+    if abs(r - tf) <= rtol * abs(tf):
+        return True
+    dig = _ratio_digits(r)
+    if dig is None or dig[0] < 3 or dig[1] == 0:
+        return False
+    q = Decimal(1).scaleb(-dig[1])
+    return Decimal(repr(tf)).quantize(q, rounding=ROUND_HALF_UP) == Decimal(fmt_ratio(r)).quantize(q)
+
+
+def snap_ratios(ratios: Sequence[float], rtol: float = SNAP_RTOL, max_den: int = SNAP_MAX_DEN) -> Optional[RatioSnap]:
+    """Site ratios read as the simple fractions they are a rounded form of: 0.333:0.667 -> 1/3:2/3, 0.105:0.895 ->
+    2/19:17/19, 0.538:0.154:0.308 -> 7/13:2/13:4/13; integer ratios (1:2, 7:2:4) are their own exact form.  The
+    smallest integer formula n_1:...:n_k with n_1+...+n_k <= ``max_den`` whose proportions match every ratio (within
+    ``rtol`` relative, or as its rounded decimal) is used; the total keeps its value (1, 3, 13 ...) when that is a
+    simple number too.  None when there is no such formula (0.41:0.59 stays as written; 0.4:0.6 is 2:3 exactly)."""
+    r = [float(x) for x in ratios]
+    if not r or any(not math.isfinite(x) or x <= 0 for x in r):
+        return None
+    S = sum(r)
+    if all(x == int(x) and x < 1e6 for x in r):              # integer formulas are exact as written (24:11)
+        g = 0
+        for x in r:
+            g = math.gcd(g, int(x))
+        return RatioSnap(r, [int(x) // g for x in r], [Fraction(int(x)) for x in r], list(r), False)
+    fs = Fraction(S).limit_denominator(max_den)
+    S_exact = fs if fs > 0 and abs(float(fs) - S) <= rtol * S else None
+    for D in range(1, max_den + 1):
+        n = [int(round(x / S * D)) for x in r]
+        if sum(n) != D or min(n) < 1:
+            continue
+        if S_exact is not None:
+            target = [S_exact * Fraction(i, D) for i in n]
+        else:
+            target = [S * i / D for i in n]
+        if not all(_ratio_matches(x, t, rtol) for x, t in zip(r, target)):
+            continue
+        if S_exact is None:
+            values = [float(t) for t in target]
+            fr = None
+        elif S_exact == 1:
+            fr = list(target)
+            values = sum_one_decimals(fr)
+        else:
+            fr = list(target)
+            values = [float(t) for t in fr]
+        changed = any(abs(v - x) > 1e-12 * max(r) for v, x in zip(values, r))
+        return RatioSnap(r, n, fr, values, changed)
+    return None
+
+
+def ratios_proportional(ra: Sequence[float], rb: Sequence[float], rtol: float = 1e-9) -> bool:
+    """``rb`` = k * ``ra`` (same order) to ``rtol`` (relative to the largest)."""
+    if len(ra) != len(rb) or not ra:
+        return False
+    sa, sb = sum(ra), sum(rb)
+    xa, xb = [x / sa for x in ra], [x / sb for x in rb]
+    return all(abs(x - y) <= rtol * max(xa) for x, y in zip(xa, xb))
+
+
+def snapped_proportional(ra: Sequence[float], rb: Sequence[float], rtol: float = SNAP_RTOL) -> bool:
+    """``ra`` and ``rb`` (same order) proportional once read as exact fractions (snap_ratios)."""
+    if len(ra) != len(rb) or not ra:
+        return False
+    sa, sb = snap_ratios(ra, rtol), snap_ratios(rb, rtol)
+    if sa is None or sb is None:
+        return False
+    return sa.normalised() == sb.normalised()
 
 
 def _is_number(e: str) -> bool:

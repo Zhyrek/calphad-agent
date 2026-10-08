@@ -31,9 +31,9 @@ def merge_step(k, a, b, step):
     A, B = parse_tdb(str(a)), parse_tdb(str(b))
     An, Bn, notes = normalize_pair(A, B, step["phase_map"] or None, step["sublattice_map"] or None, on_error="keep")
     a_eff, b_eff = str(a), str(b)
-    if any(n.action == A_RESCALED for n in notes):
+    if any(n.action in A_CHANGES for n in notes):
         a_eff = write_tdb(An, str(OUT / f"step{k}_A0.tdb"))
-    if any(n.action in ("renamed", "reordered", "rescaled") for n in notes):
+    if any(n.action in B_CHANGES for n in notes):
         b_eff = write_tdb(Bn, str(OUT / f"step{k}_B0.tdb"))
     for n in notes:
         print(f"step {k} normalisation: {n.text()}")

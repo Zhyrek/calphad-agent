@@ -100,13 +100,14 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
                       f"(keep both, B's as {n.phase}_2)"]
         return {"versions": {}, "notes": notes, "unmapped": unmapped, "pending_report": "\n".join(lines),
                 "A": a_path, "B": b_path, "B_original": b_path}
-    changed = [n for n in notes if n.action in ("renamed", "reordered", "rescaled")]
-    a_resc = [n for n in notes if n.action == ts.A_RESCALED]
+    changed = [n for n in notes if n.action in ts.B_CHANGES]
+    a_resc = [n for n in notes if n.action in ts.A_CHANGES]
     a_eff = a_path                      # A's description used everywhere below (A0 when the magnetic exception applies)
     if a_resc:
         a_eff = ts.write_tdb(An, str(out / f"A0_{sa}_rescaled.tdb"),
                              [f"{Path(a_path).name} with phases rescaled to {Path(b_path).name}'s site ratios "
-                              f"(B magnetic, 1 atom/fu; A not magnetic; exact):"] + [n.text() for n in a_resc])
+                              f"(B magnetic, 1 atom/fu; A not magnetic; exact) or read as exact fractions:"]
+                             + [n.text() for n in a_resc])
         An = parse_tdb(a_eff)
     b_eff = b_path
     if changed:
@@ -922,7 +923,11 @@ def summary_text(r: Dict[str, Any], rel=lambda p: p) -> str:
                  f"the same phase" + (f", and {', '.join(where)} replotted in Q as a check" if where else ""))
     for x in (r.get("extensions") or {}).get("reports", []):
         L.append("Extended (decision 'extend'): " + clip(" | ".join(x["text"].split("\n")[:3]), 400))
-    cands = [n.text() for n in r["notes"] if n.action in ("candidate", "incompatible", "unmapped", "not_rescaled")]
+    # candidates only between phases still unpaired: an 'extend' decision pairs its two phases
+    ext_pairs = {p for kv in (r.get("extension_renames") or {}).items() for p in kv}
+    cands = [n.text() for n in r["notes"] if n.action in ("candidate", "incompatible", "unmapped", "not_rescaled")
+             and not (n.action == "candidate" and (n.phase in ext_pairs or any(
+                 re.search(rf"~ (?:A's )?{re.escape(p)}\b", n.detail) for p in ext_pairs)))]
     if cands:
         L.append("Not normalised: " + "; ".join(cands[:3]) + (f" (+{len(cands) - 3})" if len(cands) > 3 else ""))
     for st in r["steps"]:

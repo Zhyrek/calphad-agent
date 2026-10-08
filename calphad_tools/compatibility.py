@@ -465,7 +465,8 @@ def _tentative_rows(plan) -> Tuple[List[Dict[str, Any]], List[str]]:
     return rows, parts
 
 
-def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol, plan=None) -> Tuple[Stage, List[str]]:
+def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol, plan=None,
+            exclude: Sequence[str] = ()) -> Tuple[Stage, List[str]]:
     """Phase models.  A new end-member of the merged model with no G in either database (pycalphad uses G = 0):
 
     * INCOMPATIBLE when the database whose space it lies in already describes the phase in a binary containing
@@ -575,19 +576,36 @@ def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol, plan=None) -> 
             parts.append(f"new phases in {side}'s space: {_examples(newp, 3)}")
             if verdict == "OK":
                 verdict = "CHANGES"
-    cands = [n for n in norm_notes if n.action == "candidate"]
+    # name candidates: only between phases neither database has paired yet (a phase both have under one name -
+    # same name, alias, phase_map - is paired); one row per candidate pair, competing candidates listed together
+    paired = set(VA.phases) & set(VB.phases) | set(exclude)
+    cands = [n for n in norm_notes if n.action == "candidate" and n.phase not in paired
+             and not any(re.search(rf"~ (?:A's )?{re.escape(p)}\b", n.detail) for p in paired)]
     try:
         from .compare_system import phase_candidates
-        for c in phase_candidates([VA, VB], VA.label):
-            if c.verdict.startswith("LIKELY") and not any(c.a in n.detail or c.b in n.detail for n in cands):
-                cands.append(ts.NormNote(c.b, "candidate", f"~ {c.a}: {c.verdict} ({'; '.join(c.evidence[:2])}); "
-                                                           f"phase_map {c.suggestion}"))
+        for c in phase_candidates([VA, VB], VA.label, exclude=paired):
+            if not c.verdict.startswith("LIKELY"):
+                continue
+            a_ph, b_ph = (c.a, c.b) if VA.label in c.dbs_a else (c.b, c.a)
+            if any(n.phase == b_ph and re.search(rf"~ (?:A's )?{re.escape(a_ph)}\b", n.detail) for n in cands):
+                continue
+            cands.append(ts.NormNote(b_ph, "candidate", f"~ {a_ph}: {c.verdict} ({'; '.join(c.evidence[:2])}); "
+                                                        f"phase_map {{'{b_ph}': '{a_ph}'}}"))
     except Exception:  # noqa: BLE001 - candidates are a hint only
         pass
+    contested = {}
+    for n in cands:
+        m = re.search(r"~ (?:A's )?([A-Z0-9_]+)", n.detail)
+        if m:
+            contested.setdefault(m.group(1), []).append(n.phase)
     for n in cands:
         rows.append({"phase": n.phase, "name candidate": n.detail})
     if cands:
         parts.append(f"name candidates (not merged): {_examples([n.phase + ' ' + n.detail.split(';')[0] for n in cands], 2)}")
+        multi = {a: bs for a, bs in contested.items() if len(bs) > 1}
+        if multi:
+            parts.append("competing candidates (one question each; a phase pairs with at most one): "
+                         + _examples([f"{a} ~ {' / '.join(bs)}" for a, bs in multi.items()], 2))
     trows, tparts = _tentative_rows(plan)
     rows += trows
     parts += tparts
@@ -638,7 +656,8 @@ def _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir,
     verdict = "CHANGES" if da.changed or db.changed else "OK"
     line = "(A's values win conflicts) " + " | ".join(parts) if parts else "no binaries/ternaries"
     for n in a_rescaled:
-        line += f" | {n.phase}: A rescaled to B's site ratios (B magnetic, 1 atom/fu): exact, not a change"
+        if n.action == ts.A_RESCALED:
+            line += f" | {n.phase}: A rescaled to B's site ratios (B magnetic, 1 atom/fu): exact, not a change"
     for c in plan.conflicts:
         if c.kind == "phase_model" and c.decided_by.startswith("policy"):
             ph = c.id.split(":", 1)[1]
@@ -652,18 +671,21 @@ def _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir,
 
 def evaluate_pair(a_path: str, b_path: str, *, phase_map: Optional[Dict[str, str]] = None,
              sublattice_map: Optional[Dict] = None, unary50: Optional[str] = "auto", allow_download: bool = True,
-             rtol: float = ts.STAGE_RTOL, workdir: Optional[str] = None, tentative=True) -> Evaluation:
+             rtol: float = ts.STAGE_RTOL, workdir: Optional[str] = None, tentative=True,
+             paired_phases: Sequence[str] = ()) -> Evaluation:
+    """``paired_phases``: phases (either database's names) already paired by other means - the A and B phases of
+    'extend' decisions - left out of the stage-5 name candidates."""
     A, B = parse_tdb(a_path), parse_tdb(b_path)
     workdir = Path(workdir or tempfile.mkdtemp(prefix="compat_"))
     workdir.mkdir(parents=True, exist_ok=True)
     An, Bn, notes = ts.normalize_pair(A, B, phase_map, sublattice_map, on_error="keep")
-    changed = [n for n in notes if n.action in ("renamed", "reordered", "rescaled")]
-    a_rescaled = [n for n in notes if n.action == ts.A_RESCALED]
+    changed = [n for n in notes if n.action in ts.B_CHANGES]
+    a_rescaled = [n for n in notes if n.action in ts.A_CHANGES]
     an_path = a_path
     if a_rescaled:
         an_path = str(workdir / f"{Path(a_path).stem}_rescaled.tdb")
         ts.write_tdb(An, an_path, [f"{Path(a_path).name} with phases rescaled to "
-                                   f"{Path(b_path).name}'s site ratios (magnetic exception):"]
+                                   f"{Path(b_path).name}'s site ratios (magnetic exception) or read exactly:"]
                      + [n.text() for n in a_rescaled])
         An = parse_tdb(an_path)
     bn_path = b_path
@@ -692,7 +714,7 @@ def evaluate_pair(a_path: str, b_path: str, *, phase_map: Optional[Dict[str, str
     s3 = _param_stage(3, "binaries", VA, VB, shared, (2,), rtol)
     s4 = _param_stage(4, "ternary+", VA, VB, shared, tuple(range(3, 12)), rtol)
     predicted = predicted_merge(an_path, bn_path, tentative)
-    s5, _ = _stage5(VA, VB, notes, rtol, predicted[0])
+    s5, _ = _stage5(VA, VB, notes, rtol, predicted[0], exclude=[str(x).upper() for x in paired_phases])
     stages = [s1, s2, s3, s4, s5]
     VA0 = ts.StageView(A, "A") if a_rescaled else VA
     s6, replot, mpath = _stage6(an_path, bn_path, VA0, VB, rtol, stages, workdir, a_rescaled, predicted)

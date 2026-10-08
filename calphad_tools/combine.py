@@ -64,6 +64,9 @@ GM_TOL = 1e-9
 EVIDENCE_T = (500.0, 1000.0, 1500.0)
 VERDICTS = ("CHANGED, UNEXPLAINED", "changed, explained", "reproduced")
 NOT_GIVEN = "not given"
+SNAP_REASON = ("rule: site ratios written as a rounded form of simple fractions (0.333:0.667) are read as those "
+               "fractions (1/3:2/3), and the merged phase is written with the exact ratios - no question; the GM "
+               "change it makes is the evidence")
 STATE_FILE = "combine_state.json"
 
 
@@ -152,6 +155,7 @@ class Needed:
     who: str = ""
     reason: str = ""
     provisional: str = ""
+    pairs: Dict[str, Tuple[str, str, str]] = field(default_factory=dict)   # answer -> ('same'|'extend', A, B phase)
 
     def text(self) -> str:
         lines = [f"* {self.id} ({self.pair}): {self.question}"]
@@ -329,9 +333,9 @@ def _step_plan(a: str, b: str, pm: Dict, sm: Dict, dec_user: Dict, work: Path, k
     A, B = parse_tdb(a), parse_tdb(b)
     An, Bn, notes = ts.normalize_pair(A, B, pm or None, sm or None, on_error="keep")
     a_eff, b_eff = a, b
-    if any(n.action == ts.A_RESCALED for n in notes):
+    if ts.a_changed(notes):
         a_eff = ts.write_tdb(An, str(work / f"step{k}_A0_{_stem(a)}.tdb"), ["provisional A0 (combine plan)"])
-    if any(n.action in ("renamed", "reordered", "rescaled") for n in notes):
+    if ts.b_changed(notes):
         b_eff = ts.write_tdb(Bn, str(work / f"step{k}_B0_{_stem(b)}.tdb"), ["provisional B0 (combine plan)"])
     shared = sorted(set(A.real_elements) & set(parse_tdb(b_eff).real_elements))
     Ae, Be = parse_tdb(a_eff), parse_tdb(b_eff)
@@ -450,17 +454,6 @@ def _needed_from_plan(sp: Dict, k: int, pair: str, a_label: str, b_label: str, e
         out[f"phase:{tgt}"] = Needed(f"step{k}:phase:{tgt}", k, pair, "harmonize", f"phase:{tgt}", q,
                                      [("extend", _extend_consequence(rep, a_label, b_label) if rep else "extend"),
                                       ("separate", "two phases")])
-    for c in sp.get("cands") or []:
-        cid = f"phase:{c['a_phase']}"
-        if cid in out or c["a_phase"] in (sp.get("specs") or {}):
-            continue
-        opt = _extend_option(sp, c["a_phase"], c["b_phase"], a_label, b_label, c)
-        q = (f"{b_label}'s {c['b_phase']} {c['b_model']} looks like {a_label}'s {c['a_phase']} {c['a_model']} with "
-             f"{', '.join(x.capitalize() for x in c['components'])} ({c['why']}) - the same phase? "
-             f"{c['map_note']}".strip())
-        out[cid] = Needed(f"step{k}:{cid}", k, pair, "harmonize", cid, q,
-                          ([opt] if opt else []) + [("separate", f"two phases (default): {a_label}'s {c['a_phase']} "
-                                                                 f"and {b_label}'s {c['b_phase']}")])
     for n in sp["notes"]:
         if n.action == "unmapped":
             out[f"sublattice:{n.phase}"] = Needed(
@@ -469,27 +462,141 @@ def _needed_from_plan(sp: Dict, k: int, pair: str, a_label: str, b_label: str, e
                 [("keep", f"leave {b_label}'s {n.phase} model as is (then the models may differ: a phase decision "
                           f"follows)"),
                  ("[i, j, ...]", f"{b_label}'s sublattice i goes to {a_label}'s position (as in its PHASE line)")])
-    cands = []
+    for n in pairing_questions(sp, k, pair, a_label, b_label, ev):
+        out.setdefault(n.cid, n)
+    return list(out.values())
+
+
+def _cand_target(detail: str) -> Optional[str]:
+    m = re.search(r"~ (?:A's )?([A-Z0-9_]+)", detail)
+    return m.group(1) if m else None
+
+
+def pairing_candidates(sp: Dict, ev) -> List[Dict[str, Any]]:
+    """Candidate pairings {a, b, name, extend} between phases NEITHER database has paired yet: phases present in
+    both under one name (same names, clear aliases, phase_map) and the phases of an 'extend' decision are paired
+    already and never offered again.  Sources: compatibility stage-5 name candidates, the normalisation's
+    candidate notes and harmonize.harmonization_candidates (A's phase with B's extra constituents)."""
+    A, B = sp.get("A_pre"), sp.get("B_pre")
+    if A is None or B is None:
+        return []
+    specs = sp.get("specs") or {}
+    both = set(A.phases) & set(B.phases)
+    paired_a = both | set(specs)
+    paired_b = both | {x["phase"] for x in specs.values()}
+    edges: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    def add(a, b, kind, value):
+        if a in B.phases and b in A.phases and a not in A.phases:          # written the other way round
+            a, b = b, a
+        if a not in A.phases or b not in B.phases or a in paired_a or b in paired_b or a == b:
+            return
+        e = edges.setdefault((a, b), {"a": a, "b": b, "name": None, "extend": None})
+        if e[kind] is None:
+            e[kind] = value
     if ev is not None:
         for r in ev.stages[4].rows:
             if r.get("name candidate"):
-                cands.append((r["phase"], r["name candidate"]))
+                t = _cand_target(r["name candidate"])
+                if t:
+                    add(t, r["phase"], "name", r["name candidate"])
     for n in sp["notes"]:
         if n.action == "candidate":
-            cands.append((n.phase, n.detail))
-    seen = set()
-    for bph, detail in cands:
-        m = re.search(r"~ (?:A's )?([A-Z0-9_]+)", detail)
-        if not m or bph in seen:
+            t = _cand_target(n.detail)
+            if t:
+                add(t, n.phase, "name", n.detail)
+    for c in sp.get("cands") or []:
+        add(c["a_phase"], c["b_phase"], "extend", c)
+    return sorted(edges.values(), key=lambda e: (e["a"], e["b"]))
+
+
+def _group_pairings(edges: List[Dict[str, Any]]) -> List[Tuple[str, str, List[Dict[str, Any]]]]:
+    """One question per contested phase: candidates competing for the same A phase (then the same B phase) are
+    asked together; the rest one by one.  [(hub side 'A' | 'B' | '', hub phase, edges)]."""
+    by_a: Dict[str, List[Dict]] = {}
+    by_b: Dict[str, List[Dict]] = {}
+    for e in edges:
+        by_a.setdefault(e["a"], []).append(e)
+        by_b.setdefault(e["b"], []).append(e)
+    used, out = set(), []
+    for a, es in sorted(by_a.items()):
+        if len(es) > 1:
+            out.append(("A", a, es))
+            used |= {(e["a"], e["b"]) for e in es}
+    for b, es in sorted(by_b.items()):
+        rest = [e for e in es if (e["a"], e["b"]) not in used]
+        if len(rest) > 1:
+            out.append(("B", b, rest))
+            used |= {(e["a"], e["b"]) for e in rest}
+    for e in edges:
+        if (e["a"], e["b"]) not in used:
+            out.append(("", "", [e]))
+    return out
+
+
+def pairing_questions(sp: Dict, k: int, pair: str, a_label: str, b_label: str, ev) -> List[Needed]:
+    """The pairing questions of one step (see pairing_candidates / _group_pairings): 'step{k}:phase:<A phase>'
+    (extend / separate) or 'step{k}:name:<B phase>' (same / separate) for a single candidate; for candidates
+    competing for one phase a single 'step{k}:name:<that phase>' question whose options name the partner."""
+    out = []
+    A = sp.get("A_pre")
+    for side, hub, es in _group_pairings(pairing_candidates(sp, ev)):
+        if not side:
+            e = es[0]
+            a, b = e["a"], e["b"]
+            if e["extend"] is not None:
+                c = e["extend"]
+                opt = _extend_option(sp, a, b, a_label, b_label, c)
+                q = (f"{b_label}'s {b} {c['b_model']} looks like {a_label}'s {a} {c['a_model']} with "
+                     f"{', '.join(x.capitalize() for x in c['components'])} ({c['why']}) - the same phase? "
+                     f"{c['map_note']}".strip())
+                opts = ([opt] if opt else [])
+                pairs = {"extend": ("extend", a, b)} if opt else {}
+                if e["name"] is not None:
+                    opts.append(("same", f"phase_map {{'{b}': '{a}'}}: one phase, models merged"))
+                    pairs["same"] = ("same", a, b)
+                opts.append(("separate", f"two phases (default): {a_label}'s {a} and {b_label}'s {b}"))
+                out.append(Needed(f"step{k}:phase:{a}", k, pair, "harmonize", f"phase:{a}", q, opts, pairs=pairs))
+            else:
+                out.append(Needed(
+                    f"step{k}:name:{b}", k, pair, "name", f"name:{b}",
+                    f"is {b_label}'s {b} the same phase as {a_label}'s {a}? ({clip(e['name'], 120)})",
+                    [("same", f"phase_map {{'{b}': '{a}'}}: one phase, models merged"),
+                     ("separate", "two phases (default)")], pairs={"same": ("same", a, b)}))
             continue
-        seen.add(bph)
-        aph = m.group(1)
-        out[f"name:{bph}"] = Needed(
-            f"step{k}:name:{bph}", k, pair, "name", f"name:{bph}",
-            f"is {b_label}'s {bph} the same phase as {a_label}'s {aph}? ({clip(detail, 120)})",
-            [("same", f"phase_map {{'{bph}': '{aph}'}}: one phase, models merged"),
-             ("separate", "two phases (default)")])
-    return list(out.values())
+        opts, pairs, why = [], {}, []
+        for e in es:
+            a, b = e["a"], e["b"]
+            other = b if side == "A" else a
+            opts.append((other, f"{b_label}'s {b} is {a_label}'s {a}: phase_map {{'{b}': '{a}'}}, one phase, "
+                                f"models merged"))
+            pairs[other] = ("same", a, b)
+            if e["name"] is not None:
+                why.append(f"{other}: {clip(e['name'], 90)}")
+            if e["extend"] is not None:
+                c = e["extend"]
+                opt = _extend_option(sp, a, b, a_label, b_label, c)
+                if opt:
+                    opts.append((f"extend:{other}", opt[1].replace(
+                        f"(answer {{'extend': {{'phase': '{b}'}}}}", f"(answer 'extend:{other}'").replace(
+                        "(answer 'extend'", f"(answer 'extend:{other}'")))
+                    pairs[f"extend:{other}"] = ("extend", a, b)
+                if e["name"] is None:
+                    why.append(f"{other}: {c['why']}")
+        if not pairs:
+            continue
+        others = sorted({(e["b"] if side == "A" else e["a"]) for e in es})
+        hub_db = a_label if side == "A" else b_label
+        other_db = b_label if side == "A" else a_label
+        model = ""
+        if side == "A" and A is not None and hub in A.phases:
+            model = " " + ts._subl_text(A.phases[hub])
+        q = (f"{hub_db}'s {hub}{model} has {len(others)} candidate partners in {other_db}: {', '.join(others)} - "
+             f"which one (if any) is the same phase? A phase pairs with at most one ({'; '.join(why)})")
+        opts.append(("separate", f"none: {hub} stays a separate phase (default)"))
+        out.append(Needed(f"step{k}:name:{hub}", k, pair, "harmonize" if any(v[0] == "extend" for v in pairs.values())
+                          else "name", f"name:{hub}", q, opts, pairs=pairs))
+    return out
 
 
 def _extend_consequence(rep: Optional[Dict], a_label: str, b_label: str) -> str:
@@ -526,10 +633,43 @@ def _extend_option(sp: Dict, a_phase: str, b_phase: str, a_label: str, b_label: 
                       f"components, sublattice_map, normalization, collision, magnetic)")
 
 
+def _answer_text(val, n: Needed) -> str:
+    """A decision value as the answer of ``n``: 'extend' (or 'extend:<phase>' when the question offers several
+    sources), the JSON of a list, else the text (an option key matched case-insensitively)."""
+    from .harmonize import is_extend
+    keys = {kk.lower(): kk for kk in (n.pairs or {})}
+    if is_extend(val):
+        multi = [kk for kk in (n.pairs or {}) if kk.startswith("extend:")]
+        if isinstance(val, str) and val.strip().lower() in keys:
+            return keys[val.strip().lower()]
+        if multi and isinstance(val, dict):
+            body = val.get("extend") if isinstance(val.get("extend"), dict) else val
+            ph = str(body.get("phase") or body.get("source_phase") or "").upper()
+            hit = [kk for kk in multi if n.pairs[kk][2] == ph or kk.split(":", 1)[1] == ph]
+            if len(hit) == 1:
+                return hit[0]
+        return "extend"
+    if isinstance(val, (list, tuple)):
+        return json.dumps(val)
+    v = str(val)
+    return keys.get(v.strip().lower(), v)
+
+
+def _pairing_lookup(dec: Dict, k: int, bstem: str, n: Needed):
+    """A grouped pairing question answered through the single-candidate ids: 'name:<B phase>' = 'same' (or
+    'phase:<A phase>' = extend with that source)."""
+    for key, (kind, a, b) in n.pairs.items():
+        if kind == "same":
+            kk, v = _lookup(dec, k, bstem, f"name:{b}")
+            if kk is not None and str(v).strip().lower() == "same":
+                return kk, key
+    return None, None
+
+
 def _provisional(n: Needed) -> str:
     keys = [k for k, _ in n.options]
     if n.kind == "harmonize":
-        return "extend" if n.answer == "extend" else "separate"
+        return n.answer if n.answer is not None and str(n.answer).startswith("extend") else "separate"
     if n.kind == "phase_model" and "rename" in keys:
         return "rename"
     if n.kind == "sublattice":
@@ -689,26 +829,37 @@ def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] 
                       and not (kk.startswith("phase:") and is_extend(vv))}
         progress(f"combine: planning step {k} ({st.pair})")
         needed: Dict[str, Needed] = {}
+        kept: Dict[str, Needed] = {}             # applied answers ('same', sublattice maps) whose question goes
+        ext_who: Dict[str, Needed] = {}          # extensions chosen through a pairing question
         ev = None
-        for _ in range(4):          # normalisation answers (names, sublattices) can raise new merge questions
-            ev = evaluate_pair(a, b, phase_map=pm or None, sublattice_map=sm or None, unary50=unary50,
-                               workdir=str(work / f"step{k}_compat"), tentative=tentative)
+        for _ in range(6):          # answers (names, extensions, sublattices) can remove questions or raise new ones
             sp = _step_plan(a, b, pm, sm, merge_user, work / f"step{k}", k, ext_raw, ext_global, tentative)
+            ext_pairs = set(sp.get("specs") or {}) | {x["phase"] for x in (sp.get("specs") or {}).values()}
+            ev = evaluate_pair(a, b, phase_map=pm or None, sublattice_map=sm or None, unary50=unary50,
+                               workdir=str(work / f"step{k}_compat"), tentative=tentative, paired_phases=ext_pairs)
+            needed = {}
             for n in _needed_from_plan(sp, k, st.pair, a_label, bstem, ev):
                 if n.id in needed:
                     continue
                 short = n.id.split(":", 1)[1]
                 key, val = _lookup(dec, k, bstem, n.cid, short)
+                if key is None and n.pairs:
+                    key, val = _pairing_lookup(dec, k, bstem, n)
+                src = None
                 if key is None and n.kind == "harmonize" and n.cid.split(":", 1)[1] in (sp.get("specs") or {}):
                     key, val = "phase_harmonization", "extend"
+                    src = ext_who.get(n.cid.split(":", 1)[1])
                 if key is not None:
-                    n.answer = ("extend" if is_extend(val) else
-                                json.dumps(val) if isinstance(val, (list, tuple)) else str(val))
+                    n.answer = _answer_text(val, n)
                     _, rv = _lookup(reasons, k, bstem, n.cid, short)
+                    if rv is None and src is not None:
+                        _, rv = _lookup(reasons, k, bstem, src.cid, src.id.split(":", 1)[1])
                     if rv is None and key == "phase_harmonization":
                         rv = reasons.get("phase_harmonization")
                     n.who, n.reason = parse_reason(rv)
                     n.reason = n.reason or NOT_GIVEN
+                    if src is not None:
+                        n.question += f" [chosen in {src.id} = '{src.answer}']"
                 else:
                     pick = _policy_pick(n, policy)
                     if pick is not None:
@@ -718,18 +869,26 @@ def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] 
                                        "the later database wins") + ")")
                 n.provisional = n.answer if n.answer is not None else _provisional(n)
                 needed[n.id] = n
-            pm2, sm2 = dict(pm), dict(sm)
-            for n in needed.values():
+            pm2, sm2, ext2 = dict(pm), dict(sm), dict(ext_raw)
+            for n in list(needed.values()) + list(kept.values()):
                 ph = n.cid.split(":", 1)[1]
-                if n.kind == "name" and str(n.provisional).lower().startswith("same"):
-                    tgt = re.search(r"phase_map \{'[^']+': '([^']+)'\}", n.options[0][1])
-                    if tgt:
-                        pm2[ph] = tgt.group(1)
+                act = n.pairs.get(str(n.provisional)) if n.pairs else None
+                # an applied answer (or provisional value) removes its question from the next round: keep it
+                if act is not None and act[0] == "same":
+                    pm2[act[2]] = act[1]
+                    kept[n.id] = n
+                elif act is not None and act[0] == "extend":
+                    if act[1] not in ext2:
+                        ext2[act[1]] = {"extend": {"phase": act[2]}}
+                        ext_who[act[1]] = n
                 elif n.kind == "sublattice":
                     sm2[ph] = _sublattice_value(n.provisional)
-            if pm2 == pm and sm2 == sm:
+                    kept[n.id] = n
+            if pm2 == pm and sm2 == sm and ext2 == ext_raw:
                 break
-            pm, sm = pm2, sm2
+            pm, sm, ext_raw = pm2, sm2, ext2
+        for kid, n in kept.items():
+            needed.setdefault(kid, n)
         st.compat = ev
         st.warnings = _unary_warnings(ev, k, a_label, bstem)
         st.phase_map, st.sublattice_map = pm, sm
@@ -1153,9 +1312,14 @@ def attribute_step(sc: StepContext, X: ts.StageView, Y: ts.StageView, side: str,
                 unexplained.append(f"{sc.tag}: {m.text()} in {s.name} ({side} side) not attributed")
         for note in s.notes:
             ph = note.split(":", 1)[0]
-            eid = f"step{sc.k}:rule:exact-rescale:{ph}"
-            e = sc.log.rule(eid, sc.tag, ph, "an exact proportional rescale (G/L scaled alike, no magnetic terms) is "
-                                             "not a change", "rescale")
+            if " read as " in note:
+                eid = f"step{sc.k}:norm:{ph}:snapped"
+                e = sc.log.get(eid) or sc.log.add(Entry(eid, sc.tag, ph, [], "exact fractions", "rule", SNAP_REASON,
+                                                        "normalisation"))
+            else:
+                eid = f"step{sc.k}:rule:exact-rescale:{ph}"
+                e = sc.log.rule(eid, sc.tag, ph, "an exact proportional rescale (G/L scaled alike, no magnetic terms) "
+                                                 "is not a change", "rescale")
             e.add_affected(s.name)
             e.add_evidence(note)
 
@@ -1225,14 +1389,16 @@ def build_decision_log(plan: CombinePlan, results: List[Dict[str, Any]], log: De
                 e.add_evidence(*[f"{o.key}: {clip(o.detail, 110)}" for o in c.options if o.detail][:2])
         # normalisation
         for nn in r["notes"]:
-            act = {ts.A_RESCALED: "magnetic-exception"}.get(nn.action, nn.action)
+            act = {ts.A_RESCALED: "magnetic-exception", ts.A_SNAPPED: "snapped"}.get(nn.action, nn.action)
             if nn.action == "candidate":
                 continue
             eid = f"step{k}:norm:{nn.phase}:{act}"
             reason = {
                 "renamed": f"{st.b_label}'s phase name adopted to {st.a_label}'s (same structure tokens, or "
                            f"phase_map)",
-                "reordered": f"{st.b_label}'s sublattices put in {st.a_label}'s order (exact: GM identical)",
+                "reordered": f"{st.b_label}'s sublattices put in {st.a_label}'s order - flipped / permuted to match "
+                             f"(exact: GM identical)",
+                "snapped": SNAP_REASON,
                 "rescaled": f"{st.b_label}'s formula unit rescaled to {st.a_label}'s, G/L x k (exact: GM per mole "
                             f"of atoms identical)",
                 "magnetic-exception": f"magnetic exception: {st.b_label}'s phase is magnetic with ~1 atom/fu, "
@@ -1246,9 +1412,12 @@ def build_decision_log(plan: CombinePlan, results: List[Dict[str, Any]], log: De
             }.get(act, act)
             who = "rule"
             if "(phase_map)" in nn.detail:
-                n = sc.needed.get(f"name:{nn.phase}")
+                n = sc.needed.get(f"name:{nn.phase}") or next(
+                    (x for x in sc.needed.values() if x.pairs and x.pairs.get(str(x.answer), ("",))[0] == "same"
+                     and x.pairs[str(x.answer)][2] == nn.phase), None)
                 who = n.who if n else parse_reason(reasons.get("phase_map"))[0]
             chosen = {"renamed": nn.detail.split(" (")[0], "reordered": "reordered", "rescaled": "rescaled",
+                      "snapped": "exact fractions",
                       "magnetic-exception": "base rescaled", "not_rescaled": "not rescaled",
                       "incompatible": "kept as is", "kept": "kept as is", "unmapped": "kept as is"}.get(act, act)
             log.add(Entry(eid, tag, nn.phase, [], chosen, who, reason, "normalisation", evidence=[nn.detail]))
@@ -1343,7 +1512,7 @@ def gm_identity(orig: str, orig_phase: str, new: str, new_phase: str, new_from_o
     perm = list(new_from_old) if new_from_old else list(range(nsub))
     new_sym = {(y.sublattice_index, y.species.name): y for y in mn.site_fractions}
     rng = np.random.default_rng(seed)
-    worst, Ts = 0.0, []
+    worst, worst_abs, Ts = 0.0, 0.0, []
     for _ in range(n):
         T = float(rng.uniform(300.0, 2500.0))
         Ts.append(round(T, 1))
@@ -1363,7 +1532,8 @@ def gm_identity(orig: str, orig_phase: str, new: str, new_phase: str, new_from_o
                 sn[ny] = float(wi)
         go, gn = float(mo.GM.xreplace(so)), float(mn.GM.xreplace(sn))
         worst = max(worst, abs(go - gn) / max(abs(go), 1.0))
-    return {"max_rel": worst, "n": n, "T": Ts}
+        worst_abs = max(worst_abs, abs(go - gn))
+    return {"max_rel": worst, "max_abs": worst_abs, "n": n, "T": Ts}
 
 
 def exactness_checks(results: List[Dict[str, Any]], log: DecisionLog) -> List[Dict[str, Any]]:
@@ -1376,7 +1546,7 @@ def exactness_checks(results: List[Dict[str, Any]], log: DecisionLog) -> List[Di
         inv = {v: kk for kk, v in ren.items()}
         per: Dict[str, Dict[str, Any]] = {}
         for nn in notes:
-            if nn.action in ("renamed", "reordered", "rescaled"):
+            if nn.action in ts.B_CHANGES:
                 tgt = ren.get(nn.phase, nn.phase) if nn.action == "renamed" else nn.phase
                 d = per.setdefault(tgt, {"orig": inv.get(tgt, tgt), "acts": [], "perm": None, "ids": []})
                 d["acts"].append(nn.action)
@@ -1387,22 +1557,41 @@ def exactness_checks(results: List[Dict[str, Any]], log: DecisionLog) -> List[Di
         for tgt, d in per.items():
             if r["B"] == r["B_original"]:
                 continue
-            res = gm_identity(r["B_original"], d["orig"], r["B"], tgt, d["perm"])
+            orig, tr = r["B_original"], "+".join(d["acts"])
+            if "snapped" in d["acts"]:
+                # site ratios read as exact fractions: the rest of the transformation is exact against that
+                orig, snap_res = _snapped_source(r["B_original"], d["orig"], Path(r["B"]).parent / "_work")
+                tr = tr.replace("snapped", "snapped (compared with the exact-fraction source)")
+                e = log.get(f"step{k}:norm:{tgt}:snapped")
+                if e is not None and snap_res is not None:
+                    e.add_evidence(_snap_gm_text(snap_res))
+            res = gm_identity(orig, d["orig"], r["B"], tgt, d["perm"])
             out.append({"step": k, "file": f"{_stem(r['B_original'])} -> {Path(r['B']).name}",
                         "phase": f"{d['orig']} -> {tgt}" if d["orig"] != tgt else tgt,
-                        "transform": "+".join(d["acts"]), **res})
+                        "transform": tr, **res})
             for eid in d["ids"]:
                 e = log.get(eid)
                 if e is not None:
                     e.add_evidence(_gm_text(res))
+        a_acts: Dict[str, List[str]] = {}
         for nn in notes:
-            if nn.action == ts.A_RESCALED and r.get("A_eff") and r["A_eff"] != r["A"]:
-                res = gm_identity(r["A"], nn.phase, r["A_eff"], nn.phase, None)
-                out.append({"step": k, "file": f"{_stem(r['A'])} -> {Path(r['A_eff']).name}", "phase": nn.phase,
-                            "transform": "magnetic exception (base rescaled)", **res})
-                e = log.get(f"step{k}:norm:{nn.phase}:magnetic-exception")
-                if e is not None:
-                    e.add_evidence(_gm_text(res))
+            if nn.action in ts.A_CHANGES and r.get("A_eff") and r["A_eff"] != r["A"]:
+                a_acts.setdefault(nn.phase, []).append(nn.action)
+        for ph, acts in a_acts.items():
+            orig = r["A"]
+            if ts.A_SNAPPED in acts:
+                orig, snap_res = _snapped_source(r["A"], ph, Path(r["A_eff"]).parent / "_work")
+                e = log.get(f"step{k}:norm:{ph}:snapped")
+                if e is not None and snap_res is not None:
+                    e.add_evidence(_snap_gm_text(snap_res))
+            res = gm_identity(orig, ph, r["A_eff"], ph, None)
+            out.append({"step": k, "file": f"{_stem(r['A'])} -> {Path(r['A_eff']).name}", "phase": ph,
+                        "transform": " + ".join(("magnetic exception (base rescaled)" if a == ts.A_RESCALED else
+                                                 "base site ratios read exactly (compared with the exact-fraction "
+                                                 "source)") for a in acts), **res})
+            e = log.get(f"step{k}:norm:{ph}:magnetic-exception")
+            if e is not None:
+                e.add_evidence(_gm_text(res))
         for x in (r.get("extensions") or {}).get("reports", []):
             eid = f"step{k}:phase:{x['base_phase']}"
             ch = x.get("checks") or {}
@@ -1421,6 +1610,26 @@ def exactness_checks(results: List[Dict[str, Any]], log: DecisionLog) -> List[Di
     for c in out:
         c["ok"] = bool(math.isfinite(c.get("max_rel", math.nan)) and c["max_rel"] <= GM_TOL)
     return out
+
+
+def _snapped_source(path: str, phase: str, work: Path) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """(``path`` with ``phase``'s site ratios read as exact fractions, written to ``work``; GM identity of the snap
+    itself) - the reference the rest of a normalisation is exact against."""
+    db = parse_tdb(path)
+    if phase not in db.phases or not ts.snap_phase_in(db, phase):
+        return path, None
+    work.mkdir(parents=True, exist_ok=True)
+    out = ts.write_tdb(db, str(work / f"{_stem(path)}_{phase}_exact_ratios.tdb"),
+                       [f"{Path(path).name} with {phase}'s site ratios read as exact fractions (exactness reference)"])
+    return out, gm_identity(path, phase, out, phase, None)
+
+
+def _snap_gm_text(res: Dict) -> str:
+    if not math.isfinite(res.get("max_rel", math.nan)):
+        return f"GM change of the snap not checked: {res.get('error', '?')}"
+    return (f"the snap alone changes GM (per mole of atoms, {res['n']} random states) by max relative "
+            f"{res['max_rel']:.1e} (max {res.get('max_abs', math.nan):.3g} J/mol of atoms): negligible, not a "
+            f"question")
 
 
 def _gm_text(res: Dict) -> str:

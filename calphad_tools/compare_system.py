@@ -233,7 +233,11 @@ class Candidate:
                 + "; ".join(self.evidence) + f". If the same phase: phase_map {self.suggestion}")
 
 
-def phase_candidates(views: List["DbView"], ref_label: str) -> List[Candidate]:
+def phase_candidates(views: List["DbView"], ref_label: str, exclude=()) -> List[Candidate]:
+    """Phase-name correspondence candidates across ``views``.  ``exclude``: phases already paired (in a merge: a phase
+    of one database paired with one of the other by name, alias, phase_map or an 'extend' decision) - never offered
+    again, so a phase pairs with at most one other."""
+    excl = {str(x).upper() for x in exclude}
     presence: Dict[str, List[DbView]] = {}
     for v in views:
         for cn in v.phases:
@@ -245,6 +249,8 @@ def phase_candidates(views: List["DbView"], ref_label: str) -> List[Candidate]:
             la, lb = {v.label for v in presence[a]}, {v.label for v in presence[b]}
             if la & lb:
                 continue                     # one database has both: different phases
+            if a in excl or b in excl:
+                continue                     # already paired
             fa, fb = _fam(a), _fam(b)
             jac = len(fa & fb) / max(1, len(fa | fb))
             ratio = difflib.SequenceMatcher(None, a, b).ratio()

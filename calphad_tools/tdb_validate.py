@@ -272,6 +272,26 @@ def _sublattice_map(pa, pb, hint=None, k_hint=None) -> Tuple[List[Tuple[Dict[int
     return [({ia[t]: ib[p] for t, p in enumerate(perm)}, k) for perm, k, _ in top[:6]], note
 
 
+def _snapped_before(tb_: TDB, phase: str):
+    """(before with ``phase``'s site ratios read as exact fractions, the snap info, its pycalphad Database) or None
+    when they are not a rounded form of simple fractions."""
+    try:
+        from pycalphad import Database
+        from .tdbstage import snap_phase_in, tdb_to_text
+    except Exception:  # noqa: BLE001 - optional
+        return None
+    sdb = copy.deepcopy(tb_)
+    info = snap_phase_in(sdb, phase)
+    if not info:
+        return None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return sdb, info, Database.from_string(tdb_to_text(sdb), fmt="tdb")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _comps(db, phase: str) -> List[str]:
     ph = db.phases[phase]
     names = {s.name for subl in ph.constituents for s in subl}
@@ -471,26 +491,45 @@ def validate_edit(before: Union[str, TDB], after: Union[str, TDB], affected_phas
                 row.update(status="skip", detail="pycalphad could not load both databases")
                 gm_rows.append(row)
                 continue
-            try:
-                cands, note = _sublattice_map(tb_.phases[bn], ta.phases[nm], smaps.get(nm, smaps.get(bn)),
-                                              scales.get(nm, scales.get(bn)))
-            except ValueError as e:
-                cands, note = [], str(e)
+
+            def best_of(dbb, phb):
+                try:
+                    cs, nt = _sublattice_map(phb, ta.phases[nm], smaps.get(nm, smaps.get(bn)),
+                                             scales.get(nm, scales.get(bn)))
+                except ValueError as e:
+                    cs, nt = [], str(e)
+                bst = None
+                for smap, k in cs:
+                    res = gm_compare(dbb, db_a, bn, nm, smap, temps, np.random.default_rng(seed + 1))
+                    if "error" in res:
+                        if bst is None:
+                            bst = (smap, k, res)
+                        continue
+                    if bst is None or "error" in bst[2] or res["rel"] < bst[2]["rel"]:
+                        bst = (smap, k, res)
+                    if res["rel"] <= REL_TOL:
+                        break
+                return cs, nt, bst
+            cands, note, best = best_of(db_b, tb_.phases[bn])
+            snap_txt = ""
+            if best is None or "error" in best[2] or best[2]["rel"] > REL_TOL:
+                # before's site ratios written as a rounded form of simple fractions (0.333:0.667) and after has the
+                # exact ones: the edit is exact once they are read exactly; the snap's own GM change is reported
+                sn = _snapped_before(tb_, bn)
+                if sn is not None:
+                    sdb, info, dbs = sn
+                    c2, n2, b2 = best_of(dbs, sdb.phases[bn])
+                    if b2 is not None and "error" not in b2[2] and b2[2]["rel"] <= REL_TOL:
+                        ident = {i: i for i in range(tb_.phases[bn].n_sublattices)}
+                        eff = gm_compare(db_b, dbs, bn, bn, ident, temps, np.random.default_rng(seed + 1))
+                        cands, note, best = c2, n2, b2
+                        snap_txt = (f"before's {info['text'].split(': GM changes', 1)[0]}"
+                                    + (f"; that alone changes GM by max {eff['abs']:.3g} J/mol of atoms (rel "
+                                       f"{eff['rel']:.1e})" if "error" not in eff else ""))
             if not cands:
                 row.update(status="fail" if need_gm else "info", detail=f"no sublattice mapping: {note}")
                 gm_rows.append(row)
                 continue
-            best = None
-            for smap, k in cands:
-                res = gm_compare(db_b, db_a, bn, nm, smap, temps, np.random.default_rng(seed + 1))
-                if "error" in res:
-                    if best is None:
-                        best = (smap, k, res)
-                    continue
-                if best is None or "error" in best[2] or res["rel"] < best[2]["rel"]:
-                    best = (smap, k, res)
-                if res["rel"] <= REL_TOL:
-                    break
             smap, k, res = best
             perm = [smap.get(i, None) for i in range(tb_.phases[bn].n_sublattices)]
             row.update(perm=",".join("-" if j is None else str(j) for j in perm), k=k, n=res.get("n", 0))
@@ -506,7 +545,11 @@ def validate_edit(before: Union[str, TDB], after: Union[str, TDB], affected_phas
                            worst_y=str(res["worst_at"]["y_before"]) if res["worst_at"] else "")
                 where = (f" at T={res['worst_at']['T']:g} K, y={_cut(str(res['worst_at']['y_before']), 90)}"
                          if res["worst_at"] else "")
-                if res["rel"] <= REL_TOL:
+                if res["rel"] <= REL_TOL and snap_txt:
+                    row.update(status="pass", snapped=snap_txt,
+                               detail=f"{how}GM per atom preserved once the site ratios are read exactly ({snap_txt}): "
+                                      f"max |dGM| {res['abs']:.3g} J/mol (rel {res['rel']:.1e}, {res['n']} samples)")
+                elif res["rel"] <= REL_TOL:
                     row.update(status="pass", detail=f"{how}GM per atom preserved: max |dGM| {res['abs']:.3g} J/mol "
                                                      f"(rel {res['rel']:.1e}, {res['n']} samples)")
                 elif res["magnetic"] and res["nonmag_rel"] <= REL_TOL:

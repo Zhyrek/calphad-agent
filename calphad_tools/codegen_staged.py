@@ -96,9 +96,9 @@ A_ORIG = A
 dbA, Bn, notes = normalize_pair(parse_tdb(A), parse_tdb(B), PHASE_MAP, SUBLATTICE_MAP)
 for n in notes:
     print("normalisation:", n.text())
-if any(n.action in ("renamed", "reordered", "rescaled") for n in notes):
+if any(n.action in B_CHANGES for n in notes):
     B = write_tdb(Bn, str(OUT / f"B0_{Path(ADD).stem}_normalised.tdb"))
-if any(n.action == A_RESCALED for n in notes):   # magnetic exception: A's phase takes B's site ratios (exact)
+if any(n.action in A_CHANGES for n in notes):   # magnetic exception (A takes B's site ratios) or A's read exactly
     A = write_tdb(dbA, str(OUT / f"A0_{Path(BASE).stem}_rescaled.tdb"))
 dbA, Bn = parse_tdb(A), parse_tdb(B)
 shared = sorted(set(dbA.real_elements) & set(Bn.real_elements))
@@ -194,9 +194,9 @@ def _gen_staged(args, ctx: Ctx) -> str:
              f"{float(args.get('temperature_step', 10.0))!r}\n"
              "_A, _B = str(BASE), str(ADD)\n"
              "_An, _Bn, _ = normalize_pair(parse_tdb(_A), parse_tdb(_B), PHASE_MAP, SUBLATTICE_MAP)\n"
-             "if any(n.action in ('renamed', 'reordered', 'rescaled') for n in _):\n"
+             "if any(n.action in B_CHANGES for n in _):\n"
              "    _B = write_tdb(_Bn, str(OUT / '_normalised_for_decisions.tdb'))\n"
-             "if any(n.action == A_RESCALED for n in _):\n"
+             "if any(n.action in A_CHANGES for n in _):\n"
              "    _A = write_tdb(_An, str(OUT / '_rescaled_for_decisions.tdb'))\n"
              "_shared = sorted(set(parse_tdb(_A).real_elements) & set(_Bn.real_elements))\n"
              "DECISIONS = alias_separate([_A, _B], " + Ctx.py(dec) + ")\n"
