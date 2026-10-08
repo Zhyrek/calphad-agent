@@ -311,9 +311,13 @@ def _phase_subsystems(view: ts.StageView, phase: str) -> List[str]:
 
 
 # =============================================================================================== step plans
-def _step_plan(a: str, b: str, pm: Dict, sm: Dict, dec_user: Dict, work: Path, k: int) -> Dict[str, Any]:
-    """What staged_merge's build_versions does before the merge, without writing versions: normalisation, alias
-    separation, the automatic (staged) decisions and the merge plan's conflicts."""
+def _step_plan(a: str, b: str, pm: Dict, sm: Dict, dec_user: Dict, work: Path, k: int,
+               ext_raw: Optional[Dict[str, Any]] = None, ext_global: Sequence[str] = ()) -> Dict[str, Any]:
+    """What staged_merge's build_versions does before the merge, without writing versions: normalisation, 'extend'
+    decisions (harmonize.staged_extensions), alias separation, the automatic (staged) decisions and the merge plan's
+    conflicts.  ``ext_raw`` {A phase: decision value}; targets in ``ext_global`` (given without a step) are skipped
+    where they do not apply."""
+    from .harmonize import HarmonizeError, extension_spec, harmonization_candidates, staged_extensions
     work.mkdir(parents=True, exist_ok=True)
     A, B = parse_tdb(a), parse_tdb(b)
     An, Bn, notes = ts.normalize_pair(A, B, pm or None, sm or None, on_error="keep")
@@ -323,11 +327,32 @@ def _step_plan(a: str, b: str, pm: Dict, sm: Dict, dec_user: Dict, work: Path, k
     if any(n.action in ("renamed", "reordered", "rescaled") for n in notes):
         b_eff = ts.write_tdb(Bn, str(work / f"step{k}_B0_{_stem(b)}.tdb"), ["provisional B0 (combine plan)"])
     shared = sorted(set(A.real_elements) & set(parse_tdb(b_eff).real_elements))
-    dec = ts.alias_separate([a_eff, b_eff], dec_user)
-    plan0 = ts.plan_merge([a_eff, b_eff], dec, "ask")
+    Ae, Be = parse_tdb(a_eff), parse_tdb(b_eff)
+    cands = harmonization_candidates(Ae, Be)
+    ren = _norm_renames(notes)
+    specs: Dict[str, Dict] = {}
+    for tgt, v in (ext_raw or {}).items():
+        default = next((c["b_phase"] for c in cands if c["a_phase"] == tgt), tgt)
+        try:
+            sp = extension_spec(tgt, v, Ae, None, default)
+            sp["phase"] = ren.get(sp["phase"], sp["phase"])
+            if sp["phase"] not in Be.phases:
+                raise HarmonizeError(f"extend {tgt}: {sp['phase']} is not a phase of {Path(b).name}")
+        except HarmonizeError:
+            if tgt in ext_global:
+                continue
+            raise
+        specs[tgt] = sp
+    b_merge, ext = b_eff, None
+    if specs:
+        ext = staged_extensions(a_eff, b_eff, specs, str(work / "extend"), shared, verify=False)
+        a_eff, b_merge = ext["A_ext"], ext["B_merge"]
+    dec = ts.alias_separate([a_eff, b_merge], dec_user)
+    plan0 = ts.plan_merge([a_eff, b_merge], dec, "ask")
     auto = ts.auto_decisions(plan0, shared)
-    return {"notes": notes, "a_eff": a_eff, "b_eff": b_eff, "shared": shared, "plan0": plan0, "auto": auto,
-            "alias": {c: v for c, v in dec.items() if c not in dec_user}}
+    return {"notes": notes, "a_eff": a_eff, "b_eff": b_merge, "shared": shared, "plan0": plan0, "auto": auto,
+            "alias": {c: v for c, v in dec.items() if c not in dec_user}, "specs": specs, "ext": ext,
+            "cands": cands, "A_pre": Ae, "B_pre": Be}
 
 
 def _is_binary_group(c) -> bool:
@@ -373,6 +398,9 @@ def _needed_from_plan(sp: Dict, k: int, pair: str, a_label: str, b_label: str, e
                 elif o.key == "rename":
                     opts.append(("rename", f"keep both, {b_label}'s as {ph}_2: both sources' diagrams are kept; "
                                            f"in new mixed systems {ph} and {ph}_2 are separate phases"))
+            ext_opt = _extend_option(sp, ph, ph, a_label, b_label)
+            if ext_opt:
+                opts.append(ext_opt)
             out[cid] = Needed(f"step{k}:{cid}", k, pair, "phase_model", cid, q, opts)
         elif c.kind == "parameter":
             members = [x for x in plan0.conflicts if x.group == c.group] if c.group else [c]
@@ -406,6 +434,25 @@ def _needed_from_plan(sp: Dict, k: int, pair: str, a_label: str, b_label: str, e
             q = c.question
             opts = [(o.key, o.label + (f" [{clip(o.detail, 90)}]" if o.detail else "")) for o in c.options]
             out[cid] = Needed(f"step{k}:{cid}", k, pair, c.kind, cid, q, opts)
+    # phase harmonisation: decided extensions, and B phases that look like a base phase with extra constituents
+    for tgt, spec in (sp.get("specs") or {}).items():
+        rep = next((r for r in (sp.get("ext") or {}).get("reports", []) if r["base_phase"] == tgt), None)
+        q = (f"{tgt}: extend {a_label}'s {tgt} with {b_label}'s {spec['phase']} ("
+             + (rep["basis"]["text"] if rep else "") + ")")
+        out[f"phase:{tgt}"] = Needed(f"step{k}:phase:{tgt}", k, pair, "harmonize", f"phase:{tgt}", q,
+                                     [("extend", _extend_consequence(rep, a_label, b_label) if rep else "extend"),
+                                      ("separate", "two phases")])
+    for c in sp.get("cands") or []:
+        cid = f"phase:{c['a_phase']}"
+        if cid in out or c["a_phase"] in (sp.get("specs") or {}):
+            continue
+        opt = _extend_option(sp, c["a_phase"], c["b_phase"], a_label, b_label, c)
+        q = (f"{b_label}'s {c['b_phase']} {c['b_model']} looks like {a_label}'s {c['a_phase']} {c['a_model']} with "
+             f"{', '.join(x.capitalize() for x in c['components'])} ({c['why']}) - the same phase? "
+             f"{c['map_note']}".strip())
+        out[cid] = Needed(f"step{k}:{cid}", k, pair, "harmonize", cid, q,
+                          ([opt] if opt else []) + [("separate", f"two phases (default): {a_label}'s {c['a_phase']} "
+                                                                 f"and {b_label}'s {c['b_phase']}")])
     for n in sp["notes"]:
         if n.action == "unmapped":
             out[f"sublattice:{n.phase}"] = Needed(
@@ -437,8 +484,44 @@ def _needed_from_plan(sp: Dict, k: int, pair: str, a_label: str, b_label: str, e
     return list(out.values())
 
 
+def _extend_consequence(rep: Optional[Dict], a_label: str, b_label: str) -> str:
+    if not rep:
+        return "extend"
+    return (f"keep {a_label}'s {rep['base_phase']} (structure, names, base-element parameters), add "
+            f"{', '.join(rep['components'])} and the {len(rep['imported'])} parameter(s) with them from {b_label}'s "
+            f"{rep['add_phase']}; {rep['basis']['text']}"
+            + (f"; {len(rep['missing_g'])} new end-member(s) without G" if rep.get("missing_g") else ""))
+
+
+def _extend_option(sp: Dict, a_phase: str, b_phase: str, a_label: str, b_label: str,
+                   cand: Optional[Dict] = None) -> Optional[Tuple[str, str]]:
+    """('extend', consequence) when B's phase brings elements A's lacks and the models map (else None)."""
+    from .harmonize import basis_choice, is_magnetic, phase_comps, _real
+    A, B = sp.get("A_pre"), sp.get("B_pre")
+    if A is None or B is None or a_phase not in A.phases or b_phase not in B.phases:
+        return None
+    pa, pb = A.phases[a_phase], B.phases[b_phase]
+    extra = sorted(set(phase_comps(B, b_phase)) - set(phase_comps(A, a_phase)))
+    if not extra or len(_real(pa)) != len(_real(pb)):
+        return None
+    try:
+        if ts.sublattice_mapping(pa, pb) is None:
+            return None
+    except ts.SublatticeMapError:
+        pass
+    bc = basis_choice(is_magnetic(A, a_phase), is_magnetic(B, b_phase), sum(pa.site_ratios[i] for i in _real(pa)),
+                      sum(pb.site_ratios[i] for i in _real(pb)), "base", "auto", a_phase, a_label, b_label)
+    how = (f"{{'extend': {{'phase': '{b_phase}'}}}}" if b_phase != a_phase else "'extend'")
+    return ("extend", f"keep {a_label}'s {a_phase} model and its {', '.join(sorted(set(phase_comps(A, a_phase)) - {'VA'}))}"
+                      f" parameters, add {', '.join(x.capitalize() for x in extra)} with only {b_label}'s parameters that "
+                      f"involve {'it' if len(extra) == 1 else 'them'}; {bc['text']} (answer {how}; options: "
+                      f"components, sublattice_map, normalization, collision, magnetic)")
+
+
 def _provisional(n: Needed) -> str:
     keys = [k for k, _ in n.options]
+    if n.kind == "harmonize":
+        return "extend" if n.answer == "extend" else "separate"
     if n.kind == "phase_model" and "rename" in keys:
         return "rename"
     if n.kind == "sublattice":
@@ -454,7 +537,7 @@ def _policy_pick(n: Needed, policy: str) -> Optional[str]:
     if policy not in ("first", "last"):
         return None
     keys = [k for k, _ in n.options]
-    if n.kind in ("sublattice", "name", "default_command"):
+    if n.kind in ("sublattice", "name", "default_command", "harmonize"):
         return _provisional(n)
     dbk = [k for k in keys if k.startswith("db")]
     return (dbk[0] if policy == "first" else dbk[-1]) if dbk else keys[0]
@@ -480,6 +563,7 @@ class StepSpec:
     phase_map: Dict = field(default_factory=dict)
     sublattice_map: Dict = field(default_factory=dict)
     decisions: Dict[str, str] = field(default_factory=dict)       # staged_merge decisions (plain ids)
+    extensions: Dict[str, Dict] = field(default_factory=dict)     # 'extend' decisions {A phase: spec}
     needed: List[Needed] = field(default_factory=list)
     compat: Any = None
     plan_info: Dict[str, Any] = field(default_factory=dict)
@@ -513,7 +597,7 @@ class CombinePlan:
 def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] = None,
                      order: Optional[Sequence[str]] = None, decisions: Optional[Dict] = None,
                      decision_reasons: Optional[Dict] = None, phase_map=None, sublattice_map=None,
-                     policy: str = "ask", unary50: Optional[str] = "auto",
+                     policy: str = "ask", unary50: Optional[str] = "auto", phase_harmonization=None,
                      progress: Callable[[str], None] = lambda s: None) -> CombinePlan:
     from .compatibility import evaluate_pair, write_xlsx as compat_xlsx
     paths = [str(p) for p in paths]
@@ -551,6 +635,8 @@ def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] 
         raise ValueError("order must list every input exactly once")
     seq, why = propose_order(infos, pair_eval, find(base) if base else None, ordered)
     plan = CombinePlan(paths, infos, seq, why, pair_eval, [], policy)
+    from .harmonize import is_extend
+    harm = {str(t).upper(): v for t, v in (phase_harmonization or {}).items()}
     a = seq[0]
     acc = [infos[seq[0]]["stem"]]
     for k, b in enumerate(seq[1:], 1):
@@ -569,22 +655,48 @@ def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] 
                 user_plain[str(key)[len(bstem) + 1:]] = v
             elif ":" in str(key) and not str(key).startswith(("sublattice:", "name:", "plan:")):
                 user_plain.setdefault(str(key), v)
-        merge_user = {kk: str(vv) for kk, vv in user_plain.items() if not kk.startswith(("sublattice:", "name:"))}
+        # 'extend' decisions ({'phase:X': 'extend' | {'extend': {...}}}) and phase_harmonization entries
+        ext_raw: Dict[str, Any] = {}
+        ext_global: List[str] = []
+        for kk, vv in user_plain.items():
+            if kk.startswith("phase:") and is_extend(vv):
+                ext_raw[kk.split(":", 1)[1].upper()] = vv
+                if not any(str(x).startswith((f"step{k}:", f"{bstem}:")) for x in dec if str(x).endswith(kk)):
+                    ext_global.append(kk.split(":", 1)[1].upper())
+        for tgt, vv in harm.items():
+            if tgt in ext_raw:
+                continue
+            st_k = vv.get("step") if isinstance(vv, dict) else None
+            src = vv.get("source") if isinstance(vv, dict) else None
+            if (st_k is not None and str(st_k).replace("step", "") != str(k)) or (
+                    src is not None and _stem(str(src)).lower() != bstem.lower()):
+                continue
+            ext_raw[tgt] = {"extend": {kx: x for kx, x in vv.items() if kx not in ("step", "source")}} \
+                if isinstance(vv, dict) else vv
+            if st_k is None and src is None:
+                ext_global.append(tgt)
+        merge_user = {kk: str(vv) for kk, vv in user_plain.items() if not kk.startswith(("sublattice:", "name:"))
+                      and not (kk.startswith("phase:") and is_extend(vv))}
         progress(f"combine: planning step {k} ({st.pair})")
         needed: Dict[str, Needed] = {}
         ev = None
         for _ in range(4):          # normalisation answers (names, sublattices) can raise new merge questions
             ev = evaluate_pair(a, b, phase_map=pm or None, sublattice_map=sm or None, unary50=unary50,
                                workdir=str(work / f"step{k}_compat"))
-            sp = _step_plan(a, b, pm, sm, merge_user, work / f"step{k}", k)
+            sp = _step_plan(a, b, pm, sm, merge_user, work / f"step{k}", k, ext_raw, ext_global)
             for n in _needed_from_plan(sp, k, st.pair, a_label, bstem, ev):
                 if n.id in needed:
                     continue
                 short = n.id.split(":", 1)[1]
                 key, val = _lookup(dec, k, bstem, n.cid, short)
+                if key is None and n.kind == "harmonize" and n.cid.split(":", 1)[1] in (sp.get("specs") or {}):
+                    key, val = "phase_harmonization", "extend"
                 if key is not None:
-                    n.answer = json.dumps(val) if isinstance(val, (list, tuple)) else str(val)
+                    n.answer = ("extend" if is_extend(val) else
+                                json.dumps(val) if isinstance(val, (list, tuple)) else str(val))
                     _, rv = _lookup(reasons, k, bstem, n.cid, short)
+                    if rv is None and key == "phase_harmonization":
+                        rv = reasons.get("phase_harmonization")
                     n.who, n.reason = parse_reason(rv)
                     n.reason = n.reason or NOT_GIVEN
                 else:
@@ -613,9 +725,12 @@ def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] 
         st.phase_map, st.sublattice_map = pm, sm
         st.needed = list(needed.values())
         st.decisions = {**merge_user, **{n.cid: n.provisional for n in st.needed
-                                         if n.kind not in ("sublattice", "name")}}
+                                         if n.kind not in ("sublattice", "name", "harmonize")
+                                         and n.provisional != "extend"}}
+        st.extensions = dict(sp.get("specs") or {})
         st.plan_info = {"shared": sp["shared"], "auto": sp["auto"], "notes": [n.text() for n in sp["notes"]],
-                        "alias": sp["alias"]}
+                        "alias": sp["alias"],
+                        "harmonize": [r["basis"]["text"] for r in (sp.get("ext") or {}).get("reports", [])]}
         # provisional Q_k for planning the next step
         decs = {**sp["auto"], **sp["alias"], **st.decisions}
         pl = ts.plan_merge([sp["a_eff"], sp["b_eff"]], decs, "first")
@@ -654,6 +769,7 @@ def plan_text(plan: CombinePlan, rel=lambda p: p) -> str:
         L.append(f"  compat {plan.infos[a]['stem']} + {plan.infos[b]['stem']}: {clip(ev.overall, 150)}")
     for st in plan.steps:
         L += [f"  NOTE {w}" for w in st.warnings]
+        L += [f"  HARMONISE step {st.k}: {h}" for h in st.plan_info.get("harmonize", [])]
     return "\n".join(L)
 
 
@@ -697,7 +813,8 @@ def run_steps(plan: CombinePlan, out: Path, settings: Dict[str, Any], *, n_worke
         od = out / f"step{st.k}_{plan.infos[st.b]['stem']}"
         progress(f"combine: step {st.k}/{len(plan.steps)}: {st.pair}")
         r = staged_merge(a, st.b, str(od), phase_map=st.phase_map or None, sublattice_map=st.sublattice_map or None,
-                         decisions=st.decisions, policy="ask", ternary_temperatures_c=list(ternary_temperatures_c),
+                         decisions=st.decisions, policy="ask", extensions=st.extensions or None,
+                         ternary_temperatures_c=list(ternary_temperatures_c),
                          tmin_c=settings["tmin_c"], tmax_c=settings["tmax_c"],
                          composition_step=settings["x_step"], temperature_step=settings["t_step"],
                          ternary_step=settings["tern_step"], n_workers=n_workers, timeout_s=settings["timeout"],
@@ -727,7 +844,13 @@ class StepContext:
         self.tag = f"step {k}: {a_label} + {b_label}"
         self.a_label, self.b_label = a_label, b_label
         self.shared = set(r["shared"])
-        self.plan = ts.plan_merge([r["A_eff"], r["B"]], r["decisions"], "ask")
+        self.plan = ts.plan_merge([r["A_eff"], r.get("B_merge") or r["B"]], r["decisions"], "ask")
+        # 'extend' decisions: every change of the extended phase (and of B's source phase) is theirs
+        self.extended: Dict[str, str] = {}
+        for x in (r.get("extensions") or {}).get("reports", []):
+            eid = f"step{k}:phase:{x['base_phase']}"
+            self.extended[x["base_phase"]] = eid
+            self.extended[x["add_phase"]] = eid
         self.conf = {c.id: c for c in self.plan.conflicts}
         self.groups: Dict[str, List] = {}
         for c in self.plan.conflicts:
@@ -753,6 +876,8 @@ class StepContext:
     def classify_param(self, p: ts.ParamChange, side: str, X: ts.StageView, Y: ts.StageView) -> Optional[str]:
         k = self.k
         ph = p.phase
+        if ph in self.extended:
+            return self.extended[ph]
         if p.kind == "value":
             if side == "B" and len(p.elements) == 1 and next(iter(p.elements)) in self.shared:
                 return self._unary_entry(next(iter(p.elements)))
@@ -785,6 +910,8 @@ class StepContext:
 
     def classify_model(self, m: ts.ModelChange, side: str) -> Optional[str]:
         ph = m.phase
+        if ph in self.extended:
+            return self.extended[ph]
         if m.kind == "phase_added":
             return self._enters_entry(ph, side)
         if m.kind == "phase_removed":
@@ -986,6 +1113,14 @@ def build_decision_log(plan: CombinePlan, results: List[Dict[str, Any]], log: De
                         e.add_affected(sub)
             if n.kind == "binary":
                 e.add_affected(_sysname(n.cid.split(":", 1)[1].split("-")))
+        # 'extend' decisions: the mapping, basis, imported parameters, collisions, missing end-members, GM checks
+        for x in (r.get("extensions") or {}).get("reports", []):
+            eid = f"step{k}:phase:{x['base_phase']}"
+            who, why = parse_reason(reasons.get("phase_harmonization"))
+            e = log.get(eid) or log.add(Entry(eid, tag, x["base_phase"], ["extend", "separate"], "extend", who,
+                                              why or NOT_GIVEN, "harmonize"))
+            e.kind = "harmonize"
+            e.add_evidence(*[ln for ln in x["text"].split("\n") if ln], limit=30)
         # automatic (staged rule) conflicts and alias separation
         for c in sc.plan.conflicts:
             cid = c.group if (c.kind == "parameter" and c.group) else c.id
@@ -1043,7 +1178,7 @@ def build_decision_log(plan: CombinePlan, results: List[Dict[str, Any]], log: De
                 e.add_evidence(*(ser + uns)[:4])
         # attribution: B side (B_eff -> Q) and A side (A -> Q)
         Bv = parse_tdb(r["B"])
-        ren = ts.stage_renames(Bv, r.get("phase_renames") or {})
+        ren = ts.stage_renames(Bv, {**(r.get("phase_renames") or {}), **(r.get("extension_renames") or {})})
         EB = sorted(Bv.real_elements)
         Q = parse_tdb(r["versions"]["Q"].path)
         XB = ts.StageView(Bv, "B", elements=EB, rename=ren)
@@ -1176,6 +1311,21 @@ def exactness_checks(results: List[Dict[str, Any]], log: DecisionLog) -> List[Di
                 e = log.get(f"step{k}:norm:{nn.phase}:magnetic-exception")
                 if e is not None:
                     e.add_evidence(_gm_text(res))
+        for x in (r.get("extensions") or {}).get("reports", []):
+            eid = f"step{k}:phase:{x['base_phase']}"
+            ch = x.get("checks") or {}
+            rows = []
+            if ch.get("base"):
+                rows.append((f"extend: {x['base_phase']} on the base's elements unchanged"
+                             + (f" (rescaled x{x['rescale_base']['k_text']})" if x["rescale_base"].get("k") not in
+                                (None, 1.0) else ""), ch["base"]))
+            for a in ch.get("add") or []:
+                if a.get("expected_exact"):
+                    rows.append((f"extend: B's {x['add_phase']} reproduced on {a.get('system')}", a))
+            for tr, res in rows:
+                out.append({"step": k, "file": f"{_stem(r['A_eff'])}", "phase": x["base_phase"], "transform": tr,
+                            "max_rel": res.get("max_rel", math.nan), "n": res.get("n", 0),
+                            **({"error": res["error"]} if res.get("error") else {})})
     for c in out:
         c["ok"] = bool(math.isfinite(c.get("max_rel", math.nan)) and c["max_rel"] <= GM_TOL)
     return out
@@ -1893,7 +2043,7 @@ def build_state(plan: CombinePlan, results: List[Dict], log: DecisionLog, attr, 
     for st, r in zip(plan.steps, results):
         info = plan.infos[st.b]
         Bv = parse_tdb(r["B"])
-        ren = r.get("phase_renames") or {}
+        ren = {**(r.get("phase_renames") or {}), **(r.get("extension_renames") or {})}
         eff_ren = ts.stage_renames(Bv, ren)
         norm = _norm_renames(r["notes"])
         name_map = {}
@@ -1916,6 +2066,7 @@ def build_state(plan: CombinePlan, results: List[Dict], log: DecisionLog, attr, 
                       "A_eff": r["A_eff"], "B": r["B"], "B_original": r["B_original"], "Q": r["versions"]["Q"].path,
                       "out_dir": str(Path(r["files"]["xlsx"]).parent), "decisions": st.decisions,
                       "phase_map": st.phase_map, "sublattice_map": _jsonable(st.sublattice_map),
+                      "extensions": _jsonable(st.extensions),
                       "phase_renames": r.get("phase_renames") or {}, "shared": r["shared"],
                       "needed": [asdict(n) for n in st.needed], "warnings": st.warnings,
                       "deck": r["files"].get("deck", ""),
@@ -1958,7 +2109,7 @@ def combine_databases(tdbs: Sequence[str], output_dir: str, *, base: Optional[st
                       validate_temperatures_c: Optional[Sequence[float]] = None, n_workers: Optional[int] = None,
                       force_replot=False, unary50: Optional[str] = "auto", tmin_c: float = 300.0,
                       tmax_c: float = 3000.0, composition_step: float = 0.02, temperature_step: float = 10.0,
-                      ternary_step: float = 0.02, lint: bool = True,
+                      ternary_step: float = 0.02, lint: bool = True, phase_harmonization=None,
                       progress: Callable[[str], None] = lambda s: None,
                       on_decisions: Optional[Callable[[List[Dict]], None]] = None) -> Dict[str, Any]:
     """Plan -> (decisions) -> staged merges -> validation -> reports.  Returns {'written': bool, 'text': ...}."""
@@ -1971,7 +2122,8 @@ def combine_databases(tdbs: Sequence[str], output_dir: str, *, base: Optional[st
     reasons = dict(decision_reasons or {})
     plan = plan_combination(paths, str(out / "plan"), base=base, order=order, decisions=decisions,
                             decision_reasons=reasons, phase_map=phase_map, sublattice_map=sublattice_map,
-                            policy=policy, unary50=unary50, progress=progress)
+                            policy=policy, unary50=unary50, phase_harmonization=phase_harmonization,
+                            progress=progress)
     plan_json = {"order": plan.order, "order_reasons": plan.order_reasons,
                  "needed": [asdict(n) for n in plan.needed], "pairs": {f"{_stem(a)} + {_stem(b)}": ev.overall
                                                                       for (a, b), ev in plan.pair_eval.items()}}
@@ -2078,12 +2230,15 @@ def register(tb) -> None:
             {"tdbs": {"type": "array", "items": S, "description": ">= 2 TDBs"},
              "base": S, "order": {"type": "array", "items": S, "description": "full merge order, base first"},
              "decisions": {"type": "object", "description": "{id from the list: option}; 'step2:phase:MU_D85', "
-                                                            "global 'phase:X' too"},
+                                                            "global 'phase:X' too; phase options also "
+                                                            "'extend' or {'extend': {phase, components, ...}}"},
              "decision_reasons": {"type": "object", "description": "{id: 'user: <their words>' | 'agent: <why>'}; "
                                                                    "also 'plan:base', 'plan:order'"},
              "policy": {"type": "string", "enum": ["ask", "first", "last"],
                         "description": "fill missing decisions (logged as policy); only if the user says so"},
              "phase_map": {"type": "object", "description": "{B phase: A phase} or {'step2': {...}}"},
+             "phase_harmonization": {"type": "object", "description": "{A phase: {source_phase, components, "
+                                                                    "sublattice_map, ...}}: decision 'extend'"},
              "sublattice_map": {"type": "object"},
              "ternary_temperatures_c": {**NUMS, "description": "isotherms for staged steps + validation; default []"},
              "validate_temperatures_c": {**NUMS, "description": "map F's ternaries no source describes "
@@ -2098,7 +2253,7 @@ def register(tb) -> None:
                                phase_map=None, sublattice_map=None, ternary_temperatures_c=None,
                                validate_temperatures_c=None, output_dir=None, n_workers=None, force_replot=False,
                                tmin_c: float = 300.0, tmax_c: float = 3000.0, unary50: str = "auto",
-                               validate_only: bool = False, final_tdb=None):
+                               validate_only: bool = False, final_tdb=None, phase_harmonization=None):
         paths = [tb._find_tdb(t) for t in tdbs or []]
         od = tb.outdir(output_dir, default_output_dir(paths))
         if validate_only:
@@ -2121,7 +2276,7 @@ def register(tb) -> None:
                               ternary_temperatures_c=ternary_temperatures_c or [],
                               validate_temperatures_c=validate_temperatures_c, n_workers=n_workers,
                               force_replot=force_replot, unary50=unary50, tmin_c=tmin_c, tmax_c=tmax_c,
-                              progress=tb.ui.progress,
+                              phase_harmonization=phase_harmonization, progress=tb.ui.progress,
                               on_decisions=lambda entries: _record(tb, entries, "combine_databases"))
         if not r["written"]:
             return r["text"], []

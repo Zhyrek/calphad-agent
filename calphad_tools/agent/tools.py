@@ -31,7 +31,8 @@ PLUGIN_MODULES = ["calphad_tools.figures", "calphad_tools.figdata", "calphad_too
                   "calphad_tools.jobs", "calphad_tools.espei_run", "calphad_tools.param_tools",
                   "calphad_tools.dbformats", "calphad_tools.pcache", "calphad_tools.compare_system",
                   "calphad_tools.recall", "calphad_tools.phase_inventory", "calphad_tools.system_coverage",
-                  "calphad_tools.compatibility", "calphad_tools.staged_merge", "calphad_tools.combine"]
+                  "calphad_tools.compatibility", "calphad_tools.staged_merge", "calphad_tools.combine",
+                  "calphad_tools.tdb_query", "calphad_tools.tdb_validate", "calphad_tools.harmonize"]
 
 
 # tools sent to the model with their full description and argument schema; every other tool is sent as one line

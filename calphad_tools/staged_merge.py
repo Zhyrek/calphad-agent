@@ -70,7 +70,11 @@ def _stem(p: str) -> str:
 # =============================================================================================== versions
 def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, sublattice_map=None,
                    decisions: Optional[Dict[str, str]] = None, policy: str = "ask",
+                   extensions: Optional[Dict[str, Dict]] = None,
                    progress: Callable[[str], None] = lambda s: None) -> Dict[str, Any]:
+    """``extensions`` {A phase: spec (harmonize.extension_spec)}: 'extend' decisions - A's phase extended with B's
+    components (harmonize.staged_extensions; A_eff = the extended A, and B's source phase is left out of the
+    merge, B_merge)."""
     from .merge import validate
     out = Path(out_dir)
     work = out / "_work"
@@ -110,11 +114,29 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
     if not shared:
         raise ValueError(f"{Path(a_path).name} and {Path(b_path).name} share no element: nothing to stage")
     VA, VB = ts.StageView(An, "A"), ts.StageView(Bn, "B")
+    ext, b_merge = None, b_eff
+    if extensions:
+        from .harmonize import extension_spec, jsonable_report, staged_extensions
+        progress("staged_merge: phase harmonisation ('extend' decisions)")
+        ren = {n.phase: n.detail.split()[1] for n in notes if n.action == "renamed"}
+        specs = {}
+        for tgt, v in extensions.items():
+            if isinstance(v, dict) and "target" in v and "phase" in v and "normalization" in v:
+                specs[tgt.upper()] = v
+            else:
+                sp = extension_spec(tgt, v, An)
+                sp["phase"] = ren.get(sp["phase"], sp["phase"])
+                specs[tgt.upper()] = extension_spec(tgt, {**{k: x for k, x in sp.items() if k in (
+                    "sublattice_map", "add_constituents", "components", "normalization", "collision", "magnetic",
+                    "include_functions") and x is not None}, "phase": sp["phase"]}, An, Bn)
+        ext = staged_extensions(a_eff, b_eff, specs, str(out), shared, progress=progress)
+        a_eff, b_merge = ext["A_ext"], ext["B_merge"]
+        ext["reports"] = [jsonable_report(x) for x in ext["reports"]]
     # decisions for Q: name aliases stay separate (names only via normalisation / phase_map), what the stages
     # settle goes to A, the rest is the user's
     user = dict(decisions or {})
-    dec = ts.alias_separate([a_eff, b_eff], user)
-    plan0 = ts.plan_merge([a_eff, b_eff], dec, "ask")
+    dec = ts.alias_separate([a_eff, b_merge], user)
+    plan0 = ts.plan_merge([a_eff, b_merge], dec, "ask")
     auto = ts.auto_decisions(plan0, shared)
     dec = {**auto, **dec, **user}
     versions: Dict[str, Version] = {"B": Version("B", b_eff, f"{Path(b_path).name}" + (" (normalised)" if changed
@@ -133,10 +155,12 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
                       [f"B2 = B1 with every unary parameter of {', '.join(shared)} from {Path(a_path).name} "
                        f"(phases both have)"] + log2)
     versions["B2"] = Version("B2", p2, STEP_DESC["B2"], log2)
-    plan = ts.plan_merge([a_eff, b_eff], dec, policy)
+    plan = ts.plan_merge([a_eff, b_merge], dec, policy)
     result: Dict[str, Any] = {"versions": versions, "notes": notes, "shared": shared, "decisions": dec,
                               "auto_decisions": auto, "A": a_path, "A_eff": a_eff, "B": b_eff,
-                              "B_original": b_path,
+                              "B_original": b_path, "B_merge": b_merge,
+                              # 'extend' decisions: reports and {B phase: A phase} of the source phases
+                              "extensions": ext, "extension_renames": (ext or {}).get("renames", {}),
                               # B's phases a 'rename' decision kept under a new name in Q: {B name: Q name}
                               "phase_renames": plan.renames_of(1)}
     if plan.pending:
@@ -144,7 +168,8 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
         return result
     # B3: A's unary+binary description of the shared elements merged into B2 (A wins)
     progress("staged_merge: B3 (A's shared binaries)")
-    a_sub = ts.write_tdb(ts.restrict_tdb(An, shared, max_elements=2), str(work / f"{sa}_shared_unary_binary.tdb"))
+    a_src = parse_tdb(a_eff) if ext else An           # the extended A when an 'extend' decision applies
+    a_sub = ts.write_tdb(ts.restrict_tdb(a_src, shared, max_elements=2), str(work / f"{sa}_shared_unary_binary.tdb"))
     d3 = ts.alias_separate([a_sub, p2], dec)
     plan3, text3 = ts.merged_text([a_sub, p2], d3, "first")
     p3 = str(out / f"B3_{sb}+{sa}-unaries-binaries.tdb")
@@ -688,7 +713,7 @@ def write_xlsx(steps: List[Step], plots, versions: Dict[str, Version], path: str
 
 # =============================================================================================== driver
 def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, sublattice_map=None, decisions=None,
-                 policy: str = "ask", ternary_temperatures_c: Sequence[float] = (1000.0,), tmin_c: float = 300.0,
+                 policy: str = "ask", extensions: Optional[Dict[str, Dict]] = None, ternary_temperatures_c: Sequence[float] = (1000.0,), tmin_c: float = 300.0,
                  tmax_c: float = 3000.0, composition_step: float = 0.02, temperature_step: float = 10.0,
                  ternary_step: float = 0.02, plot: bool = True, tol_K: float = 5.0, tol_x: float = 0.01,
                  n_workers: Optional[int] = None, timeout_s: float = 900.0, force_replot=False,
@@ -699,7 +724,7 @@ def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, subl
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     r = build_versions(a_path, b_path, str(out), phase_map=phase_map, sublattice_map=sublattice_map,
-                       decisions=decisions, policy=policy, progress=progress)
+                       decisions=decisions, policy=policy, extensions=extensions, progress=progress)
     versions: Dict[str, Version] = r["versions"]
     if r.get("unmapped"):
         r["written"] = False
@@ -714,7 +739,7 @@ def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, subl
     views = {}
     # a phase of B kept under a new name in Q (decision 'rename', e.g. MU_D85 -> MU_D85_2) is the same phase: the
     # B-side versions that still call it by B's name are viewed (and their invariants matched) under Q's name
-    renames = r.get("phase_renames") or {}
+    renames = {**(r.get("phase_renames") or {}), **(r.get("extension_renames") or {})}
     inv_rename: Dict[str, Dict[str, str]] = {}
     for lab in ("B", "B1", "B2", "B3", "Q"):
         tdb = parse_tdb(versions[lab].path)
@@ -855,6 +880,8 @@ def summary_text(r: Dict[str, Any], rel=lambda p: p) -> str:
         L.append(f"Kept under a new name: {old_n} of {Path(r['B_original']).name} is {new_n} in Q (its model is "
                  f"incompatible with A's {old_n}; decision 'rename'); B..B3's {old_n} is compared with Q's {new_n} as "
                  f"the same phase" + (f", and {', '.join(where)} replotted in Q as a check" if where else ""))
+    for x in (r.get("extensions") or {}).get("reports", []):
+        L.append("Extended (decision 'extend'): " + clip(" | ".join(x["text"].split("\n")[:3]), 400))
     cands = [n.text() for n in r["notes"] if n.action in ("candidate", "incompatible", "unmapped", "not_rescaled")]
     if cands:
         L.append("Not normalised: " + "; ".join(cands[:3]) + (f" (+{len(cands) - 3})" if len(cands) > 3 else ""))
@@ -903,6 +930,8 @@ def register(tb) -> None:
              "decisions": {"type": "object", "additionalProperties": {"type": "string"}},
              "policy": {"type": "string", "enum": ["ask", "first", "last"]},
              "phase_map": {"type": "object"}, "sublattice_map": {"type": "object"},
+             "extend": {"type": "object", "description": "{A phase: {phase: B phase, components, ...}} (as "
+                                                         "extend_phase)"},
              "ternary_temperatures_c": {"type": "array", "items": N, "description": "isotherms, default [1000]"},
              "tmin_c": N, "tmax_c": N, "composition_step": N, "temperature_step": N,
              "plot": {"type": "boolean", "description": "default true; false = TDBs + parameter/model diffs only"},
@@ -915,14 +944,15 @@ def register(tb) -> None:
                           sublattice_map=None, ternary_temperatures_c=None, tmin_c: float = 300.0,
                           tmax_c: float = 3000.0, composition_step: float = 0.02, temperature_step: float = 10.0,
                           plot: bool = True, tol_K: float = 5.0, n_workers: Optional[int] = None,
-                          force_replot=False):
+                          force_replot=False, extend=None):
         a, b = tb._find_tdb(base_tdb), tb._find_tdb(add_tdb)
         key = f"staged|{a}|{b}"
         dec = {**tb.merge_decisions.get(key, {}), **(decisions or {})}
         tb.merge_decisions[key] = dec
         od = tb.outdir(output_dir, f"staged_merge_{Path(a).stem}+{Path(b).stem}")
         r = staged_merge(a, b, str(od), phase_map=phase_map, sublattice_map=sublattice_map, decisions=dec,
-                         policy=policy, ternary_temperatures_c=(1000.0,) if ternary_temperatures_c is None
+                         policy=policy, extensions=extend or None,
+                         ternary_temperatures_c=(1000.0,) if ternary_temperatures_c is None
                          else ternary_temperatures_c, tmin_c=tmin_c, tmax_c=tmax_c,
                          composition_step=composition_step, temperature_step=temperature_step, plot=plot,
                          tol_K=tol_K, n_workers=n_workers, force_replot=force_replot, progress=tb.ui.progress)

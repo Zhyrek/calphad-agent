@@ -31,7 +31,8 @@ import numpy as np
 
 from .merge import _build_raw_name, _split_raw_name, plan_merge, render_tdb
 from .pwinline import MissingRef, evaluate, inline, scale
-from .tdbparse import TDB, Function, Parameter, Piecewise, parse_param_name, parse_tdb, wrap_tdb_line
+from .tdbparse import (TDB, Function, Parameter, Piecewise, parse_param_name, parse_tdb, scale_piecewise,
+                       wrap_tdb_line)
 from .tdbtables import Subsystem, key_constituents, make_key, pw_segments, row_sort_key
 
 STAGE_GRID = (298.15, 6000.0)          # temperature range of SER (SGTE unary) comparisons (K)
@@ -609,9 +610,8 @@ def rename_phases(db: TDB, mapping: Dict[str, str]) -> List[str]:
 
 # =============================================================================================== substitutions
 def _neg_piecewise(pw: Piecewise, factor: float) -> Piecewise:
-    if factor == 1.0:
-        return copy.deepcopy(pw)
-    return Piecewise([(lo, hi, f"-({e})") for lo, hi, e in pw.ranges], pw.reference)
+    """``pw`` with the sign ``factor`` (+1 / -1) applied range by range (tdbparse.scale_piecewise)."""
+    return scale_piecewise(pw, -1.0 if factor < 0 else 1.0)
 
 
 def _function_closure(db: TDB, names: Sequence[str]) -> List[str]:
@@ -917,9 +917,8 @@ def sublattice_mapping(pa, pb, override=None, tol: float = 1e-3):
 
 
 def _scale_pw(pw: Piecewise, k: float) -> Piecewise:
-    if k == 1.0:
-        return pw
-    return Piecewise([(lo, hi, f"{k!r}*({e})") for lo, hi, e in pw.ranges], pw.reference)
+    """G/L rescale: each T range multiplied separately (tdbparse.scale_piecewise)."""
+    return scale_piecewise(pw, k)
 
 
 def _permute_raw(raw: str, new_from_old: List[int]) -> str:

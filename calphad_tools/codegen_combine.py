@@ -38,6 +38,14 @@ def merge_step(k, a, b, step):
     for n in notes:
         print(f"step {k} normalisation: {n.text()}")
     shared = sorted(set(A.real_elements) & set(parse_tdb(b_eff).real_elements))
+    if step.get("extensions"):
+        # [calphad_tools] 'extend' decisions (phase harmonisation): A's phase extended with B's components,
+        # B's source phase left out of the merge - harmonize.staged_extensions has no standalone copy
+        from calphad_tools.harmonize import staged_extensions
+        ext = staged_extensions(a_eff, b_eff, step["extensions"], str(OUT / f"step{k}_extend"), shared, verify=False)
+        a_eff, b_eff = ext["A_ext"], ext["B_merge"]
+        for x in ext["reports"]:
+            print(f"step {k} extend: " + x["text"].split("\n")[0])
     dec = alias_separate([a_eff, b_eff], step["decisions"])
     auto = auto_decisions(plan_merge([a_eff, b_eff], dec, "ask"), shared)
     dec = {**auto, **dec, **step["decisions"]}
@@ -177,8 +185,9 @@ def cells(state: Dict[str, Any], src: Callable[[str], str], ctx: Ctx) -> List[Tu
     helpers = _helpers(ctx)
     order = [Path(s["path"]).stem for s in state["sources"]]
     srcs = "{\n" + "".join(f"    {Path(s['path']).stem!r}: {src(s['path'])},\n" for s in state["sources"]) + "}"
-    steps = [{"phase_map": st["phase_map"], "sublattice_map": st["sublattice_map"], "decisions": st["decisions"]}
-             for st in state["steps"]]
+    steps = [{"phase_map": st["phase_map"], "sublattice_map": st["sublattice_map"], "decisions": st["decisions"],
+              **({"extensions": st["extensions"]} if st.get("extensions") else {})} for st in state["steps"]]
+    ext = any(st.get("extensions") for st in state["steps"])
     consts = (f"SOURCES = {srcs}\n"
               f"ORDER = {Ctx.py(order)}   # merge order (base first)\n"
               f"# per step: normalisation maps and the decisions of the log (user / agent / policy)\n"
@@ -194,8 +203,9 @@ def cells(state: Dict[str, Any], src: Callable[[str], str], ctx: Ctx) -> List[Tu
     grid = (f"CHECKS = {Ctx.py(checks)}\n"
             f"TMIN_C, TMAX_C = {state['settings']['tmin_c']!r}, {state['settings']['tmax_c']!r}\n"
             f"GRID = {Ctx.py(state['grid'])}\n")
-    return [("rebuild the combined database (calphad_tools' TDB parser and merge planner copied in)",
-             helpers + consts + _REBUILD, True),
+    return [("rebuild the combined database (calphad_tools' TDB parser and merge planner copied in"
+             + ("; the 'extend' decisions through calphad_tools.harmonize)" if ext else ")"),
+             helpers + consts + _REBUILD, not ext),
             ("equilibrium-grid agreement and property spot check (pycalphad)", grid + _GRIDS, True),
             ("validation overlays, invariants and verdicts", _CT_VALIDATION, False)]
 

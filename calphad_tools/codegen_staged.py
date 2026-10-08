@@ -150,6 +150,8 @@ print("\nwrote", ", ".join(str(p) for p in versions.values()))
 
 @generator("staged_merge")
 def _gen_staged(args, ctx: Ctx) -> str:
+    if args.get("extend"):
+        ctx.fallback("'extend' decisions (phase harmonisation) have no standalone generator")
     a, b = ctx.tdb(args["base_tdb"]), ctx.tdb(args["add_tdb"])
     key = f"staged|{ctx.tb._find_tdb(args['base_tdb'])}|{ctx.tb._find_tdb(args['add_tdb'])}"
     dec = {**(getattr(ctx.tb, "merge_decisions", {}) or {}).get(key, {}), **(args.get("decisions") or {})}

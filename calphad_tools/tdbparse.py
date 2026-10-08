@@ -131,6 +131,48 @@ def _fmt_num(x: float) -> str:
     return repr(x)
 
 
+def fmt_ratio(r: float) -> str:
+    """A site ratio as written in a PHASE line: up to 15 significant digits, so a value parsed from text (or set from
+    an exact decimal such as 0.105263157894737) is written back unchanged ('{:g}' would cut it to 6 digits)."""
+    return f"{float(r):.15g}"
+
+
+def _is_number(e: str) -> bool:
+    return re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[EeDd][+-]?\d+)?", e.strip()) is not None
+
+
+def scale_expr(e: str, k: float) -> str:
+    """One T-range expression multiplied by ``k`` as valid TDB text: ``k*(e)`` (``(e)/n`` when k = 1/n, ``-(e)`` for
+    k = -1, a plain number when ``e`` is one)."""
+    k = float(k)
+    if k == 1.0:
+        return e
+    if _is_number(e):
+        x = float(re.sub(r"[Dd]", "E", e))
+        n = 1.0 / k if k != 0.0 else 0.0
+        if k != 0.0 and abs(k) < 1.0 and abs(n - round(n)) <= 1e-12 * abs(n):
+            return repr(x / round(n))                  # exact division (x/3, not x*0.333...)
+        return repr(x * k)
+    if k == -1.0:
+        return f"-({e})"
+    if k != 0.0 and abs(k) < 1.0:
+        n = 1.0 / k
+        if abs(n - round(n)) <= 1e-12 * abs(n):
+            return f"({e})/{int(round(n))}" if n > 0 else f"-({e})/{int(round(-n))}"
+    if k == int(k) and abs(k) < 1e15:
+        return f"{int(k)}*({e})"
+    return f"{k!r}*({e})"
+
+
+def scale_piecewise(pw: "Piecewise", k: float) -> "Piecewise":
+    """``pw`` times ``k``, scaling EACH temperature range's expression separately (never the piecewise object as a
+    whole), so the result is a valid TDB piecewise with the same breakpoints.  The one helper every rescale of a
+    parameter goes through (tdbstage normalisation, harmonize)."""
+    if float(k) == 1.0:
+        return Piecewise(list(pw.ranges), pw.reference)
+    return Piecewise([(lo, hi, scale_expr(e, k)) for lo, hi, e in pw.ranges], pw.reference)
+
+
 @dataclass
 class Piecewise:
     """A TDB piecewise-in-T expression: [(T_low, T_high, expr), ...]."""
@@ -390,7 +432,7 @@ class Phase:
         return (len(r), tuple(round(x, 6) for x in r))
 
     def to_tdb(self) -> List[str]:
-        ratios = " ".join(f"{r:g}" for r in self.site_ratios)
+        ratios = " ".join(fmt_ratio(r) for r in self.site_ratios)
         lines = [f" PHASE {self.name}{self.suffix} {self.type_codes or '%'} "
                  f"{self.n_sublattices} {ratios} !"]
         if self.constituents:

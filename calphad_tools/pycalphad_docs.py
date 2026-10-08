@@ -848,13 +848,16 @@ TASKS: List[Tuple[str, List[str]]] = [
     ("calculations feel slow / cache statistics / clear the model & compiled-code cache", ["calc_cache"]),
     ("symbolic Gibbs energy (ref/ideal/excess/magnetic/ordering) and parameter list of a phase",
      ["export_phase_model"]),
+    ("TDB internals (phase models, parameters, functions, type defs, collisions); find a symbol; validate an edit",
+     ["query_tdb", "resolve_tdb_symbol", "validate_tdb_edit"]),
     ("TDB endmember/interaction property vs ESPEI thermochemical data", ["plot_parameter_vs_data"]),
     ("composition unit conversion (wt% <-> at% / mole fraction)", ["convert_composition"]),
     ("compare / merge TDBs (2-way full diff; N-way table for one element subsystem with inlined functions, "
      "formation energies, phase candidates -> phase_map on a second call)",
      ["compare_tdbs", "compare_system", "merge_tdbs"]),
     ("can TDB B join base A (staged check, unary50, new end-members); merge step by step with diagrams; N TDBs end "
-     "to end with decision log + validation", ["evaluate_compatibility", "staged_merge", "combine_databases"]),
+     "to end with decision log + validation; extend a phase; formula units",
+     ["evaluate_compatibility", "staged_merge", "combine_databases", "extend_phase", "normalize_phase_formula_unit"]),
     ("experimental data -> ESPEI datasets; Flux batch scripts",
      ["parse_dataplot_exp", "convert_dataplot_exp_to_zpf", "convert_pop_to_zpf", "convert_csv_to_zpf",
       "write_zpf_dataset", "check_espei_datasets", "make_phase_models", "generate_espei_flux_batch"]),
@@ -940,7 +943,7 @@ class _Recorder:
         return getattr(self._tb, item)
 
 
-def _first_sentence(text: str, n: int = 110) -> str:
+def _first_sentence(text: str, n: int = 100) -> str:
     text = " ".join(text.split())
     m = re.match(r"(.+?(?<!e\.g)(?<!i\.e)(?<!etc)\.)(\s+[A-Z(]|$)", text)
     s = m.group(1) if m else text
