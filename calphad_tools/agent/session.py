@@ -78,6 +78,7 @@ output: it gives standalone pycalphad/matplotlib code including the steps it was
 image='@last' (no recalculation); to repeat a calculation with different settings use rerun_call.
 - Tools whose description ends in "[tool_help]" are listed in short form (purpose + argument names, * = required):
 before using one for the first time, call tool_help with the names of ALL the tools you are about to use (one call).
+The other tools show their arguments without explanations; tool_help gives those too when an argument is unclear.
 - Keep the conversation small: the tools' replies already summarise what they wrote - don't open the PowerPoints,
 workbooks or images they produced just to check them. Look at an image (view_image) only when you need to see it;
 tables go through inspect_data.

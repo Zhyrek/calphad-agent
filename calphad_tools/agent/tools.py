@@ -35,8 +35,9 @@ PLUGIN_MODULES = ["calphad_tools.figures", "calphad_tools.figdata", "calphad_too
                   "calphad_tools.tdb_query", "calphad_tools.tdb_validate", "calphad_tools.harmonize"]
 
 
-# tools sent to the model with their full description and argument schema; every other tool is sent as one line
-# plus its argument names, and the model reads the details with tool_help (once, when it first needs the tool)
+# tools sent to the model with their full description and argument schema (minus the per-argument explanations);
+# every other tool is sent as one line plus its argument names, and the model reads the details with tool_help
+# (several tools per call, once, when it first needs them)
 CORE_TOOLS = ("list_files", "find_databases", "tdb_info", "calculate_equilibrium", "map_phase_diagram", "make_plot",
               "edit_figure", "describe_figure", "view_image", "inspect_data", "recent_results", "ask_user",
               "show_code", "tool_help", "list_calphad_capabilities")
@@ -57,6 +58,15 @@ def _add_line(text: str, line: str) -> str:
         head, _, rest = text.partition("\nFiles:\n")
         return f"{head}\n{line}\nFiles:\n{rest}"
     return text.rstrip("\n") + "\n" + line.replace("all files below", "all files of this call")
+
+
+def _strip_arg_docs(schema):
+    """A JSON schema without its "description" texts (types, enums, items and required kept)."""
+    if isinstance(schema, dict):
+        return {k: _strip_arg_docs(v) for k, v in schema.items() if k != "description"}
+    if isinstance(schema, list):
+        return [_strip_arg_docs(v) for v in schema]
+    return schema
 
 
 def _summary(desc: str, n: int = 170) -> str:
@@ -256,7 +266,9 @@ class ToolBox:
         for t in self.tools.values():
             sp = t.spec
             if sp.name in core:
-                out.append(sp)
+                # full description and argument names / types / enums / required, but not the per-argument
+                # explanations (those come with tool_help, several tools per call)
+                out.append(ToolSpec(sp.name, sp.description, _strip_arg_docs(sp.parameters)))
                 continue
             props = (sp.parameters or {}).get("properties", {}) or {}
             req = set((sp.parameters or {}).get("required", []) or [])

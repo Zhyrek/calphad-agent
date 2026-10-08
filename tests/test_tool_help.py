@@ -32,7 +32,11 @@ def test_compact_list_is_small_and_static(tmp_path):
     by_name = {t.name: t for t in full}
     for t in compact:
         if t.name in CORE_TOOLS:
-            assert t == by_name[t.name]                                   # sent exactly as defined (full schema)
+            f = by_name[t.name]                                           # full description, schema without the
+            assert t.description == f.description                         # per-argument explanations
+            assert set(t.parameters["properties"]) == set(f.parameters["properties"])
+            assert t.parameters.get("required") == f.parameters.get("required")
+            assert "description" not in json.dumps(t.parameters)
         else:
             assert t.description.endswith("[tool_help]") and t.parameters == {"type": "object"}
             assert "Args:" in t.description
@@ -71,7 +75,7 @@ def test_agent_looks_up_then_uses_a_short_tool(tmp_path):
     reqs = [json.loads(line) for line in (tmp_path / "req.jsonl").read_text().splitlines()]
     sent = {t["function"]["name"]: t["function"] for t in reqs[0]["tools"]}
     assert sent["convert_composition"]["parameters"] == {"type": "object"}     # short form on the wire
-    assert sent["map_phase_diagram"]["parameters"].get("properties")          # core tool in full
-    assert len(json.dumps(reqs[0]["tools"])) // 4 < 10000
+    assert sent["map_phase_diagram"]["parameters"].get("properties")          # core tool: names and types
+    assert len(json.dumps(reqs[0]["tools"])) // 4 < 9000
     assert all(r["tools"] == reqs[0]["tools"] for r in reqs)                  # never changes mid-conversation
     assert "## convert_composition" in json.dumps(reqs[1]["messages"])        # the help came back once
