@@ -5,7 +5,7 @@ symengine) so the TDB text handling is exactly the tool's:
 
 * evaluate_compatibility: also copies compatibility.py and runs the same six stages (text + Excel; the short
   PowerPoint is left out, and phase-name candidates from compare_system are only the normalisation ones).
-* staged_merge: normalises B (and, for a magnetic B phase with ~1 atom/fu, rescales A's phase to it), writes B1, B2, B3, Q (and A1, A2) with the same text substitutions / merge plans and
+* staged_merge: normalises B (and, for a magnetic B phase, rescales A's phase to it - the magnetic basis rule), writes B1, B2, B3, Q (and A1, A2) with the same text substitutions / merge plans and
   the decisions the tool used, prints the subsystem changes between consecutive versions, loads every version in
   pycalphad and draws the binaries / ternary isotherms that changed with pycalphad's binplot / ternplot (plain
   colour style, with the tool's mapping check between mapping and plotting; the tool's shaded diagrams, invariant
@@ -98,7 +98,7 @@ for n in notes:
     print("normalisation:", n.text())
 if any(n.action in B_CHANGES for n in notes):
     B = write_tdb(Bn, str(OUT / f"B0_{Path(ADD).stem}_normalised.tdb"))
-if any(n.action in A_CHANGES for n in notes):   # magnetic exception (A takes B's site ratios) or A's read exactly
+if any(n.action in A_CHANGES for n in notes):   # magnetic basis rule (A takes B's site ratios) or A's read exactly
     A = write_tdb(dbA, str(OUT / f"A0_{Path(BASE).stem}_rescaled.tdb"))
 dbA, Bn = parse_tdb(A), parse_tdb(B)
 shared = sorted(set(dbA.real_elements) & set(Bn.real_elements))
@@ -109,7 +109,7 @@ versions["B1"] = write_tdb(B1, str(OUT / f"B1_{Path(ADD).stem}+{Path(BASE).stem}
 B2, log = substitute_unaries(parse_tdb(versions["B1"]), VA, StageView(parse_tdb(versions["B1"]), "B1"), shared)
 versions["B2"] = write_tdb(B2, str(OUT / f"B2_{Path(ADD).stem}+{Path(BASE).stem}-unaries.tdb"), log)
 a_sub = write_tdb(restrict_tdb(dbA, shared, max_elements=2), str(OUT / "A_shared_unary_binary.tdb"))
-plan, text = merged_text([a_sub, versions["B2"]], alias_separate([a_sub, versions["B2"]], DECISIONS), "first",
+plan, text = merged_text([a_sub, versions["B2"]], alias_separate([a_sub, versions["B2"]], DECISIONS), "first:predict",
                          tentative=TENTATIVE)
 versions["B3"] = str(OUT / f"B3_{Path(ADD).stem}+{Path(BASE).stem}-unaries-binaries.tdb")
 Path(versions["B3"]).write_text(text)
@@ -125,7 +125,7 @@ if BUILD_A12:
     for lab, n_el in (("A1", 1), ("A2", 2)):
         part = write_tdb(restrict_tdb(Bn, Bn.real_elements, max_elements=n_el, constituents_from_params=True),
                          str(OUT / f"B_{n_el}_element_terms.tdb"))
-        plan, text = merged_text([A, part], alias_separate([A, part], DECISIONS), "first", tentative=TENTATIVE)
+        plan, text = merged_text([A, part], alias_separate([A, part], DECISIONS), "first:predict", tentative=TENTATIVE)
         versions[lab] = str(OUT / f"{lab}_{Path(BASE).stem}+{Path(ADD).stem}.tdb")
         Path(versions[lab]).write_text(text)
     versions["A"] = A_ORIG

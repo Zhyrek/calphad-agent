@@ -287,7 +287,7 @@ def test_4to2_rescaled_to_2to1_gm_per_atom_identical(tmp_path):
 MAG = " TYPE_DEFINITION M GES A_P_D PHM MAGNETIC -1 0.4 !"
 
 
-def test_magnetic_phase_permuted_exactly_but_never_rescaled(tmp_path):
+def test_magnetic_B_phase_permuted_exactly_and_keeps_its_basis(tmp_path):
     a = tdb_text(HDR, [" PHASE PHM %M 2 2 1 !", " CONSTITUENT PHM :FE:MO: !"],
                  [" PARAMETER G(PHM,FE:MO;0) 298.15 2*GHSERFE+GHSERMO; 6000 N !"], typedefs=[MAG])
     mag_params = [" PARAMETER G(PHM,W:FE;0) 298.15 GHSERWW+2*GHSERFE-9000; 6000 N !",
@@ -303,15 +303,19 @@ def test_magnetic_phase_permuted_exactly_but_never_rescaled(tmp_path):
     assert [n.action for n in notes] == ["reordered"]
     assert "TC(PHM,FE,W:W;0)" in {p.raw_name for p in parse_tdb(bn).parameters}
     assert _check_gm(bp, "PHM", bn, "PHM", [1, 0], [["W"], ["FE", "W"]]) < 1e-9
-    # 2:4 (k = 1/2): pycalphad's IHJ term R*T*ln(beta+1)*f(tau) is per formula unit and not linear in BMAGN ->
-    # not rescaled (reported), so the phase's GM is untouched ...
+    # 2:4 (k = 1/2): pycalphad's IHJ term R*T*ln(beta+1)*f(tau) is per formula unit and not linear in BMAGN -> the
+    # magnetic basis rule: B (magnetic) keeps its basis, A's non-magnetic PHM (no TC/BMAGN) is rescaled to it (x2,
+    # exact), so B's GM is untouched ...
     b2 = tdb_text(HDR, [" PHASE PHM %M 2 2 4 !", " CONSTITUENT PHM :W:FE,W: !"],
                   [p.replace("GHSERWW+2*GHSERFE", "2*GHSERWW+4*GHSERFE").replace("3*GHSERWW", "6*GHSERWW")
                    for p in mag_params], typedefs=[MAG])
     tmp2 = tmp_path / "k"
     tmp2.mkdir()
     bp2, bn2, notes2 = _normalise(tmp2, a, b2)
-    assert "not_rescaled" in [n.action for n in notes2]
+    acts2 = [n.action for n in notes2]
+    assert ts.A_RESCALED in acts2 and "not_rescaled" not in acts2 and "rescaled" not in acts2
+    assert "A (non-magnetic) rescaled to B's magnetic basis (sum 6), k = 2: exact" in \
+        next(n for n in notes2 if n.action == ts.A_RESCALED).detail
     assert parse_tdb(bn2).phases["PHM"].site_ratios == [4.0, 2.0]          # reordered only
     assert _check_gm(bp2, "PHM", bn2, "PHM", [1, 0], [["W"], ["FE", "W"]]) < 1e-9
     # ... whereas the naive rescale (G/L x k, TC/BMAGN unchanged) would change GM: the reason it is refused
@@ -365,7 +369,7 @@ def test_tool_registered_and_show_code(c14_pair, tmp_path):
     assert "Stage 6 replot decision" in r.stdout and "FE:FE" in r.stdout
 
 
-# ------------------------------------------------------------------------------------------ magnetic exception
+# ------------------------------------------------------------------------------------------ magnetic basis rule
 MAG_L12 = " TYPE_DEFINITION M GES A_P_D L12 MAGNETIC -3 0.28 !"
 L12_A_PARAMS = [" PARAMETER G(L12,FE:MO;0) 298.15 3*GHSERFE+GHSERMO-20000+4*T; 6000 N !",
                 " PARAMETER G(L12,MO:MO;0) 298.15 4*GHSERMO+12000; 6000 N !",
@@ -417,16 +421,26 @@ def test_magnetic_exception_rescales_A_to_B(tmp_path):
                                                                                      "TC(L12,FE,W:W;0)"}
 
 
-@pytest.mark.parametrize("a_text,b_text,reason", [
-    (l12_A(magnetic=True), l12_B(), "both phases have magnetic parameters"),
-    (l12_A(ratios="4 2"), l12_B(ratios="1 2"), "3 atoms per formula unit"),
+@pytest.mark.parametrize("a_text,b_text,new_a,exact", [
+    (l12_A(magnetic=True), l12_B(), [0.75, 0.25], False),
+    (l12_A(ratios="4 2"), l12_B(ratios="1 2"), [2.0, 1.0], True),
 ], ids=["A-magnetic-too", "B-not-1-atom-per-fu"])
-def test_magnetic_exception_not_triggered(tmp_path, a_text, b_text, reason):
+def test_magnetic_basis_rule_whatever_B_atoms_per_fu(tmp_path, a_text, b_text, new_a, exact):
+    """The magnetic basis rule (was: 'not_rescaled' for both cases): B magnetic -> A takes B's basis, whatever B's
+    atoms per formula unit; exact for a non-magnetic A, BMAGN end-members exact for a magnetic one."""
     a, b, an, bn, notes = _pair(tmp_path, a_text, b_text)
-    assert ts.A_RESCALED not in [n.action for n in notes]
-    nr = [n for n in notes if n.action == "not_rescaled"]
-    assert nr and reason in nr[0].detail
-    assert parse_tdb(an).phases["L12"].site_ratios == parse_tdb(a).phases["L12"].site_ratios    # A untouched
+    acts = [n.action for n in notes]
+    assert ts.A_RESCALED in acts and "not_rescaled" not in acts
+    note = next(n for n in notes if n.action == ts.A_RESCALED)
+    assert parse_tdb(an).phases["L12"].site_ratios == new_a
+    assert parse_tdb(bn).phases["L12"].site_ratios == new_a                 # B only reordered
+    if exact:
+        assert note.magnetic is None and ": exact" in note.detail
+        assert _check_gm(a, "L12", an, "L12", [0, 1], [["FE", "MO"], ["MO"]]) < 1e-9
+    else:
+        assert note.magnetic["endmembers_exact"] and "BMAGN end-members exact, interior error <=" in note.detail
+        bm = {p.raw_name: p for p in parse_tdb(an).parameters}["BMAGN(L12,FE:MO;0)"]
+        assert float(bm.expr.ranges[0][2]) == pytest.approx(1.5 ** 0.25 - 1, rel=1e-14)
 
 
 def test_non_magnetic_B_near_one_atom_rescaled_to_A_as_before(tmp_path):
@@ -445,6 +459,6 @@ def test_exact_rescale_is_not_a_replot_reason(tmp_path):
     assert not fe_mo.changed and "exact" in fe_mo.reasons()
     s6 = ev.stages[5]
     assert next(r for r in s6.rows if r["database"] == "A" and r["subsystem"] == "Fe-Mo")["replot"] == "no"
-    assert "L12: A rescaled to B's site ratios (B magnetic, 1 atom/fu): exact" in s6.line
-    assert "A rescaled to B (magnetic exception)" in summary_text(ev)
+    assert "L12: A rescaled to B's site ratios (B magnetic, A not): exact, not a change" in s6.line
+    assert "A rescaled to B's basis - A (non-magnetic) rescaled to B's magnetic basis" in summary_text(ev)
     assert ev.rescaled_a and parse_tdb(ev.rescaled_a).phases["L12"].site_ratios == [0.75, 0.25]

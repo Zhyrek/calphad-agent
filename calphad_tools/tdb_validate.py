@@ -16,7 +16,9 @@ with numbers:
   sublattice permutation (detected from the models, or ``sublattice_map``) and proportional rescale (``scale``).
   Relative 1e-9 = preserved.  The magnetic (IHJ) term is per formula unit and nonlinear in BMAGN, so a rescaled
   magnetic phase cannot be preserved exactly: its deviation is reported separately ("magnetic contribution changed
-  by X J/mol of atoms") instead of failing the phase.
+  by X J/mol of atoms") instead of failing the phase, with GM at the phase's end-members checked too.  A magnetic
+  basis rescale (the merge's basis rule: BMAGN end-members transformed exactly, beta' = (1+beta)**k - 1) is exact
+  there - "end-members exact" - and passes, the change between the end-members reported (tolerated).
 
 Expectations (``expect``): "only affected phases changed" (nothing added or removed elsewhere either), "base
 subsystems unchanged" (everything ``before`` had is unchanged outside the affected phases and their GM is preserved
@@ -367,7 +369,46 @@ def gm_compare(db_b, db_a, phase_b: str, phase_a: str, smap: Dict[int, int], tem
         worst["nonmag_abs"] = max(worst["nonmag_abs"], nm)
         worst["nonmag_rel"] = max(worst["nonmag_rel"], nm / max(abs(gb), 1.0))
         worst["mag_abs"] = max(worst["mag_abs"], abs(mga - mgb))
-    return {**worst, "worst_at": at, "magnetic": has_mag, "n": len(temps)}
+    em = _endmember_gm(mb, ma, by_b, by_a, smap, temps) if has_mag else {}
+    return {**worst, **em, "worst_at": at, "magnetic": has_mag, "n": len(temps)}
+
+
+def _endmember_gm(mb, ma, by_b: Dict[int, List], by_a: Dict[int, List], smap: Dict[int, int],
+                  temps: Sequence[float], max_em: int = 200) -> Dict[str, Any]:
+    """GM before vs after at the end-members of ``before``'s phase (every other constituent at EPS_Y), at up to 3 of
+    the temperatures: {'em_abs', 'em_rel', 'n_em'} - a magnetic basis rescale is exact there."""
+    import itertools
+    from pycalphad import variables as v
+    subs = sorted(by_b)
+    Ts = list(dict.fromkeys(float(t) for t in temps))[:3]
+    em_abs = em_rel = 0.0
+    n = 0
+    for combo in itertools.islice(itertools.product(*[by_b[i] for i in subs]), max_em):
+        if all(y.species.name == "VA" for y in combo):
+            continue
+        on = set(combo)
+        for T in Ts:
+            sb = {v.T: T, v.P: 101325.0}
+            sa = {v.T: T, v.P: 101325.0}
+            vals: Dict[Tuple[int, str], float] = {}
+            for i in subs:
+                for y in by_b[i]:
+                    w = 1.0 if y in on else EPS_Y
+                    sb[y] = w
+                    if i in smap:
+                        vals[(smap[i], y.species.name)] = w
+            for j, ys in by_a.items():
+                mapped = j in smap.values()
+                for y in ys:
+                    sa[y] = vals.get((j, y.species.name), EPS_Y) if mapped else (1.0 if y.species.name == "VA"
+                                                                                else EPS_Y)
+            gb, ga = _value(mb.GM, sb), _value(ma.GM, sa)
+            if not (math.isfinite(gb) and math.isfinite(ga)):
+                continue
+            d = abs(ga - gb)
+            em_abs, em_rel = max(em_abs, d), max(em_rel, d / max(abs(gb), 1.0))
+            n += 1
+    return {"em_abs": em_abs, "em_rel": em_rel, "n_em": n} if n else {}
 
 
 # =============================================================================================== main entry
@@ -552,10 +593,21 @@ def validate_edit(before: Union[str, TDB], after: Union[str, TDB], affected_phas
                 elif res["rel"] <= REL_TOL:
                     row.update(status="pass", detail=f"{how}GM per atom preserved: max |dGM| {res['abs']:.3g} J/mol "
                                                      f"(rel {res['rel']:.1e}, {res['n']} samples)")
+                elif res["magnetic"] and res["nonmag_rel"] <= REL_TOL and res.get("em_rel", math.inf) <= REL_TOL:
+                    # a magnetic basis rescale: BMAGN end-members transformed exactly - accepted (directive)
+                    row.update(status="pass", em_abs=res["em_abs"],
+                               detail=f"{how}magnetic basis rescale: non-magnetic part preserved (rel "
+                                      f"{res['nonmag_rel']:.1e}), end-members exact (max |dGM| {res['em_abs']:.2g} "
+                                      f"J/mol, rel {res['em_rel']:.1e}, {res['n_em']} end-member states); magnetic "
+                                      f"contribution changed by {res['mag_abs']:.4g} J/mol of atoms between them (IHJ "
+                                      f"term per formula unit, nonlinear in BMAGN; tolerated){where}")
                 elif res["magnetic"] and res["nonmag_rel"] <= REL_TOL:
+                    em_txt = (f"; end-members NOT exact (max |dGM| {res['em_abs']:.4g} J/mol of atoms)"
+                              if "em_abs" in res else "")
                     row.update(status="warn", detail=f"{how}non-magnetic part preserved (rel {res['nonmag_rel']:.1e}); "
                                                      f"magnetic contribution changed by {res['mag_abs']:.4g} J/mol of "
-                                                     f"atoms (IHJ term per formula unit, nonlinear in BMAGN){where}")
+                                                     f"atoms (IHJ term per formula unit, nonlinear in BMAGN){em_txt}"
+                                                     f"{where}")
                 else:
                     extra = (f"; magnetic contribution changed by {res['mag_abs']:.4g} J/mol of atoms"
                              if res["magnetic"] and res["mag_abs"] > 0 else "")
@@ -572,10 +624,13 @@ def validate_edit(before: Union[str, TDB], after: Union[str, TDB], affected_phas
     if gm_rows:
         bad = [r for r in gm_rows if r["status"] == "fail"]
         warn = [r for r in gm_rows if r["status"] in ("warn", "info")]
+        n_mb = sum(1 for r in gm_rows if r["status"] == "pass" and "magnetic basis rescale" in r["detail"])
         checks.append({"check": "GM per atom (affected phases)", "status": "fail" if bad else
                        ("warn" if warn else "pass"),
                        "detail": f"{len(gm_rows)} phase(s): {sum(1 for r in gm_rows if r['status'] == 'pass')} "
-                                 f"preserved, {len(bad)} failed, {len(warn)} changed/magnetic/new"})
+                                 f"preserved" + (f" ({n_mb} of them a magnetic basis rescale: end-members exact, the "
+                                                 f"magnetic term between them changed)" if n_mb else "")
+                                 + f", {len(bad)} failed, {len(warn)} changed/magnetic/new"})
     verdict = "FAIL" if any(c["status"] == "fail" for c in checks) else "PASS"
     n_warn = sum(1 for c in checks if c["status"] == "warn")
     name_b = Path(before.path if isinstance(before, TDB) else before).name

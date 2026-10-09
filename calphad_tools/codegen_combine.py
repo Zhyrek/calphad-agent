@@ -25,7 +25,7 @@ from .codegen import Ctx, generator
 
 _REBUILD = r'''
 def merge_step(k, a, b, step):
-    """One step as staged_merge builds Q: B normalised to A's conventions (A rescaled for the magnetic exception),
+    """One step as staged_merge builds Q: B normalised to A's conventions (A rescaled by the magnetic basis rule),
     aliases kept separate, the staged rule's decisions (base wins element data, FUNCTIONs, unaries of shared
     elements) under the logged decisions."""
     A, B = parse_tdb(str(a)), parse_tdb(str(b))

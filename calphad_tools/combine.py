@@ -14,7 +14,7 @@ Stages
 2. **Run**.  ``staged_merge`` for each step (its versions, diagrams, invariant comparisons and content-hash cache),
    Q of step k being the base of step k+1, and a **decision log**: one entry per decision - the caller's (who =
    user / agent, with ``decision_reasons``), policy fills, and the automatic rules (unary/SER replacement, name
-   normalisation, sublattice reorder, rescaling, magnetic exception, kept FUNCTIONs, constituent unions, phases
+   normalisation, sublattice reorder, rescaling, the magnetic basis rule, kept FUNCTIONs, constituent unions, phases
    entering another database's subsystems, forced replots, end-members without G) - with evidence (ΔG at a few
    T, invariant shifts, GM identity errors, figures) and the subsystems each one affects.  Every parameter or
    phase-model change of every step is attributed to an entry (the attribution map).
@@ -156,6 +156,7 @@ class Needed:
     reason: str = ""
     provisional: str = ""
     pairs: Dict[str, Tuple[str, str, str]] = field(default_factory=dict)   # answer -> ('same'|'extend', A, B phase)
+    drops: Dict[str, List[str]] = field(default_factory=dict)   # answer -> elements it drops from a phase entirely
 
     def text(self) -> str:
         lines = [f"* {self.id} ({self.pair}): {self.question}"]
@@ -375,7 +376,9 @@ def _is_binary_group(c) -> bool:
 
 def _needed_from_plan(sp: Dict, k: int, pair: str, a_label: str, b_label: str, ev) -> List[Needed]:
     """Decisions of one step: pending merge conflicts and the binary assessments the staged rule would give to the
-    base (asked: which assessment of a shared binary wins is the user's call)."""
+    base (asked: which assessment of a shared binary wins is the user's call).  A phase-model question lists 'extend'
+    first (recommended) where it is possible, and every db option says what it drops."""
+    from .merge import dropped_by, dropped_text
     out: Dict[str, Needed] = {}
     plan0, auto = sp["plan0"], sp["auto"]
     models = {r["phase"]: r for r in ev.stages[4].rows if r.get("A model")} if ev is not None else {}
@@ -400,20 +403,25 @@ def _needed_from_plan(sp: Dict, k: int, pair: str, a_label: str, b_label: str, e
             q = (f"{ph}: incompatible models - {a_label} {row.get('A model', '')} vs {b_label} "
                  f"{row.get('B model', '')}").replace("  ", " ")
             opts = []
+            drops: Dict[str, List[str]] = {}
+            labels = {0: a_label, 1: b_label}
+            # extend first (recommended) where it is possible: nothing of either side is dropped
+            ext_opt = _extend_option(sp, ph, ph, a_label, b_label)
+            if ext_opt:
+                opts.append((ext_opt[0], "RECOMMENDED - " + ext_opt[1]))
+            srcs = [parse_tdb(sp["a_eff"]), parse_tdb(sp["b_eff"])]       # (plan0's copies may be renamed)
             for o in c.options:
-                if o.key == "db1":
-                    opts.append(("db1", f"{a_label}'s {ph} only; {b_label}'s {ph} parameters dropped "
-                                        f"({b_label}'s {subs.get('db2')} change)"))
-                elif o.key == "db2":
-                    opts.append(("db2", f"{b_label}'s {ph} only; {a_label}'s {ph} parameters dropped "
-                                        f"({a_label}'s {subs.get('db1')} change)"))
+                if o.key in ("db1", "db2"):
+                    i = int(o.key[2:]) - 1
+                    d = dropped_by(srcs, ph, [i], [1 - i])
+                    drops[o.key] = list(d["elements"])
+                    me, other = labels[i], labels[1 - i]
+                    opts.append((o.key, f"{me}'s {ph} model only - {dropped_text(srcs, ph, d, labels)} "
+                                        f"({other}'s {subs.get('db' + str(2 - i))} change)"))
                 elif o.key == "rename":
                     opts.append(("rename", f"keep both, {b_label}'s as {ph}_2: both sources' diagrams are kept; "
                                            f"in new mixed systems {ph} and {ph}_2 are separate phases"))
-            ext_opt = _extend_option(sp, ph, ph, a_label, b_label)
-            if ext_opt:
-                opts.append(ext_opt)
-            out[cid] = Needed(f"step{k}:{cid}", k, pair, "phase_model", cid, q, opts)
+            out[cid] = Needed(f"step{k}:{cid}", k, pair, "phase_model", cid, q, opts, drops=drops)
         elif c.kind == "parameter":
             members = [x for x in plan0.conflicts if x.group == c.group] if c.group else [c]
             sub = c.group.split(":", 1)[1] if c.group else c.id
@@ -682,13 +690,18 @@ def _provisional(n: Needed) -> str:
 
 
 def _policy_pick(n: Needed, policy: str) -> Optional[str]:
+    """The answer a policy gives - None (asked) when it would drop an element from a phase entirely: no policy or
+    default ever does that."""
     if policy not in ("first", "last"):
         return None
     keys = [k for k, _ in n.options]
     if n.kind in ("sublattice", "name", "default_command", "harmonize"):
         return _provisional(n)
     dbk = [k for k in keys if k.startswith("db")]
-    return (dbk[0] if policy == "first" else dbk[-1]) if dbk else keys[0]
+    pick = (dbk[0] if policy == "first" else dbk[-1]) if dbk else keys[0]
+    if n.drops.get(pick):
+        return None
+    return pick
 
 
 def _sublattice_value(v):
@@ -867,6 +880,12 @@ def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] 
                         n.reason = (f"policy='{policy}' ("
                                     + ("the earlier database / the base wins" if policy == "first" else
                                        "the later database wins") + ")")
+                    elif policy in ("first", "last"):
+                        dbk = [kk for kk, _ in n.options if kk.startswith("db")]
+                        want = (dbk[0] if policy == "first" else dbk[-1]) if dbk else None
+                        if want and n.drops.get(want):
+                            n.question += (f" [policy='{policy}' not applied: '{want}' would drop "
+                                           f"{', '.join(n.drops[want])} from the phase - asked]")
                 n.provisional = n.answer if n.answer is not None else _provisional(n)
                 needed[n.id] = n
             pm2, sm2, ext2 = dict(pm), dict(sm), dict(ext_raw)
@@ -902,7 +921,7 @@ def plan_combination(paths: Sequence[str], workdir: str, *, base: Optional[str] 
                         "harmonize": [r["basis"]["text"] for r in (sp.get("ext") or {}).get("reports", [])]}
         # provisional Q_k for planning the next step
         decs = {**sp["auto"], **sp["alias"], **st.decisions}
-        pl = ts.plan_merge([sp["a_eff"], sp["b_eff"]], decs, "first", tentative=tentative)
+        pl = ts.plan_merge([sp["a_eff"], sp["b_eff"]], decs, "first:predict", tentative=tentative)
         from .staged_merge import tentative_info
         st.plan_info["tentative"] = tentative_info(pl)
         from .merge import render_tdb
@@ -941,6 +960,9 @@ def plan_text(plan: CombinePlan, rel=lambda p: p) -> str:
     for st in plan.steps:
         L += [f"  NOTE {w}" for w in st.warnings]
         L += [f"  HARMONISE step {st.k}: {h}" for h in st.plan_info.get("harmonize", [])]
+        # formula-unit basis chosen by normalisation (which side set it, why, k, exactness): rule, no question
+        L += [f"  BASIS step {st.k}: {clip(x.split('. A ', 1)[0], 260)}" for x in st.plan_info.get("notes", [])
+              if ts.A_RESCALED in x or " - B rescaled to A's basis" in x]
         L += [f"  TENTATIVE step {st.k}: {x}" for x in tentative_plan_lines(st.plan_info.get("tentative"))]
     return "\n".join(L)
 
@@ -1045,6 +1067,9 @@ class StepContext:
             eid = f"step{k}:phase:{x['base_phase']}"
             self.extended[x["base_phase"]] = eid
             self.extended[x["add_phase"]] = eid
+        # the magnetic basis rule: A's phases rescaled to B's basis (their changes on A's side are that entry's)
+        self.a_basis: Dict[str, str] = {n.phase: f"step{k}:norm:{n.phase}:magnetic-basis"
+                                        for n in r.get("notes") or [] if n.action == ts.A_RESCALED}
         self.conf = {c.id: c for c in self.plan.conflicts}
         self.groups: Dict[str, List] = {}
         for c in self.plan.conflicts:
@@ -1075,6 +1100,8 @@ class StepContext:
             return tid
         if ph in self.extended:
             return self.extended[ph]
+        if side == "A" and ph in self.a_basis and p.ptype in ts.MAGNETIC_PTYPES and self.log.get(self.a_basis[ph]):
+            return self.a_basis[ph]          # BMAGN transformed / refitted by the magnetic basis rule
         if p.kind == "value":
             if side == "B" and len(p.elements) == 1 and next(iter(p.elements)) in self.shared:
                 return self._unary_entry(next(iter(p.elements)))
@@ -1316,6 +1343,8 @@ def attribute_step(sc: StepContext, X: ts.StageView, Y: ts.StageView, side: str,
                 eid = f"step{sc.k}:norm:{ph}:snapped"
                 e = sc.log.get(eid) or sc.log.add(Entry(eid, sc.tag, ph, [], "exact fractions", "rule", SNAP_REASON,
                                                         "normalisation"))
+            elif "magnetic basis rescale" in note and sc.log.get(sc.a_basis.get(ph, "")) is not None:
+                e = sc.log.get(sc.a_basis[ph])
             else:
                 eid = f"step{sc.k}:rule:exact-rescale:{ph}"
                 e = sc.log.rule(eid, sc.tag, ph, "an exact proportional rescale (G/L scaled alike, no magnetic terms) "
@@ -1389,23 +1418,25 @@ def build_decision_log(plan: CombinePlan, results: List[Dict[str, Any]], log: De
                 e.add_evidence(*[f"{o.key}: {clip(o.detail, 110)}" for o in c.options if o.detail][:2])
         # normalisation
         for nn in r["notes"]:
-            act = {ts.A_RESCALED: "magnetic-exception", ts.A_SNAPPED: "snapped"}.get(nn.action, nn.action)
+            act = {ts.A_RESCALED: "magnetic-basis", ts.A_SNAPPED: "snapped"}.get(nn.action, nn.action)
             if nn.action == "candidate":
                 continue
             eid = f"step{k}:norm:{nn.phase}:{act}"
+            mb = re.search(r"B rescaled to A's basis \(([^)]*)\)", nn.detail) if act == "rescaled" else None
+            head = nn.detail.lstrip("- ").split(". A ", 1)[0] if act == "magnetic-basis" else ""
             reason = {
                 "renamed": f"{st.b_label}'s phase name adopted to {st.a_label}'s (same structure tokens, or "
                            f"phase_map)",
                 "reordered": f"{st.b_label}'s sublattices put in {st.a_label}'s order - flipped / permuted to match "
                              f"(exact: GM identical)",
                 "snapped": SNAP_REASON,
-                "rescaled": f"{st.b_label}'s formula unit rescaled to {st.a_label}'s, G/L x k (exact: GM per mole "
-                            f"of atoms identical)",
-                "magnetic-exception": f"magnetic exception: {st.b_label}'s phase is magnetic with ~1 atom/fu, "
-                                      f"{st.a_label}'s is not - {st.a_label}'s phase rescaled to {st.b_label}'s "
-                                      f"site ratios (exact)",
-                "not_rescaled": "not rescaled: magnetic parameters (the IHJ term is per formula unit), models "
-                                "stay different",
+                "rescaled": f"{st.b_label}'s formula unit rescaled to {st.a_label}'s basis"
+                            + (f" ({mb.group(1)}; A = {st.a_label}, B = {st.b_label})" if mb else "")
+                            + ", G/L x k (exact: GM per mole of atoms identical)",
+                "magnetic-basis": f"magnetic basis rule (directive): {st.b_label}'s {nn.phase} is magnetic, so its "
+                                  f"basis wins - {nn.phase}: {head} [A = {st.a_label}, B = {st.b_label}]",
+                "not_rescaled": "not rescaled: order-disorder phase (the magnetic basis rule never rescales those), "
+                                "models stay different",
                 "incompatible": "different models: kept as is; the merge decides (phase decision)",
                 "kept": "sublattice_map 'keep': B's model left unchanged",
                 "unmapped": "sublattice correspondence undecidable",
@@ -1418,7 +1449,7 @@ def build_decision_log(plan: CombinePlan, results: List[Dict[str, Any]], log: De
                 who = n.who if n else parse_reason(reasons.get("phase_map"))[0]
             chosen = {"renamed": nn.detail.split(" (")[0], "reordered": "reordered", "rescaled": "rescaled",
                       "snapped": "exact fractions",
-                      "magnetic-exception": "base rescaled", "not_rescaled": "not rescaled",
+                      "magnetic-basis": "base rescaled", "not_rescaled": "not rescaled",
                       "incompatible": "kept as is", "kept": "kept as is", "unmapped": "kept as is"}.get(act, act)
             log.add(Entry(eid, tag, nn.phase, [], chosen, who, reason, "normalisation", evidence=[nn.detail]))
         # tentative parameters: one rule entry per term the merge added and per replacement
@@ -1536,6 +1567,19 @@ def gm_identity(orig: str, orig_phase: str, new: str, new_phase: str, new_from_o
     return {"max_rel": worst, "max_abs": worst_abs, "n": n, "T": Ts}
 
 
+def gm_endmembers(orig: str, orig_phase: str, new: str, new_phase: str) -> Dict[str, Any]:
+    """Max relative |GM_orig - GM_new| (per mole of atoms) at every end-member of ``orig_phase`` (5 T each): the
+    check of a magnetic basis rescale, which is exact there (BMAGN transformed exactly) and not in between."""
+    from .harmonize import gm_compare, phase_comps, pyc_db, _phase_only
+    try:
+        do, dn = parse_tdb(orig), parse_tdb(new)
+        res = gm_compare(pyc_db(_phase_only(do, orig_phase)), orig_phase, pyc_db(_phase_only(dn, new_phase)),
+                         new_phase, phase_comps(do, orig_phase), n=0)
+    except Exception as e:  # noqa: BLE001 - reported, never fatal
+        return {"max_rel": math.nan, "n": 0, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+    return {k: res.get(k) for k in ("max_rel", "max_abs", "n", "error") if res.get(k) is not None}
+
+
 def exactness_checks(results: List[Dict[str, Any]], log: DecisionLog) -> List[Dict[str, Any]]:
     """GM identity of every normalised / rescaled phase of every step, on the files the merge used."""
     out = []
@@ -1574,9 +1618,12 @@ def exactness_checks(results: List[Dict[str, Any]], log: DecisionLog) -> List[Di
                 if e is not None:
                     e.add_evidence(_gm_text(res))
         a_acts: Dict[str, List[str]] = {}
+        a_mag: Dict[str, Any] = {}
         for nn in notes:
             if nn.action in ts.A_CHANGES and r.get("A_eff") and r["A_eff"] != r["A"]:
                 a_acts.setdefault(nn.phase, []).append(nn.action)
+                if nn.action == ts.A_RESCALED and nn.magnetic:
+                    a_mag[nn.phase] = nn.magnetic
         for ph, acts in a_acts.items():
             orig = r["A"]
             if ts.A_SNAPPED in acts:
@@ -1584,19 +1631,41 @@ def exactness_checks(results: List[Dict[str, Any]], log: DecisionLog) -> List[Di
                 e = log.get(f"step{k}:norm:{ph}:snapped")
                 if e is not None and snap_res is not None:
                     e.add_evidence(_snap_gm_text(snap_res))
+            e = log.get(f"step{k}:norm:{ph}:magnetic-basis")
+            if ph in a_mag:
+                # A magnetic too: exact at A's end-members (the check), the error between them tolerated (directive)
+                em = gm_endmembers(orig, ph, r["A_eff"], ph)
+                res = gm_identity(orig, ph, r["A_eff"], ph, None)
+                out.append({"step": k, "file": f"{_stem(r['A'])} -> {Path(r['A_eff']).name}", "phase": ph,
+                            "transform": "magnetic basis rule (base rescaled to B's magnetic basis): GM at the "
+                                         "base's end-members (BMAGN transformed exactly)", **em})
+                if e is not None:
+                    e.add_evidence(_gm_text(em).replace("GM identity", "GM identity at the end-members"),
+                                   f"between the end-members (directive: tolerated): max |ΔGM| "
+                                   f"{res.get('max_abs', math.nan):.3g} J/mol of atoms at {res.get('n', 0)} random "
+                                   f"states here, <= {(a_mag[ph].get('interior') or {}).get('max_abs', math.nan):.3g}"
+                                   f" over {(a_mag[ph].get('interior') or {}).get('n', 0)} states at the rescale",
+                                   limit=40)            # the attribution's change lines came first
+                continue
             res = gm_identity(orig, ph, r["A_eff"], ph, None)
             out.append({"step": k, "file": f"{_stem(r['A'])} -> {Path(r['A_eff']).name}", "phase": ph,
-                        "transform": " + ".join(("magnetic exception (base rescaled)" if a == ts.A_RESCALED else
+                        "transform": " + ".join(("magnetic basis rule (base rescaled to B's magnetic basis)"
+                                                 if a == ts.A_RESCALED else
                                                  "base site ratios read exactly (compared with the exact-fraction "
                                                  "source)") for a in acts), **res})
-            e = log.get(f"step{k}:norm:{ph}:magnetic-exception")
             if e is not None:
                 e.add_evidence(_gm_text(res))
         for x in (r.get("extensions") or {}).get("reports", []):
             eid = f"step{k}:phase:{x['base_phase']}"
             ch = x.get("checks") or {}
             rows = []
-            if ch.get("base"):
+            if ch.get("base_endmembers"):
+                # both magnetic: the base took add's basis with the BMAGN transform - exact at its end-members only
+                rows.append((f"extend: {x['base_phase']} at the base's end-members (magnetic basis rule, rescaled "
+                             f"x{x['rescale_base']['k_text']}; between them max |ΔGM| "
+                             f"{ch['base'].get('max_abs', math.nan):.3g} J/mol of atoms, tolerated)",
+                             ch["base_endmembers"]))
+            elif ch.get("base"):
                 rows.append((f"extend: {x['base_phase']} on the base's elements unchanged"
                              + (f" (rescaled x{x['rescale_base']['k_text']})" if x["rescale_base"].get("k") not in
                                 (None, 1.0) else ""), ch["base"]))

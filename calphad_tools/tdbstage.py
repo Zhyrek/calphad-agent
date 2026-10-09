@@ -14,8 +14,9 @@
   :func:`plan_versions` helpers that go through merge.plan_merge (B3, Q, A1, A2).
 
 Only the standard library, numpy, symengine and calphad_tools.tdbparse / pwinline / tdbtables / merge are used, so
-show_code can copy this module into a standalone script.  Names are prefixed so they don't clash with the
-copied modules.
+show_code can copy this module into a standalone script (one exception, imported lazily: a magnetic A phase taking a
+magnetic B phase's formula unit uses calphad_tools.harmonize for the BMAGN transform and its pycalphad GM check).
+Names are prefixed so they don't clash with the copied modules.
 """
 from __future__ import annotations
 
@@ -24,8 +25,9 @@ import itertools
 import math
 import re
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -350,9 +352,12 @@ def _written(view: StageView, key: str) -> str:
 def phase_rescale_info(X: StageView, Y: StageView) -> Dict[str, Tuple[float, str]]:
     """{phase: (k, snap text)} for phases whose site ratios differ only by a factor k (Y = k*X, vacancy-only
     sublattices ignored) - as written, or once ratios written as rounded fractions are read exactly (snap text
-    '0.333:0.667 read as 1/3:2/3 ...', else '') - with no magnetic parameters in X (unless k = 1) and no order-disorder
-    link: comparing Y's G/L terms with k*X's is then exact (GM per mole of atoms is unchanged by such a rescale; a
-    snap moves only the configurational-entropy weights, by the amount the text gives)."""
+    '0.333:0.667 read as 1/3:2/3 ...', else '') - and no order-disorder link: comparing Y's G/L terms with k*X's is
+    then exact (GM per mole of atoms is unchanged by such a rescale; a snap moves only the configurational-entropy
+    weights, by the amount the text gives).  A phase with magnetic parameters in X is included too (the magnetic
+    basis rule rescales one with the BMAGN transform): its G/L terms are compared with k*X's, TC directly, and every
+    non-zero BMAGN term counts as changed (param_changes ``magnetic``) - the IHJ term per atom changes with the
+    formula unit, exactly only at the end-members - see magnetic_rescaled."""
     out = {}
     for ph in set(X.phases) & set(Y.phases):
         px, py = X.phases[ph], Y.phases[ph]
@@ -375,10 +380,26 @@ def phase_rescale_info(X: StageView, Y: StageView) -> Dict[str, Tuple[float, str
                 continue
         elif abs(k - 1.0) < 1e-9:
             continue
-        if abs(k - 1.0) > 1e-9 and any(r.phase == ph and r.ptype in MAGNETIC_PTYPES for r in X.rows.values()):
-            continue
         out[ph] = (k, snap)
     return out
+
+
+def magnetic_rescaled(X: StageView, info: Dict[str, Tuple[float, str]]) -> Set[str]:
+    """The phases of ``info`` (phase_rescale_info) whose formula unit changes (k != 1) and that have magnetic (TC /
+    BMAGN) parameters in X."""
+    out = set()
+    for ph, (k, _) in info.items():
+        if abs(k - 1.0) > 1e-9 and any(r.phase == ph and r.ptype in MAGNETIC_PTYPES for r in X.rows.values()):
+            out.add(ph)
+    return out
+
+
+def _nonzero_segs(segs) -> bool:
+    if not segs:
+        return False
+    g = np.linspace(PARAM_GRID[0], PARAM_GRID[1], 25)
+    v = evaluate(segs, g)[0]
+    return bool(np.any(np.abs(v[np.isfinite(v)]) > 1e-12)) or not np.all(np.isfinite(v))
 
 
 def phase_rescales(X: StageView, Y: StageView) -> Dict[str, float]:
@@ -387,10 +408,13 @@ def phase_rescales(X: StageView, Y: StageView) -> Dict[str, float]:
 
 
 def param_changes(X: StageView, Y: StageView, rtol: float = STAGE_RTOL,
-                  keys: Optional[Sequence[str]] = None, scales: Optional[Dict[str, float]] = None) -> List[ParamChange]:
-    """Parameters that differ from X to Y; for a phase in ``scales`` (exact proportional rescale, see
-    phase_rescales) Y's G/L terms are compared with k * X's."""
+                  keys: Optional[Sequence[str]] = None, scales: Optional[Dict[str, float]] = None,
+                  magnetic: Optional[Set[str]] = None) -> List[ParamChange]:
+    """Parameters that differ from X to Y; for a phase in ``scales`` (proportional rescale, see phase_rescales) Y's
+    G/L terms are compared with k * X's; for a phase in ``magnetic`` (rescaled with magnetic terms) every non-zero
+    BMAGN term of X is a change even when Y's equals it (the magnetic term per atom changes with the formula unit)."""
     scales = scales or {}
+    magnetic = magnetic or set()
     out = []
     for k in (keys if keys is not None else sorted(set(X.rows) | set(Y.rows))):
         rx, ry = X.rows.get(k), Y.rows.get(k)
@@ -407,7 +431,7 @@ def param_changes(X: StageView, Y: StageView, rtol: float = STAGE_RTOL,
             continue
         xs = scale(rx.segs, scales[r.phase]) if r.phase in scales and r.ptype in SCALED_PTYPES else rx.segs
         ok, d, t = compare_segs(xs, ry.segs, rtol, stage_atol(r.ptype))
-        if not ok:
+        if not ok or (r.phase in magnetic and r.ptype in ("BMAGN", "BM") and _nonzero_segs(rx.segs)):
             out.append(ParamChange(k, r.label, r.phase, r.ptype, els, "value", d, t, _written(X, k), _written(Y, k)))
     return out
 
@@ -446,9 +470,18 @@ def diff_versions(X: StageView, Y: StageView, subsystems: Sequence[Sequence[str]
     """Which of ``subsystems`` change from version X to version Y (see module docstring for the rule)."""
     info = phase_rescale_info(X, Y)
     scales = {ph: k for ph, (k, _) in info.items()}
-    changes = param_changes(X, Y, rtol, scales=scales)
+    mags = magnetic_rescaled(X, info)
+    changes = param_changes(X, Y, rtol, scales=scales, magnetic=mags)
     notes = {}
     for ph, (k, snap) in info.items():
+        if ph in mags:
+            if any(c.phase == ph and c.kind == "value" and c.ptype not in ("BMAGN", "BM") for c in changes):
+                continue
+            notes[ph] = (f"{ph}: {X.label} {X.phases[ph].ratios_text()} -> {Y.label} {Y.phases[ph].ratios_text()} is "
+                         f"a magnetic basis rescale (x{k:.6g}): G/L x{k:.6g} and TC unchanged (exact), BMAGN "
+                         f"transformed - GM exact at the end-members, the magnetic term between them changes (the "
+                         f"BMAGN terms are listed as changes where they apply)")
+            continue
         if any(c.phase == ph and c.kind == "value" for c in changes):
             continue
         if snap:
@@ -861,6 +894,7 @@ class NormNote:
     phase: str
     action: str          # renamed | reordered | rescaled | not_rescaled | incompatible | unmapped | candidate | kept
     detail: str
+    magnetic: Optional[Dict[str, Any]] = None    # A_RESCALED of a magnetic A: k, GM errors (end-members, interior)
 
     def text(self) -> str:
         return f"{self.phase}: {self.action} {self.detail}".strip()
@@ -1068,7 +1102,7 @@ def _order_disorder_related(db: TDB, phase: str) -> bool:
     return False
 
 
-A_RESCALED = "A rescaled to B (magnetic exception)"
+A_RESCALED = "A rescaled to B's basis"           # B magnetic: B's basis wins (the magnetic basis rule)
 A_SNAPPED = "A snapped"
 NORM_CHANGES = ("renamed", "reordered", "rescaled", A_RESCALED)       # listed in summaries (snaps are silent)
 B_CHANGES = ("renamed", "reordered", "rescaled", "snapped")           # B's normalised copy differs from B
@@ -1096,34 +1130,47 @@ def _dis_part_of(db: TDB, phase: str) -> Optional[str]:
     return None
 
 
-def magnetic_exception(A: TDB, B: TDB, phase: str) -> Optional[str]:
-    """None if A's phase should be rescaled to B's site ratios instead of the reverse - B's phase has TC/BMAGN
-    parameters and ~1 atom per formula unit, A's has no magnetic terms (own or DIS_PART) - else the reason why not
-    (the phase is then only reordered)."""
-    if _has_magnetic_params(A, phase):
-        return "both phases have magnetic parameters"
+def a_rescale_blocker(A: TDB, phase: str) -> Optional[str]:
+    """None if A's ``phase`` may take B's formula unit (the magnetic basis rule: B's phase has TC/BMAGN parameters),
+    else why not - order-disorder phases are never rescaled (their partner would need the same rescale); the phase
+    is then only reordered and the models stay different."""
     dis = _dis_part_of(A, phase)
     if dis and dis in A.phases and _has_magnetic_params(A, dis):
-        return "A's disordered part has magnetic parameters"
+        return "A's disordered part has magnetic parameters (order-disorder phases are not rescaled)"
     if _order_disorder_related(A, phase):
-        return "A's phase is order-disorder linked (its partner would need rescaling too)"
-    pb = B.phases[phase]
-    subs = [i for i in range(len(pb.site_ratios)) if i not in _va_only(pb)]
-    if any("VA" in pb.constituents[i] for i in subs):
-        return "B's atoms per formula unit are not defined (VA on a substitutional sublattice)"
-    n = sum(pb.site_ratios[i] for i in subs)
-    if abs(n - 1.0) > 1e-3:
-        return f"B has {n:g} atoms per formula unit (the exception needs ~1)"
+        return "A's phase is order-disorder linked (its partner would need rescaling too; not rescaled)"
     return None
+
+
+def _fmt_k(k: float) -> str:
+    fr = Fraction(k).limit_denominator(1000)
+    if abs(float(fr) - k) <= 1e-12 * max(1.0, abs(k)):
+        return str(fr.numerator) if fr.denominator == 1 else f"{fr.numerator}/{fr.denominator}"
+    return f"{k:.6g}"
+
+
+def _harmonize():
+    """calphad_tools.harmonize (the BMAGN transform and pycalphad GM checks) - imported lazily: this module is also
+    copied into standalone scripts, which then need the toolkit installed for this one path."""
+    import importlib
+    if __package__:
+        return importlib.import_module(".harmonize", __package__)
+    return importlib.import_module("calphad_tools.harmonize")
 
 
 def normalize_phase_model(A: TDB, B: TDB, phase: str, override=None) -> List[NormNote]:
     """Make B's ``phase`` use A's sublattice order and formula unit (in place).  Site ratios that are a rounded
     form of simple fractions (0.333:0.667) are first read as those fractions on either side (A in place too; a rule
     note 'snapped' / A_SNAPPED with the - tiny - GM change), so 0.333:0.667 vs 2:1 is a flip with k = 3.  G and L
-    terms are multiplied by k = A's sites / B's sites; TC/BMAGN are not (pycalphad's IHJ magnetic term
-    R*T*ln(beta+1)*f(tau) is per formula unit and not linear in BMAGN, so a magnetic phase with magnetic parameters
-    is only reordered, never rescaled).  Order-disorder phases are left alone unless nothing changes."""
+    terms are multiplied by k = A's sites / B's sites; TC/BMAGN are not.  The formula-unit basis (the user's
+    directive): when B's phase has magnetic parameters, B's basis wins and A itself (in place) is rescaled to B's site
+    ratios (in A's sublattice order) - exactly (G/L x 1/k) when A has no magnetic terms; when A is magnetic too, G/L
+    x 1/k range by range, TC unchanged and BMAGN transformed (harmonize.transform_bmagn: end-members exact,
+    beta' = (1+beta)**(1/k) - 1, so GM per atom is exact at A's end-members; interactions refitted, the error between
+    the end-members measured and tolerated).  Otherwise (B not magnetic, A magnetic or not) B is rescaled to A's
+    basis (exact).  pycalphad's IHJ term R*T*ln(beta+1)*f(tau) is per formula unit and not linear in BMAGN, which is
+    why a magnetic phase is only rescaled through that transform.  Order-disorder phases are left alone unless
+    nothing changes."""
     pa, pb = A.phases[phase], B.phases[phase]
     if isinstance(override, str) and override.lower() == "keep":
         return [NormNote(phase, "kept", f"B's model {_subl_text(pb)} left unchanged (sublattice_map 'keep')")]
@@ -1165,12 +1212,14 @@ def normalize_phase_model(A: TDB, B: TDB, phase: str, override=None) -> List[Nor
         return notes
     before = _subl_text(pb)
     rescale_a, k_b = False, k
+    a_mag = _has_magnetic_params(A, phase)
     if rescale and _has_magnetic_params(B, phase):
-        why = magnetic_exception(A, B, phase)
+        # the magnetic basis rule: B is magnetic, so B's basis wins and A takes it (exact unless A is magnetic too)
+        why = a_rescale_blocker(A, phase)
         if why is None:
             rescale_a = True
         else:
-            notes.append(NormNote(phase, "not_rescaled", f"B has magnetic parameters (IHJ term per formula unit) and "
+            notes.append(NormNote(phase, "not_rescaled", f"B has magnetic parameters (its basis would win) but "
                                                         f"{why}: B {before} vs A {_subl_text(pa)} stay different "
                                                         f"models"))
         rescale, k = False, 1.0
@@ -1204,31 +1253,67 @@ def normalize_phase_model(A: TDB, B: TDB, phase: str, override=None) -> List[Nor
                               f"{''.join(f'({c})' for c in (','.join(x) for x in pb.constituents))} "
                               f"(B's sublattice order {new_from_old}); {n_par} parameter(s) permuted"))
     if rescale:
-        notes.append(NormNote(phase, "rescaled", f"x{k:g} sites to A's {_subl_text(pa)}: G/L terms "
-                                                 f"x{k:g} (per formula unit), TC/BMAGN unchanged"))
+        why_b = ("A is magnetic and B is not: the magnetic side's basis" if a_mag else "neither is magnetic")
+        notes.append(NormNote(phase, "rescaled", f"x{k:g} sites to A's {_subl_text(pa)} - B rescaled to A's basis "
+                                                 f"({why_b}), k = {_fmt_k(k)}: G/L terms x{k:g} (per formula unit), "
+                                                 f"TC/BMAGN unchanged - exact"))
     if rescale_a:
-        # A takes B's site ratios (in A's sublattice order); A's G/L x 1/k is exact since A has no magnetic terms
-        ka = 1.0 / k_b
-        a_before = _subl_text(pa)
-        pa.site_ratios = [r * ka for r in pa.site_ratios]
-        for t, i in enumerate(a_real):
-            pa.site_ratios[i] = pb.site_ratios[b_idx[t]]
+        notes.append(_rescale_a_to_b(A, phase, k_b, [pb.site_ratios[b_idx[t]] for t in range(len(a_real))], a_mag))
+    return notes
+
+
+def _rescale_a_to_b(A: TDB, phase: str, k_b: float, b_ratios: Sequence[float], a_mag: bool) -> NormNote:
+    """A's ``phase`` (in place) to B's site ratios ``b_ratios`` (B's, in A's sublattice order): G/L x 1/k_b range by
+    range; when A is magnetic, BMAGN transformed (harmonize.transform_bmagn) and the GM error measured."""
+    pa = A.phases[phase]
+    a_real = _real_idx(pa)
+    ka = 1.0 / k_b
+    a_before = _subl_text(pa)
+    new = [r * ka for r in pa.site_ratios]
+    for t, i in enumerate(a_real):
+        new[i] = b_ratios[t]
+    tot = sum(b_ratios)
+    head = (f"- A ({'magnetic' if a_mag else 'non-magnetic'}) rescaled to B's magnetic basis (sum {tot:.6g}), "
+            f"k = {_fmt_k(ka)}")
+    if not a_mag:
+        pa.site_ratios = new
         n_a = 0
         for p in A.parameters:
             if p.key.phase == phase and p.key.ptype in SCALED_PTYPES:
                 p.expr = _scale_pw(p.expr, ka)
                 n_a += 1
-        notes.append(NormNote(phase, A_RESCALED, f"x{ka:.6g}: A {a_before} -> {_subl_text(pa)} (B's site ratios, "
-                                                 f"A's order) because B is magnetic with 1 atom/fu and A is not; "
-                                                 f"{n_a} A G/L term(s) x{ka:.6g}: exact"))
-    return notes
+        return NormNote(phase, A_RESCALED, f"{head}: exact. A {a_before} -> {_subl_text(pa)} (B's site ratios, A's "
+                                           f"order) because B is magnetic and A is not; {n_a} A G/L term(s) "
+                                           f"x{ka:.6g}: exact")
+    rep = _harmonize().rescale_phase(A, phase, new, "refit", "A", check=True)
+    em, it = rep.get("gm_endmembers") or {}, rep.get("gm") or {}
+    rf = rep.get("refit") or {}
+    ok = math.isfinite(em.get("max_rel", math.nan)) and em["max_rel"] <= 1e-9 and rf.get("end_members_exact", True)
+    inter = (f"{len(rf.get('fitted') or [])} BMAGN interaction term(s) by {rf.get('method', 'refit')}"
+             + (f" ({rf['n_added']} new, reference REFIT)" if rf.get("n_added") else "")
+             + (f" [{rf['why']}]" if rf.get("why") else "")) if rf.get("fitted") else "no BMAGN interaction terms"
+    it_txt = (f"{it['max_abs']:.3g}" if math.isfinite(it.get("max_abs", math.nan)) else "?")
+    note = NormNote(phase, A_RESCALED,
+                    f"{head}; BMAGN end-members {'exact' if ok else 'NOT exact'}, interior error <= {it_txt} J/mol of "
+                    f"atoms (directive: tolerated). A {a_before} -> {_subl_text(pa)} (B's site ratios, A's order) "
+                    f"because B is magnetic - with both magnetic B's basis wins; {rep['scaled']} A G/L term(s) "
+                    f"x{ka:.6g} per T range, TC unchanged, BMAGN end-members (1+beta)**{_fmt_k(ka)}-1: "
+                    f"{'; '.join(rf.get('end_members') or []) or 'none'}; {inter}; end-member check max |ΔGM| "
+                    f"{em.get('max_abs', math.nan):.2g} J/mol of atoms (relative {em.get('max_rel', math.nan):.1e}), "
+                    f"interior max over {it.get('n', 0)} states of A's {phase} "
+                    f"({'-'.join(str(round(x)) for x in it.get('T', [])) or '?'} K)")
+    note.magnetic = {"k": ka, "endmembers": em, "interior": it, "endmembers_exact": bool(ok),
+                     "refit": {k: v for k, v in rf.items() if k in ("method", "end_members", "fitted", "n_added",
+                                                                    "why")}}
+    return note
 
 
 def normalize_pair(A: TDB, B: TDB, phase_map: Optional[Dict[str, str]] = None,
                    sublattice_map: Optional[Dict] = None, on_error: str = "raise") -> Tuple[TDB, TDB, List[NormNote]]:
     """(A', B', notes): B in A's conventions (normalize_to_base); A' is A, except for phases where the magnetic
-    exception applies (B magnetic with ~1 atom/fu, A not magnetic: A is rescaled to B's site ratios) or where A's
-    site ratios are a rounded form of simple fractions that had to be read exactly to match B's (A_SNAPPED)."""
+    basis rule applies (B's phase magnetic: A is rescaled to B's site ratios - exactly if A is not magnetic, with the
+    BMAGN transform if it is; A_RESCALED) or where A's site ratios are a rounded form of simple fractions that had
+    to be read exactly to match B's (A_SNAPPED)."""
     An = copy.deepcopy(A)
     Bn, notes = normalize_to_base(An, B, phase_map, sublattice_map, on_error)
     return An, Bn, notes
@@ -1248,9 +1333,9 @@ def normalize_to_base(A: TDB, B: TDB, phase_map: Optional[Dict[str, str]] = None
     in any sublattice order).  Pairing is one-to-one and confident pairings come first (same names, phase_map,
     clear aliases); weaker matches among the phases still unpaired are returned as 'candidate' notes, never applied.
     Then each phase present in both is reordered / rescaled to A's model (ratios written as rounded fractions are
-    first read exactly - rule notes 'snapped' / A_SNAPPED) - except a magnetic B phase with ~1 atom/fu against a
-    non-magnetic A phase: there ``A`` itself (modified in place; normalize_pair works on a copy) is rescaled to B's
-    site ratios.
+    first read exactly - rule notes 'snapped' / A_SNAPPED) - except where B's phase is magnetic (the magnetic basis
+    rule, whatever B's atoms per formula unit): there ``A`` itself (modified in place; normalize_pair works on a
+    copy) is rescaled to B's site ratios (normalize_phase_model).
 
     on_error: 'raise' (a phase whose sublattice correspondence is ambiguous raises SublatticeMapError) or 'keep'
     (that phase keeps B's model unchanged and gets an 'unmapped' note with the error - evaluate_compatibility and

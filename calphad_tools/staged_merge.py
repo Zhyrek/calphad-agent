@@ -2,7 +2,8 @@
 and show exactly what each step does to B's system (and, when B brings new unary/binary terms, to A's).
 
 Versions (B is first normalised to A's phase names / sublattice order / formula units, tdbstage.normalize_pair;
-exception: a magnetic B phase with ~1 atom/fu keeps its site ratios and A's non-magnetic phase is rescaled to them, A0):
+the magnetic basis rule: a magnetic B phase keeps its site ratios and A's phase is rescaled to them, A0 - exactly when
+A's is not magnetic, with BMAGN end-members exact and the error between them tolerated and reported when it is):
 
 * B1 = B with A's SGTE unary (SER) Gibbs energies of the shared elements
 * B2 = B1 with all of A's unary parameters of the shared elements, in the phases both have
@@ -80,9 +81,18 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
     components (harmonize.staged_extensions; A_eff = the extended A, and B's source phase is left out of the
     merge, B_merge)."""
     from .merge import validate
+    from .harmonize import is_extend
     out = Path(out_dir)
     work = out / "_work"
     work.mkdir(parents=True, exist_ok=True)
+    # decisions {'phase:X': 'extend' | {'extend': {...}}} are 'extend' decisions (the recommended phase-model answer)
+    ext_dec = {k.split(":", 1)[1].upper(): v for k, v in (decisions or {}).items()
+               if str(k).startswith("phase:") and is_extend(v)}
+    if ext_dec:
+        decisions = {k: v for k, v in decisions.items() if not (str(k).startswith("phase:") and is_extend(v))}
+        extensions = {**{t: ((v.get("extend") if isinstance(v.get("extend"), dict) else v) if isinstance(v, dict)
+                             else ({"phase": v.split(":", 1)[1].strip().upper()} if ":" in str(v) else {}))
+                         for t, v in ext_dec.items()}, **(extensions or {})}
     A, B = parse_tdb(a_path), parse_tdb(b_path)
     sa, sb = _stem(a_path), _stem(b_path)
     An, Bn, notes = ts.normalize_pair(A, B, phase_map, sublattice_map, on_error="keep")
@@ -102,11 +112,12 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
                 "A": a_path, "B": b_path, "B_original": b_path}
     changed = [n for n in notes if n.action in ts.B_CHANGES]
     a_resc = [n for n in notes if n.action in ts.A_CHANGES]
-    a_eff = a_path                      # A's description used everywhere below (A0 when the magnetic exception applies)
+    a_eff = a_path                      # A's description used everywhere below (A0 when the magnetic basis rule applies)
     if a_resc:
         a_eff = ts.write_tdb(An, str(out / f"A0_{sa}_rescaled.tdb"),
                              [f"{Path(a_path).name} with phases rescaled to {Path(b_path).name}'s site ratios "
-                              f"(B magnetic, 1 atom/fu; A not magnetic; exact) or read as exact fractions:"]
+                              f"(B magnetic: B's basis wins - exact if A is not magnetic, BMAGN end-members exact if "
+                              f"it is) or read as exact fractions:"]
                              + [n.text() for n in a_resc])
         An = parse_tdb(a_eff)
     b_eff = b_path
@@ -178,7 +189,7 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
     a_src = parse_tdb(a_eff) if ext else An           # the extended A when an 'extend' decision applies
     a_sub = ts.write_tdb(ts.restrict_tdb(a_src, shared, max_elements=2), str(work / f"{sa}_shared_unary_binary.tdb"))
     d3 = ts.alias_separate([a_sub, p2], dec)
-    plan3, text3 = ts.merged_text([a_sub, p2], d3, "first", tentative=tentative)
+    plan3, text3 = ts.merged_text([a_sub, p2], d3, "first:predict", tentative=tentative)
     p3 = str(out / f"B3_{sb}+{sa}-unaries-binaries.tdb")
     Path(p3).write_text(text3)
     versions["B3"] = Version("B3", p3, STEP_DESC["B3"], list(plan3.log))
@@ -200,7 +211,7 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
             bpart = ts.write_tdb(ts.restrict_tdb(Bn, sorted(EB), max_elements=n_el, constituents_from_params=True),
                                  str(work / f"{sb}_{desc.replace(' and ', '_')}.tdb"))
             d = ts.alias_separate([a_eff, bpart], dec)
-            pl, txt = ts.merged_text([a_eff, bpart], d, "first", tentative=tentative)
+            pl, txt = ts.merged_text([a_eff, bpart], d, "first:predict", tentative=tentative)
             p = str(out / f"{lab}_{sa}+{sb}-{desc.replace(' and ', '-').replace('unary', 'unaries').replace('binary', 'binaries')}.tdb")
             Path(p).write_text(txt)
             versions[lab] = Version(lab, p, STEP_DESC[lab], list(pl.log))
@@ -208,6 +219,44 @@ def build_versions(a_path: str, b_path: str, out_dir: str, *, phase_map=None, su
         if v.label != "B":
             v.validation = validate(v.path)
     return result
+
+
+def extend_possible(A, B, a_phase: str, b_phase: str) -> Optional[List[str]]:
+    """The elements an 'extend' decision would bring into A's ``a_phase`` from B's ``b_phase`` (None when extend is not
+    possible: no extra element, a different number of sublattices, non-proportional site ratios, order-disorder)."""
+    from .harmonize import _real, phase_comps
+    if a_phase not in A.phases or b_phase not in B.phases:
+        return None
+    if ts._order_disorder_related(A, a_phase) or ts._order_disorder_related(B, b_phase):
+        return None
+    pa, pb = A.phases[a_phase], B.phases[b_phase]
+    extra = sorted(set(phase_comps(B, b_phase)) - set(phase_comps(A, a_phase)) - {"VA"})
+    if not extra or len(_real(pa)) != len(_real(pb)):
+        return None
+    try:
+        if ts.sublattice_mapping(pa, pb) is None:
+            return None
+    except ts.SublatticeMapError:
+        pass                                # possible with a sublattice_map
+    return extra
+
+
+def recommend_extend(plan, a_path: str, b_path: str) -> None:
+    """Pending phase-model conflicts of ``plan`` where 'extend' is possible get it as their FIRST option, marked
+    recommended (nothing of either side is dropped; decisions {'phase:X': 'extend'} or extend={'X': {...}})."""
+    from .merge import Option
+    pend = [c for c in plan.pending if c.kind == "phase_model" and not any(o.key == "extend" for o in c.options)]
+    if not pend:
+        return
+    A, B = parse_tdb(str(a_path)), parse_tdb(str(b_path))
+    for c in pend:
+        ph = c.id.split(":", 1)[1]
+        extra = extend_possible(A, B, ph, ph)
+        if extra:
+            c.options.insert(0, Option("extend", f"RECOMMENDED - keep A's {ph} model and its parameters, add "
+                                                 f"{', '.join(extra)} with only B's parameters that involve "
+                                                 f"{'it' if len(extra) == 1 else 'them'} (nothing dropped)",
+                                       f"decisions {{'phase:{ph}': 'extend'}} or extend={{'{ph}': {{}}}}"))
 
 
 def tentative_info(plan) -> Dict[str, Any]:
@@ -773,6 +822,7 @@ def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, subl
         return r
     if r.get("pending") is not None:
         r["written"] = False
+        recommend_extend(r["pending"], r.get("A_eff") or a_path, r.get("B_merge") or r["B"])
         r["report"] = r["pending"].report()
         return r
     EA = sorted(parse_tdb(a_path).real_elements)
@@ -981,7 +1031,8 @@ def register(tb) -> None:
             "Merge add_tdb (B) into base_tdb (A) step by step, diagrams per step. B1 = B with A's SGTE unaries, "
             "B2 = + A's other unaries, B3 = + A's shared binaries, Q = full merge (A wins what the stages settle; other "
             "conflicts are asked like merge_tdbs: re-call with decisions), A1/A2 = A + B's unary / binary terms; "
-            "A0 = A rescaled to a magnetic 1-atom/fu B phase's site ratios when needed. "
+            "A0 = A rescaled to a magnetic B phase's site ratios when needed (BMAGN end-members exact if A is "
+            "magnetic too). "
             "Maps B's binaries+ternary for each version (unchanged subsystems reused), compares consecutive "
             "versions (parameters, phase models, invariant shifts) -> one deck (summary + 2 slides per step) + "
             "Excel; force_replot maps exact-only changes anyway as evidence. Run evaluate_compatibility first.",

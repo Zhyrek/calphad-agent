@@ -6,8 +6,11 @@ constituents (and only the parameters that involve them) of another database's v
   (tdbparse.scale_piecewise), so GM per mole of atoms is unchanged; TC is unchanged.  The IHJ magnetic term
   ``R*T*ln(beta+1)*g(tau)`` is per formula unit and NOT linear in BMAGN, so a magnetic phase cannot be rescaled
   exactly: ``magnetic`` = 'refuse' (error, with the size of the error the other options give), 'keep_parameters'
-  (TC/BMAGN as they are, the GM change reported) or 'refit' (BMAGN end-members transformed exactly,
-  ``beta' = (1+beta)**k - 1``, interaction BMAGN terms fitted by least squares; the GM residual reported).
+  (TC/BMAGN as they are, the GM change reported) or 'refit' (:func:`transform_bmagn`: BMAGN end-members transformed
+  exactly, ``beta' = (1+beta)**k - 1`` (AFM convention for beta < 0), so GM per atom is exact at every end-member;
+  interaction BMAGN terms fitted by least squares to the exact target (refit_bmagn), or - where the fit cannot be
+  done (temperature-dependent or ternary BMAGN terms, no MAGNETIC type definition) - multiplied by k, the
+  first-order rule; the GM residual between the end-members is reported).
 * :func:`normalize_phase_formula_unit` - the tool: phases to 'sum_to_one' (written as exact decimals whose sum
   pycalphad reads as 1), explicit ratios, 'integers', or another TDB's phase (``match_tdb``/``match_phase``).
 * :func:`extend_phase` - keep ``base_phase`` of the base database authoritative and bring in ``components`` from
@@ -19,12 +22,14 @@ constituents (and only the parameters that involve them) of another database's v
   unchanged (1e-9) and the add phase is reproduced on its subsystems with the components.  Tentative parameters
   (calphad_tools.tentative): on a collision an assessed parameter beats a tentative one whatever ``collision`` says,
   and mixings the extension creates that neither database describes get TENT_MIX / TENT_VA terms (``tentative``).
-* Formula-unit basis (``magnetic='auto'``, the default): when exactly one side is magnetic (TC/BMAGN parameters in
-  the extended phase), the basis is the MAGNETIC side's - whichever database it is in - and the non-magnetic side
-  is rescaled to it (exact), so a magnetic phase is never rescaled and a base phase never overwrites the other
-  database's magnetic description.  When both are magnetic with different bases no exact transformation exists:
-  'refuse' (default) / 'keep_parameters' / 'refit'.  When neither is magnetic, ``normalization`` decides: 'base'
-  (the base's basis) or 'per_atom' (sum to one).
+* Formula-unit basis (``magnetic='auto'``, the default; the user's directive): for a matched pair of phases with
+  proportional site ratios, the ADDED side's basis wins whenever it is magnetic - the base is rescaled to it, exactly
+  when the base is not magnetic, and with the magnetic transform above when it is (end-members exact, the error
+  between them tolerated and reported) - except when only the base is magnetic: then the add side (non-magnetic) is
+  rescaled to the base's basis (exact).  When neither is magnetic, ``normalization`` decides: 'base' (the base's
+  basis) or 'per_atom' (sum to one).  Explicit overrides: 'refuse' (the old rule: the magnetic side's basis when
+  only one is magnetic, an error when both are), 'keep_parameters' / 'refit' (``normalization`` decides, the rescaled
+  magnetic side handled that way).  Order-disorder (DIS_PART) phases are never rescaled.
 * :func:`staged_extensions` - the same, as staged_merge / combine_databases apply an ``extend`` decision.
 """
 from __future__ import annotations
@@ -322,11 +327,15 @@ def _rk_basis(subls: List[List[str]], order: int, Y: Dict[Tuple[int, str], np.nd
     return term
 
 
+REFIT_MAX_NEW = 150                    # more candidate new interaction terms than this: only existing ones fitted
+
+
 def refit_bmagn(db: TDB, phase: str, k: float, n: int = 600, seed: int = 1) -> Dict[str, Any]:
     """In place: BMAGN of ``phase`` for a formula unit k times larger.  End-members exactly
-    (beta' = (1+beta)**k - 1, AFM convention), interaction terms (existing ones + order 0-2 binary terms between
-    constituents whose end-members are magnetic) fitted by least squares to the exact target over random site
-    fractions.  Returns the fit summary (the GM residual is computed by the caller with pycalphad)."""
+    (beta' = (1+beta)**k - 1, AFM convention; written to full double precision), interaction terms (existing ones +
+    order 0-2 binary terms between constituents whose end-members are magnetic, unless there would be more than
+    REFIT_MAX_NEW of those) fitted by least squares to the exact target over random site fractions.  Returns the fit
+    summary (the GM residual is computed by the caller with pycalphad)."""
     from .merge import _build_raw_name, _split_raw_name
     fac = magnetic_factors(db, phase)
     if fac is None:
@@ -356,7 +365,7 @@ def refit_bmagn(db: TDB, phase: str, k: float, n: int = 600, seed: int = 1) -> D
     # pycalphad agreement of the RK evaluation (raw order as written)
     try:
         from tinydb import where
-        dbp = pyc_db(db)
+        dbp = pyc_db(_phase_only(db, phase))
         mod, ys, _ = phase_function(dbp, phase, phase_comps(db, phase))
         q = ((where("phase_name") == phase) & (where("parameter_type") == "BMAGN")
              & (where("constituent_array").test(mod._array_validity)))
@@ -385,6 +394,7 @@ def refit_bmagn(db: TDB, phase: str, k: float, n: int = 600, seed: int = 1) -> D
     magnetic_ems = {tuple(sl[0] for sl in _raw_subls(p)) for p in em_p if abs(vals[id(p)]) > 0}
     cols, terms = [], []
     have = set()
+    new_terms: List[Tuple[List[List[str]], int]] = []
     for p in other:
         sub, order = _raw_subls(p), _raw_order(p)
         cols.append(_rk_basis(sub, order, Y, N))
@@ -407,8 +417,13 @@ def refit_bmagn(db: TDB, phase: str, k: float, n: int = 600, seed: int = 1) -> D
                     if key in have:
                         continue
                     have.add(key)
-                    cols.append(_rk_basis(sub, order, Y, N))
-                    terms.append(("new", None, sub, order))
+                    new_terms.append((sub, order))
+    skipped_new = 0
+    if len(new_terms) > REFIT_MAX_NEW:
+        skipped_new, new_terms = len(new_terms), []
+    for sub, order in new_terms:
+        cols.append(_rk_basis(sub, order, Y, N))
+        terms.append(("new", None, sub, order))
     coef = np.zeros(0)
     if cols:
         A = np.column_stack(cols)
@@ -418,8 +433,7 @@ def refit_bmagn(db: TDB, phase: str, k: float, n: int = 600, seed: int = 1) -> D
     # write back
     changed, added = [], []
     for p in em_p:
-        p.expr = type(p.expr)([(p.expr.tmin, p.expr.tmax, repr(float(f"{em_new[id(p)]:.12g}")))],
-                              p.expr.reference)
+        p.expr = type(p.expr)([(p.expr.tmin, p.expr.tmax, repr(float(em_new[id(p)])))], p.expr.reference)
         changed.append(f"{p.raw_name} {vals[id(p)]:.6g} -> {em_new[id(p)]:.6g}")
     for (kind, p, sub, order), c in zip(terms, coef):
         c = float(f"{c:.10g}")
@@ -434,7 +448,76 @@ def refit_bmagn(db: TDB, phase: str, k: float, n: int = 600, seed: int = 1) -> D
                                                                                    "REFIT")))
             added.append(f"{raw} = {c:.6g} (fitted)")
     return {"k": k, "afm": afm, "end_members": changed[:len(em_p)], "fitted": changed[len(em_p):] + added,
-            "beta_residual": resid_beta, "n_samples": N}
+            "beta_residual": resid_beta, "n_samples": N, "method": "refit", "n_added": len(added),
+            "n_fitted_existing": len(other),
+            "skipped_new": (f"{skipped_new} candidate new interaction terms (> {REFIT_MAX_NEW}): only existing "
+                            f"interaction terms fitted" if skipped_new else "")}
+
+
+def transform_bmagn(db: TDB, phase: str, k: float) -> Dict[str, Any]:
+    """In place: ``phase``'s BMAGN for a formula unit k times larger (new atoms / old).  refit_bmagn when it can
+    (end-members exact, interactions least-squares); otherwise (temperature-dependent or ternary BMAGN terms, no
+    MAGNETIC type definition, AFM factor 0) the fallback rule: constant end-members exact, beta' = (1+beta)**k - 1,
+    every other BMAGN term (interactions, temperature-dependent end-members) multiplied by k - the first-order form
+    of ln(1+beta') = k*ln(1+beta), exact as beta -> 0.  Returns {'method', 'end_members', 'fitted' / 'scaled',
+    ...}."""
+    try:
+        return refit_bmagn(db, phase, k)          # raises before it changes anything
+    except HarmonizeError as e:
+        why = str(e)
+    fac = magnetic_factors(db, phase)
+    afm = fac[0] if fac else -1.0
+    ems, scaled = [], []
+    for p in db.parameters:
+        if p.key.phase != phase or p.key.ptype != "BMAGN":
+            continue
+        v = _const_value(db, p)
+        em = all(len(sl) == 1 and sl[0] != "*" for sl in _raw_subls(p))
+        if em and v is not None:
+            nv = float(beta_transform(v, k, afm if afm != 0 else 1.0))
+            p.expr = type(p.expr)([(p.expr.tmin, p.expr.tmax, repr(nv))], p.expr.reference)
+            ems.append(f"{p.raw_name} {v:.6g} -> {nv:.6g}")
+        else:
+            p.expr = scale_piecewise(p.expr, k)
+            scaled.append(f"{p.raw_name} x{fmt_k(k)}" + ("" if em else " (interaction, first-order rule)")
+                          + (" (temperature-dependent end-member: NOT exact)" if em else ""))
+    return {"k": k, "afm": afm, "method": "first-order fallback", "why": why, "end_members": ems,
+            "fitted": scaled, "n_added": 0,
+            "end_members_exact": not any("NOT exact" in x for x in scaled)}
+
+
+def magnetic_rescale_errors(orig: TDB, new: TDB, phase: str, n: int = 400) -> Dict[str, Any]:
+    """GM per mole of atoms of ``phase`` before vs after a magnetic rescale: {'endmembers': gm_compare at the
+    end-members only (5 T each), 'interior': at the end-members, binary edges and ``n`` random site fractions and T
+    (T_RANGE)} - over all of the phase's constituents in ``orig``, i.e. every subsystem of that database."""
+    comps = phase_comps(orig, phase)
+    try:
+        do, dn = pyc_db(_phase_only(orig, phase)), pyc_db(_phase_only(new, phase))
+    except Exception as e:  # noqa: BLE001 - reported
+        err = {"max_abs": math.nan, "max_rel": math.nan, "n": 0, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+        return {"endmembers": err, "interior": err}
+    return {"endmembers": gm_compare(do, phase, dn, phase, comps, n=0),
+            "interior": gm_compare(do, phase, dn, phase, comps, n=n)}
+
+
+def _phase_only(db: TDB, phase: str) -> TDB:
+    """``db`` with only ``phase`` (its elements, species, FUNCTIONs, type definitions): a fast pycalphad load."""
+    els = sorted(set(phase_comps(db, phase)) - {"VA"})
+    try:
+        return ts.restrict_tdb(db, els, phases=[phase])
+    except Exception:  # noqa: BLE001 - the whole database then
+        return db
+
+
+def magnetic_rescale_text(errs: Dict[str, Any]) -> str:
+    """'BMAGN end-members exact (max |ΔGM| 2e-10 J/mol of atoms), interior error <= 0.055 J/mol of atoms'."""
+    em, it = errs.get("endmembers") or {}, errs.get("interior") or {}
+    if not math.isfinite(em.get("max_abs", math.nan)) or not math.isfinite(it.get("max_abs", math.nan)):
+        return f"GM error not checked ({em.get('error') or it.get('error') or '?'})"
+    ex = em["max_rel"] <= GM_RTOL
+    return (f"BMAGN end-members {'exact' if ex else 'NOT exact'} (max |ΔGM| {em['max_abs']:.2g} J/mol of atoms, "
+            f"relative {em['max_rel']:.1e}), interior error <= {it['max_abs']:.3g} J/mol of atoms "
+            f"(max over {it['n']} states, {it['T'][0]:g}-{it['T'][1]:g} K; directive: tolerated)")
 
 
 # =============================================================================================== rescale
@@ -493,18 +576,27 @@ def rescale_phase(db: TDB, phase: str, new_ratios: Sequence[float], magnetic: st
         elif p.key.ptype not in ts.MAGNETIC_PTYPES:
             rep["unscaled"].append(p.raw_name)
     if mag and magnetic == "refit":
-        rep["refit"] = refit_bmagn(db, phase, k)
-    if check:
+        rep["refit"] = transform_bmagn(db, phase, k)
+    if check and mag and magnetic == "refit":
+        errs = magnetic_rescale_errors(orig, db, phase)
+        rep["gm"], rep["gm_endmembers"] = errs["interior"], errs["endmembers"]
+        rep["magnetic_text"] = magnetic_rescale_text(errs)
+    elif check:
         try:
-            rep["gm"] = gm_compare(pyc_db(orig), phase, pyc_db(db), phase, phase_comps(orig, phase))
+            rep["gm"] = gm_compare(pyc_db(_phase_only(orig, phase)), phase, pyc_db(_phase_only(db, phase)), phase,
+                                   phase_comps(orig, phase))
         except Exception as e:  # noqa: BLE001
             rep["gm"] = {"max_abs": math.nan, "max_rel": math.nan, "n": 0, "error": str(e)[:160]}
+    rf = rep.get("refit") or {}
     how = ("G/L x" + fmt_k(k) + ", TC unchanged" + (
         "" if not mag else ", BMAGN kept (keep_parameters)" if magnetic == "keep_parameters" else
-        ", BMAGN refitted"))
+        f", BMAGN end-members (1+beta)**{fmt_k(k)}-1 exact"
+        + (f", {len(rf.get('fitted') or [])} interaction term(s) by {rf.get('method', 'refit')}"
+           + (f" ({rf['n_added']} new)" if rf.get("n_added") else "") if rf.get("fitted") else "")))
     rep["text"] = (f"{phase}{' (' + label + ')' if label else ''}: {_ratios_text(old)} -> {_ratios_text(new)}, "
                    f"k = {fmt_k(k)}; {rep['scaled']} G/L term(s) scaled, {how}"
-                   + (f"; GM {gm_text(rep['gm'], exact=not mag)}" if "gm" in rep else ""))
+                   + (f"; {rep['magnetic_text']}" if rep.get("magnetic_text") else
+                      f"; GM {gm_text(rep['gm'], exact=not mag)}" if "gm" in rep else ""))
     return rep
 
 
@@ -518,8 +610,11 @@ def normalize_phase_formula_unit(tdb, phases: Sequence[str], target="sum_to_one"
                                  match_phase: Optional[str] = None, sublattice_map=None) -> Dict[str, Any]:
     """Change the formula unit of ``phases`` (GM per mole of atoms unchanged; see rescale_phase).  ``target``:
     'sum_to_one' | 'integers' | [ratios]; or ``match_tdb`` (+ ``match_phase``, default the same name): the other
-    database's site ratios, mapped onto this phase's sublattice order.  magnetic 'auto' = 'refuse' for a magnetic
-    phase (no exact transformation); rescale the non-magnetic side instead."""
+    database's site ratios, mapped onto this phase's sublattice order.  magnetic 'auto': with ``match_tdb`` the basis
+    rule (the directive) - the other phase magnetic: this one takes its basis, with the BMAGN transform when this one
+    is magnetic too (end-members exact, the error between them reported and tolerated); only this phase magnetic:
+    refused (the other, non-magnetic phase is rescaled to this one's basis instead, exactly).  Without ``match_tdb``
+    a magnetic phase is refused ('refuse'); 'keep_parameters' / 'refit' override."""
     db = tdb if isinstance(tdb, TDB) else parse_tdb(str(tdb))
     src = db.path
     db = copy.deepcopy(db)
@@ -551,6 +646,16 @@ def normalize_phase_formula_unit(tdb, phases: Sequence[str], target="sum_to_one"
             kk = sum(new[i] for i in _real(ph)) / sum(ph.site_ratios[i] for i in _real(ph))
             for i in _va_only(ph):
                 new[i] = ph.site_ratios[i] * kk
+            mode = magnetic
+            if magnetic == "auto" and abs(kk - 1.0) > 1e-12 and is_magnetic(db, ph_name):
+                if is_magnetic(other, mph):
+                    mode = "refit"              # both magnetic: this phase takes the other's (magnetic) basis
+                else:
+                    raise MagneticBasisError(
+                        f"{ph_name} is magnetic (TC/BMAGN) and {other.name}'s {mph} is not: by the basis rule the "
+                        f"non-magnetic phase takes the magnetic one's basis (exact), so rescale {other.name}'s {mph} "
+                        f"to this phase instead (normalize_phase_formula_unit on {other.name} with match_tdb = "
+                        f"{db.name}); or pass magnetic='refit' / 'keep_parameters' to rescale this one anyway")
         else:
             sn = ts.phase_snap(ph)
             if sn is not None and sn.changed:
@@ -564,7 +669,8 @@ def normalize_phase_formula_unit(tdb, phases: Sequence[str], target="sum_to_one"
                 if want:
                     snapped = ts.snap_phase_in(db, ph_name, sn)     # 0.333:0.667 read as 1/3:2/3 first
             new = phase_ratio_target(ph, target)
-        rep = rescale_phase(db, ph_name, new, magnetic)
+            mode = magnetic
+        rep = rescale_phase(db, ph_name, new, mode, check=True)
         if snapped:
             rep["snap"] = snapped["text"]
             rep["text"] = f"{ph_name}: {snapped['text']}; then " + rep["text"]
@@ -618,9 +724,24 @@ def _free_code(db: TDB, also: str = "") -> str:
 def basis_choice(base_mag: bool, add_mag: bool, base_total: float, add_total: float, normalization: str,
                  magnetic: str, phase: str, base_label: str = "base", add_label: str = "add") -> Dict[str, Any]:
     """Which formula-unit basis the extended phase gets: {'basis': 'base'|'add'|'sum_to_one', 'k_base', 'k_add',
-    'exact', 'text', 'magnetic_problem'}.  (No TDB needed: also used to word the plan's question.)"""
+    'exact', 'text', 'magnetic_problem', 'magnetic_transform'}.  (No TDB needed: also used to word the plan's
+    question.)  magnetic 'auto' (the directive): add magnetic -> add's basis (the base rescaled: exact if it is not
+    magnetic, else BMAGN end-members exact and the error between them tolerated - 'magnetic_transform'); only the
+    base magnetic -> the base's basis (add rescaled, exact); neither -> ``normalization``.  'refuse': the magnetic
+    side's basis when only one is magnetic, else ``normalization`` (and rescale_phase refuses a magnetic side)."""
     one_side = base_mag != add_mag
-    if one_side and magnetic in ("auto", "refuse"):
+    transform = False
+    if magnetic == "auto" and add_mag:
+        basis = "add"
+        transform = base_mag
+        why = (f"{base_label} (magnetic) rescaled to {add_label}'s magnetic basis (both magnetic: {add_label}'s "
+               f"basis wins)" if base_mag else
+               f"{base_label}'s non-magnetic model rescaled to {add_label}'s magnetic basis")
+    elif magnetic == "auto" and base_mag:
+        basis = "base"
+        why = (f"{add_label}'s non-magnetic parameters rescaled to {base_label}'s magnetic basis ({add_label} has no "
+               f"magnetic terms)")
+    elif one_side and magnetic == "refuse":
         basis = "add" if add_mag else "base"
         why = (f"{base_label}'s non-magnetic model rescaled to {add_label}'s magnetic basis" if add_mag else
                f"{add_label}'s non-magnetic parameters rescaled to {base_label}'s magnetic basis")
@@ -636,16 +757,20 @@ def basis_choice(base_mag: bool, add_mag: bool, base_total: float, add_total: fl
     if add_mag and abs(ka - 1) > 1e-12:
         problem.append(add_label)
     exact = not problem
+    transform = transform and abs(kb - 1) > 1e-12
     k_txt = (f"k = {fmt_k(kb)}" if abs(kb - 1) > 1e-12 and abs(ka - 1) <= 1e-12 else
              f"k = {fmt_k(ka)}" if abs(ka - 1) > 1e-12 and abs(kb - 1) <= 1e-12 else
              f"k({base_label}) = {fmt_k(kb)}, k({add_label}) = {fmt_k(ka)}")
     if abs(kb - 1) <= 1e-12 and abs(ka - 1) <= 1e-12:
         why, k_txt = f"same formula unit ({base_label} {tot:g} sites)", "k = 1"
     text = (f"{phase}: {why} (sum {tot:.6g}), {k_txt}, "
-            + ("exact" if exact else f"NOT exact: {' and '.join(problem)} magnetic and rescaled "
-                                     f"(magnetic='{magnetic}')"))
+            + ("exact" if exact else
+               f"BMAGN end-members exact ((1+beta)**{fmt_k(kb)}-1), the error between them tolerated (directive)"
+               if transform else
+               f"NOT exact: {' and '.join(problem)} magnetic and rescaled (magnetic='{magnetic}')"))
     return {"basis": basis, "total": tot, "k_base": kb, "k_add": ka, "exact": exact, "text": text,
-            "magnetic_problem": problem, "base_magnetic": base_mag, "add_magnetic": add_mag}
+            "magnetic_problem": problem, "base_magnetic": base_mag, "add_magnetic": add_mag,
+            "magnetic_transform": transform}
 
 
 def _imported(add: TDB, phase: str, comps) -> List[Parameter]:
@@ -766,7 +891,13 @@ def extend_phase_db(base: TDB, add: TDB, base_phase: str, add_phase: Optional[st
         basis = list(pb.site_ratios)
     rep["basis"] = bc
     mode = "refuse" if magnetic == "auto" else magnetic
-    rep["rescale_base"] = rescale_phase(B, P, basis, mode, base_label, check=False)
+    # magnetic 'auto' with both sides magnetic: the base takes add's basis with the BMAGN transform (end-members
+    # exact); its GM error between the end-members is measured on the base phase alone and put in the basis text
+    base_mode = "refit" if bc.get("magnetic_transform") else mode
+    rep["rescale_base"] = rescale_phase(B, P, basis, base_mode, base_label, check=bool(bc.get("magnetic_transform")))
+    if bc.get("magnetic_transform") and rep["rescale_base"].get("magnetic_text"):
+        bc["text"] += "; " + rep["rescale_base"]["magnetic_text"].replace(" (max over", f" of {base_label}'s "
+                                                                          f"{P} (max over", 1)
     add_basis = list(basis)
     rep["rescale_add"] = rescale_phase(D, P, add_basis, mode, add_label, check=False)
     pb, pd = B.phases[P], D.phases[P]
@@ -1045,6 +1176,9 @@ def _check_extension(base: TDB, add: TDB, new: TDB, rep: Dict[str, Any], n: int 
     base_comps = phase_comps(base, P)
     out = {"base": gm_compare(pyc_db(base), P, dbn, P, base_comps, n=n)}
     out["base"]["comps"] = [c for c in base_comps if c != "VA"]
+    if (rep.get("rescale_base") or {}).get("magnetic"):
+        # the base took add's basis with the BMAGN transform: exact at its end-members, tolerated in between
+        out["base_endmembers"] = gm_compare(pyc_db(base), P, dbn, P, base_comps, n=0)
     add_els = sorted(set(phase_comps(add, Q)) - {"VA"})
     others = [e for e in add_els if e not in comps]
     subsets = [()] + [(e,) for e in others]
@@ -1165,6 +1299,9 @@ def report_lines(rep: Dict[str, Any]) -> List[str]:
     if ch:
         L.append(f"GM {bl}'s {P} on {'-'.join(e.capitalize() for e in ch['base'].get('comps', []))} (unchanged?): "
                  + gm_text(ch["base"], exact=not (rep.get("rescale_base") or {}).get("magnetic")))
+        if ch.get("base_endmembers"):
+            L.append(f"GM {bl}'s {P} at its end-members (magnetic basis transform): " + gm_text(ch["base_endmembers"])
+                     + "; between them the magnetic error is tolerated (directive)")
         for r in ch["add"]:
             L.append(f"GM {al}'s {rep['add_phase']} reproduced on {r.get('system', '?')}: "
                      + gm_text(r, exact=r.get("expected_exact", False))
@@ -1406,10 +1543,11 @@ def jsonable_report(rep: Dict[str, Any]) -> Dict[str, Any]:
     out["basis"] = {k: v for k, v in rep["basis"].items()}
     out["added_constituents"] = {str(k): v for k, v in (rep.get("added_constituents") or {}).items()}
     ch = rep.get("checks") or {}
-    out["checks"] = {"base": ch.get("base"), "add": ch.get("add")}
+    out["checks"] = {"base": ch.get("base"), "add": ch.get("add"), "base_endmembers": ch.get("base_endmembers")}
     for key in ("rescale_base", "rescale_add"):
         r = rep.get(key) or {}
-        out[key] = {k: r.get(k) for k in ("k", "k_text", "old", "new", "scaled", "magnetic", "text")}
+        out[key] = {k: r.get(k) for k in ("k", "k_text", "old", "new", "scaled", "magnetic", "text", "magnetic_text",
+                                          "gm_endmembers")}
     out["tentative"] = [t.text() if hasattr(t, "text") else str(t) for t in rep.get("tentative") or []]
     out["tentative_replaced"] = [r.text() if hasattr(r, "text") else str(r) for r in rep.get("tentative_replaced") or []]
     out["tentative_notes"] = list(rep.get("tentative_notes") or [])
@@ -1424,8 +1562,9 @@ def register(tb) -> None:
     @tb.add("normalize_phase_formula_unit",
             "Change phases' formula unit, GM per atom kept. Site ratios x k; G/L x k range by range, TC kept, "
             "checked. target 'sum_to_one' (exact decimals) | 'integers' | [ratios] | match_tdb's phase. Magnetic "
-            "phases: no exact rescale - magnetic 'auto'/'refuse' errors with the size of the error, "
-            "'keep_parameters' or 'refit' (BMAGN) report it; rescale the non-magnetic side instead.",
+            "phases: no exact rescale. With match_tdb, 'auto' follows the basis rule (both magnetic: BMAGN "
+            "end-members exact, error between them reported; only this one magnetic: refused, rescale the other). "
+            "Otherwise 'auto'/'refuse' error with the size of the error; 'keep_parameters' / 'refit' report it.",
             {"tdb": S, "phases": {"type": "array", "items": S},
              "target": {"anyOf": [S, {"type": "array", "items": {"type": "number"}}]},
              "output_tdb": S, "magnetic": {"type": "string", "enum": list(MAGNETIC_MODES)},
@@ -1440,8 +1579,9 @@ def register(tb) -> None:
 
     @tb.add("extend_phase",
             "Extend a phase with another TDB's constituents. Keeps base_tdb's base_phase authoritative and adds "
-            "components (e.g. ['CO']) from add_tdb's add_phase (names may differ): sublattices mapped (or sublattice_map), formula unit harmonised (the MAGNETIC "
-            "side's basis when only one is magnetic, exact), only parameters with a component imported, collisions "
+            "components (e.g. ['CO']) from add_tdb's add_phase (names may differ): sublattices mapped (or sublattice_map), formula unit harmonised (add's "
+            "basis when add is magnetic - base BMAGN end-members exact if both are; the base's when only it is), "
+            "only parameters with a component imported, collisions "
             "by policy, FUNCTIONs copied/renamed, GM checks (base unchanged, add reproduced), end-members without G "
             "listed.",
             {"base_tdb": S, "add_tdb": S, "base_phase": S, "add_phase": S, "components": {"type": "array", "items": S},

@@ -187,13 +187,13 @@ def test_tool_and_standalone_code_build_the_same_tdbs(tmp_path):
     assert list(tmp_path.glob("standalone_outputs/A1_Fe-Mo.png"))
 
 
-def test_magnetic_exception_in_staged_merge(tmp_path):
+def test_magnetic_basis_rule_in_staged_merge(tmp_path):
     from test_compatibility import l12_A, l12_B
     a, b = write(tmp_path, "A_FeMo.tdb", l12_A()), write(tmp_path, "B_FeW.tdb", l12_B())
     r = staged_merge(a, b, str(tmp_path / "out"), policy="ask", plot=False)
     assert r["written"] and r["A_eff"] != r["A"] and Path(r["A_eff"]).name.startswith("A0_")
     text = summary_text(r)
-    assert "A rescaled to B (magnetic exception)" in text and "A0 " in text
+    assert "A rescaled to B's basis - A (non-magnetic) rescaled to B's magnetic basis" in text and "A0 " in text
     q = parse_tdb(r["versions"]["Q"].path)
     assert q.phases["L12"].site_ratios == [0.75, 0.25]                      # B's ratios in A's sublattice order
     assert q.phases["L12"].constituents[0][:2] == ["FE", "MO"]               # A's order kept
@@ -239,7 +239,7 @@ def test_force_replot_exact_rescale_fe_mo(tmp_path):
     kw = dict(policy="ask", ternary_temperatures_c=[], tmin_c=800, tmax_c=2600, composition_step=0.05,
               temperature_step=25, n_workers=3)
     r = staged_merge(a, b, str(tmp_path / "out"), plot=True, force_replot=["mo-FE"], **kw)
-    assert r["A_eff"] != r["A"]                                         # the C14 magnetic exception applied
+    assert r["A_eff"] != r["A"]                                         # the C14 magnetic basis rule applied
     st = {s.title: s for s in r["steps"]}
     a1 = st["A → A1"]
     assert not a1.changed_items and [it.name for it in a1.forced_items] == ["Fe-Mo"]

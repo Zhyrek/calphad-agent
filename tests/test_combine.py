@@ -73,13 +73,16 @@ def test_plan_lists_every_decision_once_with_stable_ids(tmp_path):
     r3 = combine_databases(srcs, str(tmp_path / "c"), decisions={"step1:phase:MU_D85": "rename"}, **kw)
     assert [n.id for n in r3["plan"].pending] == ["step2:phase:MU_D85"]
     assert "Already answered: step1:phase:MU_D85 = 'rename'" in r3["text"]
-    # a policy fills what is missing and is logged as such
-    r4 = combine_databases(srcs, str(tmp_path / "c"), policy="first", **{**kw, "unary50": "off"},
-                           ternary_temperatures_c=[], n_workers=3, lint=False, tmax_c=2600)
-    assert r4["written"]
-    pol = [e for e in r4["state"]["log"] if e["who"] == "policy"]
-    assert {e["id"] for e in pol} == {"step1:phase:MU_D85", "step2:phase:MU_D85"}
-    assert all(e["chosen"] == "db1" and "policy='first'" in e["reason"] for e in pol)
+    # a policy fills what is missing - but never a phase-model answer that drops an element from a phase entirely
+    # (db1 here drops W from MU_D85 in both steps): those stay questions, and each db option says what it drops
+    r4 = combine_databases(srcs, str(tmp_path / "c"), policy="first", **kw)
+    assert not r4["written"]
+    assert [n.id for n in r4["plan"].pending] == ["step1:phase:MU_D85", "step2:phase:MU_D85"]
+    assert all(n.answer is None and n.drops.get("db1") == ["W"] for n in r4["plan"].pending)
+    t4 = r4["text"]
+    assert "policy='first' not applied: 'db1' would drop W from the phase - asked" in t4
+    assert re.search(r"'db1': FeNb-90Hua-LB's MU_D85 model only - drops W from MU_D85 \(FeW-15Jac-static's \d+ "
+                     r"MU_D85 parameters lost: ", t4), t4
 
 
 def test_proposed_base_and_order_have_reasons(tmp_path):

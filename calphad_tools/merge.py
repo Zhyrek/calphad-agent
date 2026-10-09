@@ -60,6 +60,7 @@ class Option:
     key: str            # what to put in decisions[conflict.id]
     label: str          # human readable
     detail: str = ""
+    drops: Tuple[str, ...] = ()     # elements this option removes from a phase entirely (phase-model conflicts)
 
 
 @dataclass
@@ -236,17 +237,73 @@ def _subsystem(key: Tuple, db: TDB) -> str:
 
 
 def _decide(c: Conflict, decisions: Dict[str, str], policy: str, default_key: Optional[str] = None) -> Conflict:
+    """``policy`` 'first' / 'last' fills undecided conflicts - never one whose pick would drop an element from a phase
+    entirely (Option.drops): that stays pending, i.e. it is asked.  'first:predict' / 'last:predict' (internal
+    predictions and intermediate builds that follow the user's decisions) fill everything."""
     keys = [o.key for o in c.options]
+    base, _, mode = policy.partition(":")
     if c.id in decisions and decisions[c.id] in keys:
         c.decision, c.decided_by = decisions[c.id], "user"
     elif c.group and c.group in decisions and decisions[c.group] in keys:
         c.decision, c.decided_by = decisions[c.group], "group"
-    elif policy in ("first", "last"):
+    elif base in ("first", "last"):
         dbk = [k for k in keys if k.startswith("db")]
         pick = default_key if (default_key and default_key in keys) else (
-            (dbk[0] if policy == "first" else dbk[-1]) if dbk else keys[0])
+            (dbk[0] if base == "first" else dbk[-1]) if dbk else keys[0])
+        opt = next((o for o in c.options if o.key == pick), None)
+        if mode != "predict" and opt is not None and opt.drops:
+            return c                    # never drop an element automatically: asked
         c.decision, c.decided_by = pick, f"policy:{policy}"
     return c
+
+
+def _phase_elements(db: TDB, ph: Phase) -> set:
+    els = set()
+    for sl in ph.constituents:
+        for sp in sl:
+            if sp in ("VA", "*", "/-"):
+                continue
+            if sp in db.elements:
+                els.add(sp)
+            else:
+                els |= {e for e in re.findall(r"[A-Z][A-Z]?", re.sub(r"[\d+\-/]", " ", sp)) if e in db.elements}
+    return els
+
+
+def dropped_by(dbs: Sequence[TDB], name: str, keep: Sequence[int], others: Sequence[int]) -> Dict:
+    """What keeping the phase model of files ``keep`` drops from phase ``name``: {'elements': elements only the other
+    files' versions have (gone from the phase entirely), 'params': {file index: [(system, count)]}, 'n': total}."""
+    keep = [i for i in keep if name in dbs[i].phases]
+    others = [i for i in others if name in dbs[i].phases]
+    kept = set()
+    for i in keep:
+        kept |= _phase_elements(dbs[i], dbs[i].phases[name])
+    gone, lost, n = set(), {}, 0
+    for i in others:
+        gone |= _phase_elements(dbs[i], dbs[i].phases[name]) - kept
+        by: Dict[str, int] = {}
+        for p in dbs[i].parameters:
+            if p.key.phase == name:
+                sub = _subsystem(p.key.as_tuple(), dbs[i])
+                by[sub] = by.get(sub, 0) + 1
+                n += 1
+        if by:
+            lost[i] = sorted(by.items(), key=lambda kv: (len(kv[0].split("-")), kv[0]))
+    return {"elements": sorted(gone), "params": lost, "n": n}
+
+
+def dropped_text(dbs: Sequence[TDB], name: str, d: Dict, labels: Optional[Dict[int, str]] = None) -> str:
+    """'drops CO from C15_LAVES (B's 5 C15_LAVES parameters lost: Ce-Co 3, Ce-Fe 1, Ce-Co-Fe 1)'; ``labels`` {file
+    index: name to use} (default the files' names)."""
+    cap = lambda sub: "-".join(e.capitalize() for e in sub.split("-"))   # noqa: E731
+    parts = []
+    for i, subs in d["params"].items():
+        k = sum(c for _, c in subs)
+        parts.append(f"{(labels or {}).get(i, dbs[i].name)}'s {k} {name} parameter{'s' if k != 1 else ''} lost: "
+                     + ", ".join(f"{cap(sub)} {c}" for sub, c in subs[:6]) + (", ..." if len(subs) > 6 else ""))
+    head = (f"drops {', '.join(d['elements'])} from {name}" if d["elements"] else
+            f"drops no element from {name}")
+    return head + (f" ({'; '.join(parts)})" if parts else "")
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +312,9 @@ def _decide(c: Conflict, decisions: Dict[str, str], policy: str, default_key: Op
 def plan_merge(paths: Sequence[str], decisions: Optional[Dict[str, str]] = None, policy: str = "ask",
                rtol: float = 1e-4, atol: float = 1e-2, t_min: float = 298.15,
                t_max: float = 3000.0, tentative=True) -> MergePlan:
-    """Plan a merge.  ``policy`` = 'ask' (leave conflicts pending) | 'first' | 'last'.
+    """Plan a merge.  ``policy`` = 'ask' (leave conflicts pending) | 'first' | 'last' (a phase-model conflict whose
+    pick would drop an element from the phase entirely is still asked) | 'first:predict' / 'last:predict' (internal:
+    fill everything).
 
     Files earlier in ``paths`` have higher priority for automatic choices - except that an assessed parameter always
     beats a tentative one.  ``tentative``: True (default) | False | {'mixing_per_atom': 50000, 'vacancy': 200000}
@@ -414,9 +473,12 @@ def plan_merge(paths: Sequence[str], decisions: Optional[Dict[str, str]] = None,
                 opts = []
                 for sig, idxs in groups.items():
                     ph = dbs[idxs[0]].phases[name]
-                    opts.append(Option(f"db{idxs[0] + 1}", f"use the model from {', '.join(dbs[k].name for k in idxs)}",
+                    others = [i for i in have if i not in idxs]
+                    dr = dropped_by(dbs, name, idxs, others)
+                    opts.append(Option(f"db{idxs[0] + 1}", f"use the model from {', '.join(dbs[k].name for k in idxs)}"
+                                                           f" - {dropped_text(dbs, name, dr)}",
                                        f"{ph.n_sublattices} sublattices {ph.site_ratios}; parameters of {name} "
-                                       f"from files with other models are dropped"))
+                                       f"from files with other models are dropped", tuple(dr["elements"])))
                 opts.append(Option("rename", f"keep all: rename {name} in later files to {name}_2, ..."))
                 c = _decide(Conflict(f"phase:{name}", "phase_model",
                                      f"Phase {name} has incompatible sublattice models", opts), decisions, policy)

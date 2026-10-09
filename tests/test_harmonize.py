@@ -271,8 +271,21 @@ def test_extend_base_nonmagnetic_add_magnetic(files, tmp_path):
 
 
 def test_extend_both_magnetic(files, tmp_path):
+    """magnetic='auto' (the directive): add's magnetic basis wins, the base's magnetic C15 is rescaled to it with
+    its BMAGN end-member transformed exactly (GM exact at the base's end-members, the rest tolerated and reported);
+    'refuse' keeps the old error; 'keep_parameters' / 'refit' keep normalization's basis (add rescaled)."""
+    r = hz.extend_phase(files["basemag"], files["addmag"], "C15_LAVES", "CET2", output_tdb=str(tmp_path / "a.tdb"))
+    bc = r["basis"]
+    assert bc["basis"] == "add" and bc["magnetic_transform"] and not bc["exact"]
+    assert "base (magnetic) rescaled to add's magnetic basis" in bc["text"] and "k = 1/3" in bc["text"]
+    assert "BMAGN end-members exact" in bc["text"] and "interior error <=" in bc["text"]
+    bm = _params(tmp_path / "a.tdb", "C15_LAVES")[("BMAGN", "C15_LAVES", (("CE",), ("FE",)), 0, "")]
+    assert float(bm.expr.ranges[0][2]) == pytest.approx(3.5 ** (1 / 3) - 1, rel=1e-14)
+    assert r["checks"]["base_endmembers"]["max_rel"] <= 1e-9                       # exact at the end-members
+    assert {c["system"]: c for c in r["checks"]["add"]}["Ce-Co"]["max_rel"] <= 1e-9  # add's untouched
     with pytest.raises(hz.MagneticBasisError) as e:
-        hz.extend_phase(files["basemag"], files["addmag"], "C15_LAVES", "CET2", output_tdb=str(tmp_path / "x.tdb"))
+        hz.extend_phase(files["basemag"], files["addmag"], "C15_LAVES", "CET2", magnetic="refuse",
+                        output_tdb=str(tmp_path / "x.tdb"))
     assert "k = 3" in str(e.value) and "keep_parameters' would change GM by up to" in str(e.value)
     res = {}
     for mode in ("keep_parameters", "refit"):

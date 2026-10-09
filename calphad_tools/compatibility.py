@@ -622,7 +622,7 @@ def _stage5(VA: ts.StageView, VB: ts.StageView, norm_notes, rtol, plan=None,
 def predicted_merge(a_path, bn_path, tentative=True):
     """The A-priority merge staged_merge would build (alias names kept separate): (plan, text)."""
     dec = ts.alias_separate([a_path, bn_path])
-    return ts.merged_text([a_path, bn_path], dec, "first", tentative=tentative)
+    return ts.merged_text([a_path, bn_path], dec, "first:predict", tentative=tentative)
 
 
 def _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir,
@@ -656,13 +656,21 @@ def _stage6(a_path, bn_path, VA, VB, rtol, stages, workdir,
     verdict = "CHANGES" if da.changed or db.changed else "OK"
     line = "(A's values win conflicts) " + " | ".join(parts) if parts else "no binaries/ternaries"
     for n in a_rescaled:
-        if n.action == ts.A_RESCALED:
-            line += f" | {n.phase}: A rescaled to B's site ratios (B magnetic, 1 atom/fu): exact, not a change"
+        if n.action == ts.A_RESCALED and n.magnetic:
+            it = (n.magnetic.get("interior") or {}).get("max_abs", math.nan)
+            line += (f" | {n.phase}: A (magnetic) rescaled to B's magnetic basis (k = {ts._fmt_k(n.magnetic['k'])}): "
+                     f"BMAGN end-members {'exact' if n.magnetic.get('endmembers_exact') else 'NOT exact'}, interior "
+                     f"error <= {it:.3g} J/mol of atoms (directive: tolerated) - A's subsystems with its BMAGN terms "
+                     f"change")
+        elif n.action == ts.A_RESCALED:
+            line += f" | {n.phase}: A rescaled to B's site ratios (B magnetic, A not): exact, not a change"
     for c in plan.conflicts:
         if c.kind == "phase_model" and c.decided_by.startswith("policy"):
             ph = c.id.split(":", 1)[1]
-            line += (f" | {ph}: predicted with A's model only ('{c.decision}'); decision 'rename' keeps B's as "
-                     f"{ph}_2 instead (B's subsystems with it then keep it)")
+            lab = next((o.label.split(" - ", 1)[-1] for o in c.options if o.key == c.decision and " - " in o.label),
+                       "")
+            line += (f" | {ph}: predicted with A's model only ('{c.decision}'{': ' + lab if lab else ''}); decision "
+                     f"'rename' keeps B's as {ph}_2 instead (B's subsystems with it then keep it)")
     exact = sorted({s.name for d in (da, db) for s in d.subsystems if s.notes and not s.changed})
     if exact:
         line += (f" | exact-only: {', '.join(exact)} (staged_merge force_replot={exact!r} maps them anyway)")
@@ -685,7 +693,7 @@ def evaluate_pair(a_path: str, b_path: str, *, phase_map: Optional[Dict[str, str
     if a_rescaled:
         an_path = str(workdir / f"{Path(a_path).stem}_rescaled.tdb")
         ts.write_tdb(An, an_path, [f"{Path(a_path).name} with phases rescaled to "
-                                   f"{Path(b_path).name}'s site ratios (magnetic exception) or read exactly:"]
+                                   f"{Path(b_path).name}'s site ratios (magnetic basis rule) or read exactly:"]
                      + [n.text() for n in a_rescaled])
         An = parse_tdb(an_path)
     bn_path = b_path
@@ -898,8 +906,8 @@ def register(tb) -> None:
 
     @tb.add("evaluate_compatibility",
             "Staged check: can TDB add_tdb (B) be merged into base_tdb (A)? B is first normalised to "
-            "A's phase names / sublattice order / formula units (a magnetic 1-atom/fu B phase instead keeps its "
-            "ratios and A's non-magnetic one is rescaled), then 1 SGTE unaries (vs SGTE unary50 if they "
+            "A's phase names / sublattice order / formula units (a magnetic B phase instead keeps its ratios and "
+            "A's is rescaled to them; BMAGN end-members exact if A is magnetic too), then 1 SGTE unaries (vs SGTE unary50 if they "
             "differ), 2 other unaries, 3 binaries, 4 ternary+, 5 phase models (merged model, new end-members, "
             "magnetic/ordering), 6 which binaries/ternaries change and need replotting. Short verdicts; details "
             "-> Excel + PPTX. Then staged_merge.",
