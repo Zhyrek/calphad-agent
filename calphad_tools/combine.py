@@ -1521,6 +1521,22 @@ def _staged_evidence(sc: StepContext, r: Dict[str, Any], log: DecisionLog) -> No
             m2 = re.search(r"mapped (\S+)", seen)
             if m2:
                 e.add_affected(m2.group(1))
+    # every entry of the step points to the TDB lines it changed: the .diff file(s) of the transitions where its kind
+    # acts (the normalisation's for normalisation / rescale entries), else the full merge's (B3 -> Q)
+    diffs = {(st.old, st.new): st.tdb.path for st in r.get("steps", [])
+             if getattr(st, "tdb", None) is not None and st.tdb.path}
+    norm = [d.path for d in r.get("norm_diffs") or [] if d.path]
+    for e in log:
+        if e.step != tag:
+            continue
+        want = [p for on, p in diffs.items() if e.kind in STEP_KINDS.get(on, ())]
+        if e.kind in ("normalisation", "rescale"):
+            want = norm + want
+        if not want and ("B3", "Q") in diffs:
+            want = [diffs[("B3", "Q")]]
+        for p in want:
+            if p not in e.refs:
+                e.refs.append(p)
 
 
 # =============================================================================================== exactness
@@ -2455,7 +2471,12 @@ def build_state(plan: CombinePlan, results: List[Dict], log: DecisionLog, attr, 
                       "deck": r["files"].get("deck", ""), "tentative": _jsonable(r.get("tentative_cfg", True)),
                       "magnetic_fit": _current_magnetic_fit(),
                       "tentative_terms": r.get("tentative") or {},
-                      "xlsx": r["files"]["xlsx"], "images": list(r.get("images") or [])})
+                      "xlsx": r["files"]["xlsx"], "images": list(r.get("images") or []),
+                      # the TDB lines each transition changed (tdbdiff), normalisation first
+                      "diffs": {**{f"{d.old_label} → {d.new_label}": d.path for d in r.get("norm_diffs") or []
+                                   if d.path},
+                                **{x.title: x.tdb.path for x in r.get("steps", [])
+                                   if getattr(x, "tdb", None) is not None and x.tdb.path}}})
     pairs = [{"pair": f"{plan.infos[a]['stem']} + {plan.infos[b]['stem']}", "overall": ev.overall,
               "xlsx": ev.files.get("xlsx", "")} for (a, b), ev in plan.pair_eval.items()]
     return {"version": 1, "created": time.strftime("%Y-%m-%dT%H:%M:%S"), "out_dir": str(out),

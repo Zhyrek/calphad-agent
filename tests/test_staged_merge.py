@@ -102,14 +102,25 @@ def test_deck_one_summary_plus_two_slides_per_step(her_choi):
     r = her_choi
     prs = Presentation(r["files"]["deck"])
     assert len(r["steps"]) == 6
-    assert len(prs.slides) == 1 + 2 * len(r["steps"])
     titles = []
     for sl in prs.slides:
         t = [sh.text_frame.text for sh in sl.shapes if sh.has_text_frame and sh.text_frame.text.strip()]
         titles.append(t[0] if t else "")
+    # summary, the normalisation's TDB changes (if B / A were normalised), then per step its TDB changes (one or more
+    # slides, "(2/3)") and its diagrams
+    n_norm = sum(t.startswith("Normalisation ") for t in titles)
+    assert n_norm == sum(1 for d in r["norm_diffs"] for t in titles if t.startswith(f"Normalisation {d.title}"))
+    tdb = [t for t in titles if ": TDB changes" in t]
+    assert len(prs.slides) == 1 + len(tdb) + len(r["steps"])
     assert titles[0].startswith("Staged merge")
-    assert titles[1].startswith("B → B1: differences") and titles[2].startswith("B → B1: diagrams")
+    i = 1 + n_norm
+    assert titles[i].startswith("B → B1: TDB changes")
+    i = max(j for j, t in enumerate(titles) if t.startswith("B → B1: TDB changes")) + 1
+    assert titles[i].startswith("B → B1: diagrams")
     assert titles[-1].startswith("A1 → A2: diagrams")
+    for st in r["steps"]:
+        assert st.tdb is not None and Path(st.tdb.path).name == f"{st.old}-{st.new}.diff"
+        assert sum(t.startswith(f"{st.title}: TDB changes") for t in titles) <= 8
     for sl in prs.slides:            # wrapped, never cut mid-word; tables stay on the slide
         for sh in sl.shapes:
             if sh.has_table:
@@ -254,9 +265,11 @@ def test_force_replot_exact_rescale_fe_mo(tmp_path):
     text = summary_text(r)
     assert "forced replots: Fe-Mo (exact rescale): max ΔT 0.00 K" in text and "FAILED" not in text
     prs = Presentation(r["files"]["deck"])
-    assert len(prs.slides) == 1 + 2 * len(r["steps"])
     titles = [[sh.text_frame.text for sh in sl.shapes if sh.has_text_frame and sh.text_frame.text.strip()][0]
               for sl in prs.slides]
+    # summary, A -> A0 (the magnetic basis rule's rescale), each step's TDB changes, each step's diagrams
+    assert len(prs.slides) == 1 + sum(": TDB changes" in t for t in titles) + len(r["steps"])
+    assert any(t.startswith("Normalisation A → A0: TDB changes") for t in titles)
     i = titles.index("A → A1: diagrams that changed + exact changes replotted on request")
     assert Path(r["files"]["deck"]).exists() and i > 0
     assert any("compare_A-A1" in p for p in r["images"])

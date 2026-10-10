@@ -228,7 +228,8 @@ def write_deck(state: Dict, V: Dict, results: List[Dict], path: str) -> str:
         norm = [n for n in r["notes"] if n.action in ts.NORM_CHANGES]
         note = clip("Normalised: " + "; ".join(n.text() for n in norm), 125, "Excel") if norm else ""
         add_staged_slides(prs, r["steps"], r["plots"], st["a_label"], st["b_label"], r["tol_K"],
-                          Path(r["files"]["xlsx"]).parent / "figures", note, prefix=f"Step {st['k']} · ")
+                          Path(r["files"]["xlsx"]).parent / "figures", note, prefix=f"Step {st['k']} · ",
+                          norm_diffs=r.get("norm_diffs") or ())
     # decision log
     WD = [2.6, 1.4, 1.55, 0.7, 2.5, 3.05, 1.1]
     drows = []
@@ -243,11 +244,13 @@ def write_deck(state: Dict, V: Dict, results: List[Dict], path: str) -> str:
                       C(clip(e["reason"], 170) if not fl else "NOT GIVEN", fill="differs" if fl else None,
                         bold=fl),
                       C(clip("; ".join(e["evidence"]), 230) or "—"),
-                      C(clip(", ".join(e["affected"]), 70) or "—")])
+                      C("\n".join(x for x in (clip(", ".join(e["affected"]), 70),
+                                              ", ".join(Path(p).name for p in e.get("refs", [])
+                                                        if str(p).endswith(".diff"))) if x) or "—")])
     pu.add_flow_table_slides(prs, "Decision log", ["ID", "Subject", "Chosen", "Who", "Why", "Evidence", "Affects"],
                              drows, WD, font_size=10, max_height_in=5.7,
                              subtitle="every decision, including the automatic rules; full text in the Excel sheet "
-                                      "'Decision log'")
+                                      "'Decision log'; *.diff = the step's TDB lines it changed (step folder, diffs/)")
     # validation per source
     for s in state["sources"]:
         png = V["overlays"].get(s["stem"])
@@ -458,6 +461,19 @@ def write_xlsx(state: Dict, V: Dict, path: str) -> str:
     srows += [[f"zero G: {z['text']}"] for z in V["sanity"].get("zero_g", [])]
     srows += [[x] for x in cannot_prove_lines(V["extrapolations"], state.get("validate_temperatures_c") or [])]
     sheet("Sanity", ["Finding"], srows, [160])
+    from .tdbdiff import read_diff
+    drows = []
+    for st in state["steps"]:
+        for title, p in (st.get("diffs") or {}).items():
+            if p and Path(p).exists():
+                rows = read_diff(p)
+                drows += [[f"step {st['k']}", title, g, ch, line] for g, ch, line in rows] or [
+                    [f"step {st['k']}", title, "", "", "no TDB changes (numerically identical)"]]
+    w = sheet("TDB changes", ["Step", "Transition", "Group", "Change", "Line"], drows, [8, 16, 30, 9, 150])
+    for row in w.iter_rows(min_row=2):
+        if row[3].value == "removed":
+            for c in row:
+                c.font = Font(color="C00000")
     sheet("Attribution", ["Parameter / phase model", "Decision id", "Subsystems"],
           [[k, i, ", ".join(subs)] for part in ("params", "models") for k, v in state["attr"][part].items()
            for i, subs in v.items()], [50, 44, 40])
@@ -504,7 +520,9 @@ def write_md(state: Dict, V: Dict, files: Dict[str, str], path: str) -> str:
     L += ["| ID | Subject | Chosen | Who | Why | Evidence | Affects |", "|---|---|---|---|---|---|---|"]
     for e in state["log"]:
         ev = "; ".join(e["evidence"][:4]) + (f" (+{len(e['evidence']) - 4})" if len(e["evidence"]) > 4 else "")
-        refs = " ".join(f"[fig]({rel(x)})" for x in e["refs"][:2])
+        refs = " ".join(f"[{'diff' if str(x).endswith('.diff') else 'fig'}]({rel(x)})"
+                        for x in ([x for x in e["refs"] if not str(x).endswith(".diff")][:2]
+                                  + [x for x in e["refs"] if str(x).endswith(".diff")][:3]))
         L.append(f"| `{e['id']}` | {esc(e['subject'])} | {esc(clip(str(e['chosen']), 80))} | {e['who']} | "
                  f"{esc(e['reason']) if e['reason'] else 'NOT GIVEN'} | {esc(clip(ev, 400))} {refs} | "
                  f"{esc(', '.join(e['affected']))} |")
@@ -536,6 +554,9 @@ def write_md(state: Dict, V: Dict, files: Dict[str, str], path: str) -> str:
     for st in state["steps"]:
         L.append(f"- step {st['k']}: {st['pair']} -> [{Path(st['Q']).name}]({rel(st['Q'])}); deck "
                  f"[{Path(st['deck']).name}]({rel(st['deck'])}), workbook [{Path(st['xlsx']).name}]({rel(st['xlsx'])})")
+        if st.get("diffs"):
+            L.append("  - TDB changes (red/- old, +new): " + ", ".join(
+                f"[{t}]({rel(p)})" for t, p in st["diffs"].items()))
         for img in st.get("images", [])[:6]:
             L.append(f"  - ![{Path(img).stem}]({rel(img)})")
     L.append("")

@@ -20,8 +20,11 @@ Every version is written to the output folder.  For B, B1, B2, B3, Q all binarie
 system are mapped (shaded style), but a subsystem that tdbstage.diff_versions proves unchanged from the previous
 version is not recomputed - its figure and invariants are reused.  For A, A1, A2 only A's subsystems that change
 are mapped.  Consecutive versions are compared (B->B1->B2->B3->Q, A->A1->A2): numerically different parameters,
-phase-model changes, invariant reactions that moved (ΔT, Δx).  One deck: a summary slide, then per step one
-differences slide and one slide with the changed diagrams of both versions; an Excel workbook has everything.
+phase-model changes, invariant reactions that moved (ΔT, Δx).  One deck: a summary slide, the normalisation's TDB
+changes (B as given -> B, A -> A0, when they differ), then per step its "TDB changes" (calphad_tools.tdbdiff: the
+changed TDB lines from keyword to '!', old in red text immediately followed by new, grouped per phase; capped at
+DIFF_MAX_SLIDES slides) and one slide with the changed diagrams of both versions.  Every step's full line diff is in
+diffs/<old>-<new>.diff and a 'TDB <old>-<new>' sheet of the Excel workbook, which has everything else too.
 """
 from __future__ import annotations
 
@@ -34,7 +37,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import tdbstage as ts
-from .compatibility import clip, fit_rows
+from .compatibility import clip
 from .tdbparse import parse_tdb
 
 KELVIN = 273.15
@@ -480,6 +483,7 @@ class Step:
     forced_inv: Dict[str, List[Dict]] = field(default_factory=dict)
     forced_kind: Dict[str, str] = field(default_factory=dict)
     zero_g: List[str] = field(default_factory=list)            # end-members with no G (pycalphad 0): stable or not
+    tdb: Any = None                                             # tdbdiff.TdbDiff: the TDB lines that changed
 
     def forced_shift(self, name: str) -> Tuple[float, float, bool]:
         """(max |ΔT|, max Δx, consistent?) of a forced replot: consistent = nothing appeared/disappeared and the
@@ -639,46 +643,57 @@ def _side_by_side(step: Step, plots, out_png: str, max_cols: int = 4) -> Optiona
     return out_png
 
 
-def _diff_rows(step: Step) -> List[List[Any]]:
-    from .pptx_utils import GridCell as C
-    rows = []
-    for note in step.diff.notes:
-        ph, _, rest = note.partition(": ")
-        rows.append([C("exact (no change)"), C(ph), C(rest), C(", ".join(
-            x.name for x in step.diff.subsystems if note in x.notes))])
-    for it in sorted(step.forced_items, key=lambda it: step.forced_shift(it.name)[2]):
-        ok = step.forced_shift(it.name)[2]
-        rows.append([C("forced replot"), C(it.name), C(step.forced_label(it).split(": ", 1)[1], bold=not ok),
-                     C("exactness check", fill="same" if ok else "differs")])
-    for (phase, _), (text, subs) in model_groups(step.diff).items():
-        rows.append([C("phase model"), C(phase), C(text), C(", ".join(subs))])
-    for t, r in step.moved():
-        rows.append([C("invariant"), C(t), C(_fmt_shift(t, r).split(": ", 1)[1]),
-                     C(r.get("type", "") or "", fill="differs" if r["status"] != "moved" else None)])
-    changed_subs = step.diff.changed
-    for p in sorted(step.diff.params, key=ts._pc_rank):
-        subs = [x.name for x in changed_subs if any(q.key == p.key for q in x.params)]
-        if not subs:
-            continue
-        det = (f"Δmax {ts.fmt_delta(p.max_diff, p.ptype)} at {p.T_at:.0f} K" if p.kind == "value"
-               else p.kind + (f": {clip(p.new, 120)}" if p.kind == "added" and p.new else ""))
-        rows.append([C("parameter"), C(p.label), C(det), C(", ".join(subs))])
-    return rows
+DIFF_MAX_SLIDES = 8          # TDB-changes slides per step; the rest is in the step's .diff file
+
+
+def step_tdb_diff(old_path: str, new_path: str, old_label: str, new_label: str, out_file: str, *,
+                  old_renames=None, new_renames=None, old_perms=None, old_fn_renames=None, step: Optional[Step] = None):
+    """The TDB-line diff of one step (tdbdiff.diff_tdb), written to ``out_file``; for a step whose lines changed but
+    whose subsystems did not (numerically equal within tolerance, or an exact rescale) the diff says so."""
+    from .tdbdiff import diff_tdb
+    d = diff_tdb(old_path, new_path, old_label, new_label, old_renames=old_renames, new_renames=new_renames,
+                 old_perms=old_perms, old_fn_renames=old_fn_renames)
+    if (step is not None and d.entries and all(e.change == "changed" for e in d.entries)
+            and not step.diff.params and not model_groups(step.diff)):
+        d.note = ("these lines change only by an exact rescale (site ratios with G/L alike): GM per atom identical"
+                  if step.diff.notes else
+                  "these lines differ in text only: numerically identical within tolerance, same phase models")
+    d.write(out_file)
+    return d
+
+
+def add_tdb_diff_slides(prs, d, title: str, desc: str = "", max_slides: int = DIFF_MAX_SLIDES) -> int:
+    """The "TDB changes" slides of one diff (tdbdiff.TdbDiff): removed / old lines in red, then the new line right
+    after; added lines in the normal text colour; grouped per phase; the full list in the step's .diff file."""
+    from . import pptx_utils as pu
+    from .tdbdiff import LEGEND, NO_CHANGES
+    fname = f"diffs/{Path(d.path).name}" if d.path else "the .diff file"
+    groups = [(g.title, [e.lines for e in g.entries]) for g in d.groups]
+    sub = f"{LEGEND} · {fname}"
+    if desc and len(desc) + len(sub) < 122:
+        sub = f"{desc} · {sub}"
+    return pu.add_diff_slides(prs, title, groups, subtitle=sub, max_slides=max_slides, note=d.note,
+                              more=lambda n: f"… {n} more lines: see {fname}", empty_text=NO_CHANGES)
 
 
 def write_deck(steps: List[Step], plots, path: str, a_name: str, b_name: str, tol_T: float, fig_dir: Path,
-               summary_note: str = "") -> Tuple[str, List[str]]:
+               summary_note: str = "", norm_diffs: Sequence = ()) -> Tuple[str, List[str]]:
     from . import pptx_utils as pu
     prs = pu.new_presentation()
-    imgs = add_staged_slides(prs, steps, plots, a_name, b_name, tol_T, fig_dir, summary_note)
+    imgs = add_staged_slides(prs, steps, plots, a_name, b_name, tol_T, fig_dir, summary_note, norm_diffs=norm_diffs)
     pu.save(prs, path)
     return path, imgs
 
 
+NORM_DESC = {"B": "B in A's conventions", "A0": "A on B's magnetic basis / exact ratios"}
+
+
 def add_staged_slides(prs, steps: List[Step], plots, a_name: str, b_name: str, tol_T: float, fig_dir: Path,
-                      summary_note: str = "", prefix: str = "") -> List[str]:
-    """The staged-merge slides (summary, then per step a differences table and the changed diagrams) added to
-    ``prs``; ``prefix`` starts every title (combine_databases: "Step 2 · ").  Returns the comparison images."""
+                      summary_note: str = "", prefix: str = "", norm_diffs: Sequence = (),
+                      max_diff_slides: int = DIFF_MAX_SLIDES) -> List[str]:
+    """The staged-merge slides (summary; the normalisation's TDB changes; then per step its TDB changes - the
+    changed TDB lines, old in red then new - and the changed diagrams) added to ``prs``; ``prefix`` starts every
+    title (combine_databases: "Step 2 · ").  Returns the comparison images."""
     from . import pptx_utils as pu
     from pptx.util import Inches
     from .pptx_utils import GridCell as C
@@ -709,16 +724,13 @@ def add_staged_slides(prs, steps: List[Step], plots, a_name: str, b_name: str, t
                              subtitle=(summary_note or "A = base, B = added; each version compared with its "
                                                        "predecessor only"), max_height_in=5.5)
     imgs = []
-    WD = [1.5, 3.1, 5.7, 2.5]
+    for d in norm_diffs or ():
+        add_tdb_diff_slides(prs, d, f"{prefix}Normalisation {d.title}: TDB changes", NORM_DESC.get(d.new_label, ""),
+                            max_diff_slides)
     for st in steps:
-        drows = _diff_rows(st) or [[C("no differences: every parameter numerically equal, same phase models",
-                                      span=4, muted=True)]]
-        drows = fit_rows(drows, WD, 11, lambda k, st=st: [C(f"+{k} more rows: Excel sheet '{st.old}-{st.new}'",
-                                                            span=4, muted=True)])
-        pu.add_flow_table_slides(prs, f"{prefix}{st.title}: differences ({STEP_DESC.get(st.new, '')})",
-                                 ["Kind", "Item", "Change", "Subsystems / type"], drows, WD, font_size=11,
-                                 subtitle="numerically different parameters, phase-model changes and moved "
-                                          "invariants only")
+        if st.tdb is not None:
+            add_tdb_diff_slides(prs, st.tdb, f"{prefix}{st.title}: TDB changes", STEP_DESC.get(st.new, ""),
+                                max_diff_slides)
         png = _side_by_side(st, plots, str(fig_dir / f"compare_{st.old}-{st.new}.png"))
         if png:
             imgs.append(png)
@@ -741,7 +753,8 @@ def add_staged_slides(prs, steps: List[Step], plots, a_name: str, b_name: str, t
     return imgs
 
 
-def write_xlsx(steps: List[Step], plots, versions: Dict[str, Version], path: str, notes) -> str:
+def write_xlsx(steps: List[Step], plots, versions: Dict[str, Version], path: str, notes,
+               norm_diffs: Sequence = ()) -> str:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
     wb = Workbook()
@@ -783,6 +796,24 @@ def write_xlsx(steps: List[Step], plots, versions: Dict[str, Version], path: str
             for c in row:
                 c.alignment = Alignment(wrap_text=True, vertical="top")
         for col, wd in zip("ABCDEFG", (34, 10, 14, 12, 22, 50, 50)):
+            w.column_dimensions[col].width = wd
+    from openpyxl.styles import Font as _F
+    for d in list(norm_diffs) + [st.tdb for st in steps if st.tdb is not None]:
+        w = wb.create_sheet(f"TDB {d.old_label.replace(' as given', ' given')}-{d.new_label}"[:31])
+        w.append(["Group", "Change", "Line"])
+        if d.empty:
+            w.append(["", "", "no TDB changes (numerically identical)"])
+        if d.note:
+            w.append(["", "", d.note])
+        for grp, ch, line in d.rows():
+            w.append([grp, ch, line])
+            if ch == "removed":
+                for c in w[w.max_row]:
+                    c.font = _F(color="C00000")
+        for row in w.iter_rows():
+            for c in row:
+                c.alignment = Alignment(wrap_text=True, vertical="top")
+        for col, wd in zip("ABC", (34, 10, 160)):
             w.column_dimensions[col].width = wd
     w = wb.create_sheet("Invariants")
     w.append(["Version", "Diagram", "Reused from", "T (K)", "T (°C)", "Phases", "Type", "Compositions"])
@@ -924,6 +955,24 @@ def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, subl
                 else:
                     seen = f"{m.phase} not stable in the mapped {where}"
                 st.zero_g.append(f"{m.phase} {', '.join(ems)}: {seen}")
+    # the TDB lines each step changes (and the normalisation's), one .diff file per step
+    from . import tdbdiff as tdd
+    ddir = out / "diffs"
+    for st in steps:
+        side_b = st.old in inv_rename
+        st.tdb = step_tdb_diff(versions[st.old].path, versions[st.new].path, st.old, st.new,
+                               str(ddir / f"{st.old}-{st.new}.diff"),
+                               old_renames=inv_rename.get(st.old) if side_b else None,
+                               new_renames=inv_rename.get(st.new) if side_b else None,
+                               old_fn_renames=tdd.function_renames(versions[st.new].log), step=st)
+    norm_diffs = []
+    if r["B"] != r["B_original"]:
+        norm_diffs.append(step_tdb_diff(r["B_original"], r["B"], "B as given", "B", str(ddir / "norm-B.diff"),
+                                        old_renames=tdd.renames_from_notes(r["notes"]),
+                                        old_perms=tdd.perms_from_notes(r["notes"])))
+    if r.get("A_eff") and r["A_eff"] != r["A"]:
+        norm_diffs.append(step_tdb_diff(r["A"], r["A_eff"], "A", "A0", str(ddir / "norm-A.diff")))
+    r["norm_diffs"] = norm_diffs
     unknown = []
     if force_replot and force_replot is not True and not isinstance(force_replot, str):
         unknown = [n for n in force_replot if not any(force_matcher([n])(k) for k in known)]
@@ -939,10 +988,11 @@ def staged_merge(a_path: str, b_path: str, out_dir: str, *, phase_map=None, subl
     if plot:
         fig_dir.mkdir(parents=True, exist_ok=True)
         _, imgs = write_deck(steps, plots, files["deck"], Path(a_path).name, Path(r["B_original"]).name, tol_K,
-                             fig_dir, note)
+                             fig_dir, note, norm_diffs)
     else:
         files.pop("deck")
-    write_xlsx(steps, plots, versions, files["xlsx"], r["notes"])
+    write_xlsx(steps, plots, versions, files["xlsx"], r["notes"], norm_diffs)
+    files["diffs"] = str(ddir)
     r.update({"written": True, "steps": steps, "plots": plots, "files": files, "images": imgs,
               "renamed_in": {ts.stage_sysname(k): v for k, v in renamed_in.items()},
               "tol_K": tol_K, "plotted": plot, "forced": sorted(forced_all), "force_unknown": unknown})
@@ -1045,7 +1095,8 @@ def register(tb) -> None:
             "A0 = A rescaled to a magnetic B phase's site ratios when needed (BMAGN end-members exact if A is "
             "magnetic too). "
             "Maps B's binaries+ternary for each version (unchanged subsystems reused), compares consecutive "
-            "versions (parameters, phase models, invariant shifts) -> one deck (summary + 2 slides per step) + "
+            "versions (parameters, phase models, invariant shifts) -> one deck (summary; per step the changed TDB "
+            "lines, old red then new, and the diagrams) + diffs/*.diff + "
             "Excel; force_replot maps exact-only changes anyway as evidence. Run evaluate_compatibility first.",
             {"base_tdb": S, "add_tdb": S, "output_dir": S,
              "decisions": {"type": "object", "additionalProperties": {"type": "string"}},

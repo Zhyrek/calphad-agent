@@ -384,3 +384,198 @@ def add_flow_table_slides(prs, title: str, header: Sequence[str], rows: List, co
         if footnote:
             _textbox(s, Inches(0.5), Inches(7.02), Inches(12.3), Inches(0.35), footnote, size=9, color=MUTED)
     return len(pages)
+
+
+# ---------------------------------------------------------------------------
+# Line diffs (TDB changes): removed lines in red text, added lines in the slide's normal text colour
+# ---------------------------------------------------------------------------
+DIFF_RED = RGBColor(0xC0, 0x00, 0x00)              # removed / old, on a light background
+DIFF_RED_ON_DARK = RGBColor(0xFF, 0x80, 0x80)      # removed / old, on a dark background
+DIFF_BAND = RGBColor(0xE6, 0xE9, 0xED)             # group headers: light grey band
+_NS = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+       "p": "http://schemas.openxmlformats.org/presentationml/2006/main"}
+
+
+def _luminance(hexrgb: str) -> float:
+    r, g, b = (int(hexrgb[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _color_hex(el, master) -> Optional[str]:
+    """Hex RGB of a colour element (srgbClr / sysClr / schemeClr resolved through the master's colour map and
+    theme), None if unknown."""
+    for c in el.iter():
+        tag = c.tag.split("}")[-1]
+        if tag == "srgbClr":
+            return c.get("val")
+        if tag == "sysClr":
+            return c.get("lastClr") or ("FFFFFF" if c.get("val") == "window" else "000000")
+        if tag == "schemeClr":
+            name = c.get("val")
+            cmap = master._element.find("p:clrMap", _NS)
+            if cmap is not None and cmap.get(name):
+                name = cmap.get(name)
+            name = {"bg1": "lt1", "tx1": "dk1", "bg2": "lt2", "tx2": "dk2"}.get(name, name)
+            try:
+                from lxml import etree
+                th = master.part.part_related_by(
+                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme")
+                root = etree.fromstring(th.blob)
+                sc = root.find(f".//a:clrScheme/a:{name}", _NS)
+                if sc is not None:
+                    return _color_hex(sc, master)
+            except Exception:                         # noqa: BLE001 - no theme: assume the usual light background
+                pass
+            return {"lt1": "FFFFFF", "lt2": "EEECE1", "dk1": "000000", "dk2": "1F497D"}.get(name)
+    return None
+
+
+def background_is_dark(slide) -> bool:
+    """True if the slide's background (its own, else its layout's, else its master's) is dark.  Read-only: the
+    background XML is inspected, never created."""
+    master = slide.slide_layout.slide_master
+    for owner in (slide, slide.slide_layout, master):
+        bg = owner._element.find("p:cSld/p:bg", _NS)
+        if bg is None:
+            continue
+        hx = _color_hex(bg, master)
+        if hx:
+            return _luminance(hx) < 0.5
+    return False
+
+
+def text_colors(slide) -> tuple:
+    """(normal text colour, removed-line red) for the slide's background: black-ish on light, white on dark."""
+    return (WHITE, DIFF_RED_ON_DARK) if background_is_dark(slide) else (DARK, DIFF_RED)
+
+
+def _diff_cell(cell, text: str, size: float, color, bold: bool = False, mono: bool = True, fill=None,
+               italic: bool = False, align=PP_ALIGN.LEFT):
+    if fill is None:
+        cell.fill.background()                    # no fill: the slide's background shows through
+    else:
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = fill
+    cell.margin_left = cell.margin_right = Inches(0.04)
+    cell.margin_top = cell.margin_bottom = Inches(0.015)
+    cell.vertical_anchor = MSO_ANCHOR.TOP
+    tf = cell.text_frame
+    tf.word_wrap = True
+    p = tf.paragraphs[0]
+    p.text = ""
+    p.alignment = align
+    r = p.add_run()
+    r.text = text
+    r.font.size = Pt(size)
+    r.font.bold = bold
+    r.font.italic = italic
+    r.font.color.rgb = color
+    r.font.name = "Courier New" if mono else "Calibri"
+
+
+def add_diff_slides(prs, title: str, groups: Sequence, *, subtitle: Optional[str] = None, max_slides: int = 8,
+                    more=lambda n: f"… {n} more lines", note: str = "", empty_text: str = "no changes",
+                    font_size: float = 11, max_height_in: float = 5.7, width_in: float = 12.33,
+                    gutter_in: float = 0.3) -> int:
+    """Line-diff slides: ``groups`` [(group title, [block, ...])], a block being the lines that stay together
+    ([('removed' | 'added', text), ...] - a pair is one block, never split over two slides).  Removed lines in red
+    text with a "−" gutter, added lines in the slide's normal text colour with "+", group headers in a light grey
+    band (repeated "(cont.)" on the next slide), full lines wrapped inside the row in Courier New.  At most
+    ``max_slides`` slides; what does not fit becomes a last row ``more(n lines)``.  Returns the slide count."""
+    text_w = width_in - gutter_in
+    band_size = font_size
+
+    def h_line(text: str, mono=True, size=font_size) -> float:
+        return _est_lines(text, text_w if mono else width_in, size, mono) * size * 1.2 / 72.0 + 0.07
+
+    def h_block(b) -> float:
+        return sum(h_line(t) for _, t in b)
+
+    head_h = lambda t: _est_lines(t, width_in, band_size, False) * band_size * 1.2 / 72.0 + 0.08   # noqa: E731
+    def paginate(avail: float) -> List[List]:
+        pages: List[List] = []
+        cur: List = []
+        used = 0.0
+        if note:
+            cur.append(("note", note))
+            used += h_line(note, mono=False)
+        if not any(blocks for _, blocks in groups):
+            cur.append(("note", empty_text))
+        for gtitle, blocks in groups:
+            if not blocks:
+                continue
+            hh = head_h(gtitle)
+            if cur and used + hh + h_block(blocks[0]) > avail:      # a header never alone at the bottom
+                pages.append(cur)
+                cur, used = [], 0.0
+            cur.append(("head", gtitle))
+            used += hh
+            for b in blocks:                                         # a block (a pair) never split
+                hb = h_block(b)
+                if cur and used + hb > avail and not (cur[-1][0] == "head"):
+                    pages.append(cur)
+                    cont = f"{gtitle} (cont.)"
+                    cur, used = [("head", cont)], head_h(cont)
+                cur.append(("block", b))
+                used += hb
+        if cur:
+            pages.append(cur)
+        return pages
+
+    avail = max_height_in
+    pages = paginate(avail)
+    if 1 < len(pages) <= max_slides:                  # balance the pages (no near-empty last slide)
+        total = (sum(head_h(t) + sum(h_block(b) for b in blocks) for t, blocks in groups if blocks)
+                 + (h_line(note, mono=False) if note else 0.0))
+        balanced = paginate(min(avail, total / len(pages) * 1.1))
+        if len(balanced) == len(pages):
+            pages = balanced
+    total_lines = sum(len(b) for _, blocks in groups for b in blocks)
+    if len(pages) > max_slides:
+        pages = pages[:max_slides]
+        last = pages[-1]
+
+        def page_h(pg):
+            return sum(head_h(x[1]) if x[0] == "head" else h_line(x[1], mono=False) if x[0] == "note"
+                       else h_block(x[1]) for x in pg)
+        shown = lambda: sum(len(x[1]) for pg in pages for x in pg if x[0] == "block")   # noqa: E731
+        while last and (page_h(last) + h_line(more(total_lines - shown()), mono=False) > avail
+                        or last[-1][0] == "head"):
+            last.pop()
+        last.append(("more", more(total_lines - shown())))
+    total_w = width_in
+    left = max(0.2, (13.333 - total_w) / 2)
+    top = 1.55 if subtitle else 1.35
+    for pi, page in enumerate(pages):
+        s = _blank(prs)
+        add_title(s, title if len(pages) == 1 else f"{title}  ({pi + 1}/{len(pages)})", subtitle)
+        normal, red = text_colors(s)
+        rows = []                                  # (kind, change, text)
+        for x in page:
+            if x[0] == "block":
+                rows += [("line", ch, t) for ch, t in x[1]]
+            else:
+                rows.append((x[0], "", x[1]))
+        heights = [head_h(t) if k == "head" else h_line(t) if k == "line" else h_line(t, mono=False)
+                   for k, _, t in rows]
+        shape = s.shapes.add_table(len(rows), 2, Inches(left), Inches(top), Inches(total_w), Inches(sum(heights)))
+        tbl = shape.table
+        tbl.first_row = False
+        tbl.horz_banding = False
+        tbl.columns[0].width = Inches(gutter_in)
+        tbl.columns[1].width = Inches(text_w)
+        for i, ((kind, ch, text), h) in enumerate(zip(rows, heights)):
+            tbl.rows[i].height = Inches(h)
+            if kind == "line":
+                col = red if ch == "removed" else normal
+                _diff_cell(tbl.cell(i, 0), "−" if ch == "removed" else "+", font_size, col, bold=True,
+                           align=PP_ALIGN.CENTER)
+                _diff_cell(tbl.cell(i, 1), text, font_size, col)
+                continue
+            tbl.cell(i, 0).merge(tbl.cell(i, 1))
+            if kind == "head":
+                _diff_cell(tbl.cell(i, 0), text, band_size, DARK, bold=True, mono=False, fill=DIFF_BAND)
+            else:
+                _diff_cell(tbl.cell(i, 0), text, font_size, MUTED if not background_is_dark(s) else normal,
+                           mono=False, italic=True)
+    return len(pages)

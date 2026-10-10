@@ -225,7 +225,18 @@ def test_deck_layout(trio):
     assert titles[0].startswith("Combined: FeNb-90Hua-LB + FeW-15Jac-static + NbW-97Hua-LB")
     assert titles[1].startswith("Plan: base, order and decisions")
     assert any(t.startswith("Step 1 · Staged merge") for t in titles)
-    assert any(t.startswith("Step 2 · B2 → B3: differences") for t in titles)
+    assert any(t.startswith("Step 2 · B2 → B3: TDB changes") for t in titles)
+    assert any(t.startswith("Step 1 · B3 → Q: TDB changes") for t in titles)
+    assert not any(": differences" in t for t in titles)
+    # the decision log points every step entry to the TDB lines it changed (the step's .diff files)
+    for e in st["log"]:
+        if e["step"].startswith("step "):
+            assert any(str(x).endswith(".diff") and Path(x).exists() for x in e["refs"]), e["id"]
+    assert any(str(x).endswith("B3-Q.diff") for e in st["log"] if e["id"] == "step1:phase:MU_D85" for x in e["refs"])
+    from openpyxl import load_workbook
+    ws = load_workbook(st["files"]["xlsx"])["TDB changes"]
+    rows = [tuple(c.value for c in r) for r in ws.iter_rows(min_row=2)]
+    assert ("step 1", "B3 → Q", "MU_D85_2 (was MU_D85 in B3)", "removed", "PHASE MU_D85 % 4 1 4 2 6 !") in rows
     assert any(t.startswith("Decision log") for t in titles)
     assert sum(t.startswith("Validation: ") for t in titles) == 3
     assert titles[-1].startswith("What this cannot prove")
