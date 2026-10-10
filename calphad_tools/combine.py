@@ -2453,6 +2453,7 @@ def build_state(plan: CombinePlan, results: List[Dict], log: DecisionLog, attr, 
                       "phase_renames": r.get("phase_renames") or {}, "shared": r["shared"],
                       "needed": [asdict(n) for n in st.needed], "warnings": st.warnings,
                       "deck": r["files"].get("deck", ""), "tentative": _jsonable(r.get("tentative_cfg", True)),
+                      "magnetic_fit": _current_magnetic_fit(),
                       "tentative_terms": r.get("tentative") or {},
                       "xlsx": r["files"]["xlsx"], "images": list(r.get("images") or [])})
     pairs = [{"pair": f"{plan.infos[a]['stem']} + {plan.infos[b]['stem']}", "overall": ev.overall,
@@ -2604,6 +2605,22 @@ def summary_text(state: Dict, V: Dict, files: Dict[str, str], rel=lambda p: p) -
 
 
 # =============================================================================================== tool
+
+def _hz_mf_schema():
+    from .harmonize import MAGNETIC_FIT_SCHEMA
+    return MAGNETIC_FIT_SCHEMA
+
+
+def _hz_with_mf(fn):
+    from .harmonize import with_magnetic_fit
+    return with_magnetic_fit(fn)
+
+
+def _current_magnetic_fit() -> str:
+    from .harmonize import magnetic_fit
+    return magnetic_fit()
+
+
 def register(tb) -> None:
     from .staged_merge import TENTATIVE_SCHEMA, tentative_arg
     S = {"type": "string"}
@@ -2637,9 +2654,10 @@ def register(tb) -> None:
              "force_replot": {"anyOf": [{"type": "boolean"}, {"type": "array", "items": S}]},
              "tmin_c": N, "tmax_c": N, "unary50": S,
              "validate_only": {"type": "boolean", "description": "re-validate an existing run (e.g. F edited)"},
-             "tentative": TENTATIVE_SCHEMA,
+             "tentative": TENTATIVE_SCHEMA, "magnetic_fit": _hz_mf_schema(),
              "final_tdb": {**S, "description": "with validate_only: the TDB to validate"}},
             ["tdbs"])
+    @_hz_with_mf
     def combine_databases_tool(tdbs, base=None, order=None, decisions=None, decision_reasons=None, policy="ask",
                                phase_map=None, sublattice_map=None, ternary_temperatures_c=None,
                                validate_temperatures_c=None, output_dir=None, n_workers=None, force_replot=False,

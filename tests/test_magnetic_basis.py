@@ -149,13 +149,15 @@ def test_both_magnetic_A_transformed(both, files):
     beta = 4.0 ** (1 / 3) - 1
     assert _value(a0["BMAGN(C15_LAVES,FE:ZR;0)"]) == pytest.approx(beta, rel=1e-15)
     assert _value(q["BMAGN(C15_LAVES,FE:ZR;0)"]) == pytest.approx(beta, rel=1e-15)
-    refit = [n for n, p in a0.items() if p.key.ptype == "BMAGN" and p.expr.reference == "REFIT"]
-    assert refit and all("FE" in n for n in refit)                  # interactions next to the magnetic end-member
+    # default (user directive): end-members exact, no new parameters - the error between end-members is tolerated
+    assert not [n for n, p in a0.items() if p.key.ptype == "BMAGN" and p.expr.reference == "REFIT"]
+    assert sum(1 for p in a0.values() if p.key.ptype == "BMAGN") == sum(1 for p in a.values() if p.key.ptype == "BMAGN")
     em = _gm(files["A_mag"], both["A_eff"], n=0)
     assert em["n"] > 0 and em["max_rel"] <= 1e-9                    # exact at every end-member of A
     note = next(n for n in both["notes"] if n.action == ts.A_RESCALED)
     it = note.magnetic["interior"]
-    assert note.magnetic["endmembers_exact"] and 0 < it["max_abs"] < 1.0 and it["n"] >= 400
+    assert note.magnetic["endmembers_exact"] and 0 < it["max_abs"] < 5.0 and it["n"] >= 400
+    assert "magnetic_fit='refit' would add" in note.text()
     full = _gm(files["A_mag"], both["A_eff"])                       # independent check: same order of magnitude
     assert full["max_abs"] == pytest.approx(it["max_abs"], rel=1e-6)
     print(f"C15 interior error {it['max_abs']:.4g} J/mol of atoms; end-members {em['max_abs']:.2g}")
@@ -377,3 +379,25 @@ def test_combine_lists_extend_first(files):
     assert [k for k, _ in n.options][:3] == ["extend", "db1", "db2"]
     assert n.options[0][1].startswith("RECOMMENDED - ")
     assert "drops CO from C15_LAVES" in dict(n.options)["db1"]
+
+
+
+def test_refit_is_an_explicit_option(files, both):
+    """magnetic_fit='refit' (asked for): fitted BMAGN interaction terms (reference REFIT) added to A, end-members
+    still exact, and a smaller error between end-members than the default."""
+    from calphad_tools.harmonize import magnetic_fit
+    from calphad_tools.staged_merge import staged_merge
+    tok = magnetic_fit("refit")
+    try:
+        r = staged_merge(files["A_mag"], files["B_mag"], str(files["dir"] / "both_refit"), plot=False,
+                         ternary_temperatures_c=[])
+    finally:
+        __import__("calphad_tools.harmonize", fromlist=["_MAGNETIC_FIT"])._MAGNETIC_FIT.reset(tok)
+    a0 = _params(r["A_eff"])
+    refit = [n for n, p in a0.items() if p.key.ptype == "BMAGN" and p.expr.reference == "REFIT"]
+    assert refit and all("FE" in n for n in refit)
+    assert _gm(files["A_mag"], r["A_eff"], n=0)["max_rel"] <= 1e-9
+    it_refit = next(n for n in r["notes"] if n.action == ts.A_RESCALED).magnetic["interior"]["max_abs"]
+    it_default = next(n for n in both["notes"] if n.action == ts.A_RESCALED).magnetic["interior"]["max_abs"]
+    assert it_refit < it_default
+    assert magnetic_fit() == "endmembers"                            # reset after the call

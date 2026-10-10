@@ -1023,6 +1023,17 @@ def tentative_arg(tb, value):
     return f() if callable(f) else True
 
 
+
+def _hz_mf_schema():
+    from .harmonize import MAGNETIC_FIT_SCHEMA
+    return MAGNETIC_FIT_SCHEMA
+
+
+def _hz_with_mf(fn):
+    from .harmonize import with_magnetic_fit
+    return with_magnetic_fit(fn)
+
+
 def register(tb) -> None:
     S = {"type": "string"}
     N = {"type": "number"}
@@ -1049,8 +1060,9 @@ def register(tb) -> None:
              "force_replot": {"anyOf": [{"type": "boolean"}, {"type": "array", "items": S}],
                               "description": "true or ['Fe-Mo', ...]: recompute subsystems whose change is exact "
                                              "(e.g. a rescale) instead of reusing them, and show the invariant shift"},
-             "tentative": TENTATIVE_SCHEMA},
+             "tentative": TENTATIVE_SCHEMA, "magnetic_fit": _hz_mf_schema()},
             ["base_tdb", "add_tdb"])
+    @_hz_with_mf
     def staged_merge_tool(base_tdb, add_tdb, output_dir=None, decisions=None, policy: str = "ask", phase_map=None,
                           sublattice_map=None, ternary_temperatures_c=None, tmin_c: float = 300.0,
                           tmax_c: float = 3000.0, composition_step: float = 0.02, temperature_step: float = 10.0,

@@ -54,7 +54,47 @@ from .tdbparse import (TDB, Parameter, TypeDef, fmt_ratio, is_tentative, parse_p
 GM_RTOL = 1e-9                         # relative GM tolerance of an exact transformation
 T_RANGE = (300.0, 2900.0)              # K, where GM is compared (inside the usual 3000 K upper limit)
 IMPORT_PTYPES = ("G", "TC", "BMAGN", "NT")
-MAGNETIC_MODES = ("auto", "refuse", "keep_parameters", "refit")
+MAGNETIC_MODES = ("auto", "refuse", "keep_parameters", "endmembers", "refit")
+# how A's BMAGN is transformed when a magnetic phase must take another formula unit (both sides magnetic):
+# "endmembers" (default) = end-members exact, (1+beta)**k-1, other BMAGN terms x k, no new parameters;
+# "refit" = also least-squares interaction terms (may add BMAGN parameters, reference REFIT)
+MAGNETIC_FITS = ("endmembers", "refit")
+import contextvars as _cv
+_MAGNETIC_FIT = _cv.ContextVar("magnetic_fit", default="endmembers")
+
+
+MAGNETIC_FIT_SCHEMA = {"type": "string", "enum": list(MAGNETIC_FITS),
+                       "description": "both phases magnetic, A rescaled to B's formula unit: 'endmembers' (default; "
+                                      "BMAGN end-members exact, no new parameters) or 'refit' (adds fitted BMAGN "
+                                      "interaction terms, smaller error between end-members) - ask the user first"}
+
+
+def with_magnetic_fit(fn):
+    """Tool wrapper: a ``magnetic_fit`` argument sets the BMAGN transform for the call."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*a, magnetic_fit=None, **kw):
+        tok = _MAGNETIC_FIT.set(str(magnetic_fit).strip().lower()) if magnetic_fit else None
+        if tok is not None and _MAGNETIC_FIT.get() not in MAGNETIC_FITS:
+            _MAGNETIC_FIT.reset(tok)
+            raise ValueError(f"magnetic_fit must be one of {MAGNETIC_FITS}, not {magnetic_fit!r}")
+        try:
+            return fn(*a, **kw)
+        finally:
+            if tok is not None:
+                _MAGNETIC_FIT.reset(tok)
+    return wrapper
+
+
+def magnetic_fit(value=None):
+    """The BMAGN transform used by magnetic="auto" (both sides magnetic): set it (returns a token) or read it."""
+    if value is None:
+        return _MAGNETIC_FIT.get()
+    v = str(value).strip().lower()
+    if v not in MAGNETIC_FITS:
+        raise ValueError(f"magnetic_fit must be one of {MAGNETIC_FITS}, not {value!r}")
+    return _MAGNETIC_FIT.set(v)
 
 
 class MagneticBasisError(ValueError):
@@ -454,17 +494,19 @@ def refit_bmagn(db: TDB, phase: str, k: float, n: int = 600, seed: int = 1) -> D
                             f"interaction terms fitted" if skipped_new else "")}
 
 
-def transform_bmagn(db: TDB, phase: str, k: float) -> Dict[str, Any]:
+def transform_bmagn(db: TDB, phase: str, k: float, refit: bool = False) -> Dict[str, Any]:
     """In place: ``phase``'s BMAGN for a formula unit k times larger (new atoms / old).  refit_bmagn when it can
     (end-members exact, interactions least-squares); otherwise (temperature-dependent or ternary BMAGN terms, no
     MAGNETIC type definition, AFM factor 0) the fallback rule: constant end-members exact, beta' = (1+beta)**k - 1,
     every other BMAGN term (interactions, temperature-dependent end-members) multiplied by k - the first-order form
     of ln(1+beta') = k*ln(1+beta), exact as beta -> 0.  Returns {'method', 'end_members', 'fitted' / 'scaled',
     ...}."""
-    try:
-        return refit_bmagn(db, phase, k)          # raises before it changes anything
-    except HarmonizeError as e:
-        why = str(e)
+    why = ""
+    if refit:
+        try:
+            return refit_bmagn(db, phase, k)          # raises before it changes anything
+        except HarmonizeError as e:
+            why = str(e)
     fac = magnetic_factors(db, phase)
     afm = fac[0] if fac else -1.0
     ems, scaled = [], []
@@ -481,7 +523,8 @@ def transform_bmagn(db: TDB, phase: str, k: float) -> Dict[str, Any]:
             p.expr = scale_piecewise(p.expr, k)
             scaled.append(f"{p.raw_name} x{fmt_k(k)}" + ("" if em else " (interaction, first-order rule)")
                           + (" (temperature-dependent end-member: NOT exact)" if em else ""))
-    return {"k": k, "afm": afm, "method": "first-order fallback", "why": why, "end_members": ems,
+    return {"k": k, "afm": afm, "method": "first-order fallback" if refit else "end-members exact", "why": why,
+            "end_members": ems,
             "fitted": scaled, "n_added": 0,
             "end_members_exact": not any("NOT exact" in x for x in scaled)}
 
@@ -575,9 +618,9 @@ def rescale_phase(db: TDB, phase: str, new_ratios: Sequence[float], magnetic: st
             rep["scaled"] += 1
         elif p.key.ptype not in ts.MAGNETIC_PTYPES:
             rep["unscaled"].append(p.raw_name)
-    if mag and magnetic == "refit":
-        rep["refit"] = transform_bmagn(db, phase, k)
-    if check and mag and magnetic == "refit":
+    if mag and magnetic in ("refit", "endmembers"):
+        rep["refit"] = transform_bmagn(db, phase, k, refit=magnetic == "refit")
+    if check and mag and magnetic in ("refit", "endmembers"):
         errs = magnetic_rescale_errors(orig, db, phase)
         rep["gm"], rep["gm_endmembers"] = errs["interior"], errs["endmembers"]
         rep["magnetic_text"] = magnetic_rescale_text(errs)
@@ -649,7 +692,7 @@ def normalize_phase_formula_unit(tdb, phases: Sequence[str], target="sum_to_one"
             mode = magnetic
             if magnetic == "auto" and abs(kk - 1.0) > 1e-12 and is_magnetic(db, ph_name):
                 if is_magnetic(other, mph):
-                    mode = "refit"              # both magnetic: this phase takes the other's (magnetic) basis
+                    mode = magnetic_fit()       # both magnetic: this phase takes the other's (magnetic) basis
                 else:
                     raise MagneticBasisError(
                         f"{ph_name} is magnetic (TC/BMAGN) and {other.name}'s {mph} is not: by the basis rule the "
@@ -893,7 +936,7 @@ def extend_phase_db(base: TDB, add: TDB, base_phase: str, add_phase: Optional[st
     mode = "refuse" if magnetic == "auto" else magnetic
     # magnetic 'auto' with both sides magnetic: the base takes add's basis with the BMAGN transform (end-members
     # exact); its GM error between the end-members is measured on the base phase alone and put in the basis text
-    base_mode = "refit" if bc.get("magnetic_transform") else mode
+    base_mode = (mode if mode in MAGNETIC_FITS else magnetic_fit()) if bc.get("magnetic_transform") else mode
     rep["rescale_base"] = rescale_phase(B, P, basis, base_mode, base_label, check=bool(bc.get("magnetic_transform")))
     if bc.get("magnetic_transform") and rep["rescale_base"].get("magnetic_text"):
         bc["text"] += "; " + rep["rescale_base"]["magnetic_text"].replace(" (max over", f" of {base_label}'s "

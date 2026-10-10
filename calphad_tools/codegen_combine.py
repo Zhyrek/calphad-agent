@@ -29,6 +29,10 @@ def merge_step(k, a, b, step):
     aliases kept separate, the staged rule's decisions (base wins element data, FUNCTIONs, unaries of shared
     elements) under the logged decisions."""
     A, B = parse_tdb(str(a)), parse_tdb(str(b))
+    if step.get("magnetic_fit", "endmembers") != "endmembers":
+        # [calphad_tools] the run asked for magnetic_fit='refit' (fitted BMAGN interaction terms)
+        from calphad_tools.harmonize import magnetic_fit
+        magnetic_fit(step["magnetic_fit"])
     An, Bn, notes = normalize_pair(A, B, step["phase_map"] or None, step["sublattice_map"] or None, on_error="keep")
     a_eff, b_eff = str(a), str(b)
     if any(n.action in A_CHANGES for n in notes):
@@ -191,6 +195,7 @@ def cells(state: Dict[str, Any], src: Callable[[str], str], ctx: Ctx) -> List[Tu
     srcs = "{\n" + "".join(f"    {Path(s['path']).stem!r}: {src(s['path'])},\n" for s in state["sources"]) + "}"
     steps = [{"phase_map": st["phase_map"], "sublattice_map": st["sublattice_map"], "decisions": st["decisions"],
               "tentative": st.get("tentative", True),
+              **({"magnetic_fit": st["magnetic_fit"]} if st.get("magnetic_fit", "endmembers") != "endmembers" else {}),
               **({"extensions": st["extensions"]} if st.get("extensions") else {})} for st in state["steps"]]
     ext = any(st.get("extensions") for st in state["steps"])
     consts = (f"SOURCES = {srcs}\n"

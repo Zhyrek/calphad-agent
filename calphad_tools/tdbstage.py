@@ -1285,13 +1285,21 @@ def _rescale_a_to_b(A: TDB, phase: str, k_b: float, b_ratios: Sequence[float], a
         return NormNote(phase, A_RESCALED, f"{head}: exact. A {a_before} -> {_subl_text(pa)} (B's site ratios, A's "
                                            f"order) because B is magnetic and A is not; {n_a} A G/L term(s) "
                                            f"x{ka:.6g}: exact")
-    rep = _harmonize().rescale_phase(A, phase, new, "refit", "A", check=True)
+    hz = _harmonize()
+    rep = hz.rescale_phase(A, phase, new, hz.magnetic_fit(), "A", check=True)
     em, it = rep.get("gm_endmembers") or {}, rep.get("gm") or {}
     rf = rep.get("refit") or {}
     ok = math.isfinite(em.get("max_rel", math.nan)) and em["max_rel"] <= 1e-9 and rf.get("end_members_exact", True)
-    inter = (f"{len(rf.get('fitted') or [])} BMAGN interaction term(s) by {rf.get('method', 'refit')}"
-             + (f" ({rf['n_added']} new, reference REFIT)" if rf.get("n_added") else "")
-             + (f" [{rf['why']}]" if rf.get("why") else "")) if rf.get("fitted") else "no BMAGN interaction terms"
+    if rf.get("method") == "refit":
+        inter = (f"{len(rf.get('fitted') or [])} BMAGN interaction term(s) refitted"
+                 + (f" ({rf['n_added']} new, reference REFIT)" if rf.get("n_added") else ""))
+    elif rf.get("fitted"):
+        inter = (f"{len(rf['fitted'])} other BMAGN term(s) x{_fmt_k(ka)} (first-order); no new parameters"
+                 + (f" [{rf['why']}]" if rf.get("why") else ""))
+    else:
+        inter = "no BMAGN interaction terms; no new parameters"
+    if rf.get("method") != "refit":
+        inter += " (magnetic_fit='refit' would add fitted BMAGN interaction terms to shrink the interior error)"
     it_txt = (f"{it['max_abs']:.3g}" if math.isfinite(it.get("max_abs", math.nan)) else "?")
     note = NormNote(phase, A_RESCALED,
                     f"{head}; BMAGN end-members {'exact' if ok else 'NOT exact'}, interior error <= {it_txt} J/mol of "
