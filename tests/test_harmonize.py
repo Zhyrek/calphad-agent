@@ -144,7 +144,7 @@ def test_scale_piecewise_each_range_and_pycalphad_reads_it(tmp_path):
     # tdbstage's G/L rescale goes through the helper
     assert ts._scale_pw(pw, 0.5).ranges == scale_piecewise(pw, 0.5).ranges
     assert scale_piecewise(pw, 1 / 3).ranges[2][2] == repr(-5000 / 3)        # plain numbers are multiplied out
-    assert scale_piecewise(pw, 1 / 3).ranges[0][2] == "(GHSERCE+2*GHSERFE-60000+12*T)/3"
+    assert scale_piecewise(pw, 1 / 3).ranges[0][2] == "GHSERCE/3+2*GHSERFE/3-20000+4*T"
 
 
 # ================================================================================================ 2. normalisation
@@ -260,7 +260,7 @@ def test_extend_base_nonmagnetic_add_magnetic(files, tmp_path):
     assert hz.magnetic_factors(new, "C15_LAVES") == (-3.0, 0.28)
     # the base's own parameter is rescaled (G x 1/3), and its GM per atom is unchanged
     g = _params(out, "C15_LAVES")[("G", "C15_LAVES", (("CE",), ("FE",)), 0, "")]
-    assert g.expr.ranges[0][2] == "(GHSERCE+2*GHSERFE-60000+12*T)/3"
+    assert g.expr.ranges[0][2] == "GHSERCE/3+2*GHSERFE/3-20000+4*T"
     ch = r["checks"]
     assert ch["base"]["max_rel"] <= 1e-9
     by = {c["system"]: c for c in ch["add"]}

@@ -110,11 +110,11 @@ def test_flip_snap_rescale_pairs(tmp_path):
         ("removed", "PHASE C15 % 2 0.667 0.333 !"), ("added", "PHASE C15 % 2 1 2 !"),
         ("removed", "CONSTITUENT C15 :FE,W:W: !"), ("added", "CONSTITUENT C15 :W : FE,W : !"),
         ("removed", "PARAMETER G(C15,FE:W;0) 298.15 (GHSERWW+2*GHSERFE-30000+6*T)/3; 6000 N !"),
-        ("added", "PARAMETER G(C15,W:FE;0) 298.15 3*((GHSERWW+2*GHSERFE-30000+6*T)/3); 6000.00 N !"),
+        ("added", "PARAMETER G(C15,W:FE;0) 298.15 GHSERWW+2*GHSERFE-30000+6*T; 6000.00 N !"),
         ("removed", "PARAMETER G(C15,W:W;0) 298.15 GHSERWW+5000; 6000 N !"),
-        ("added", "PARAMETER G(C15,W:W;0) 298.15 3*(GHSERWW+5000); 6000.00 N !"),
+        ("added", "PARAMETER G(C15,W:W;0) 298.15 3*GHSERWW+15000; 6000.00 N !"),
         ("removed", "PARAMETER L(C15,FE,W:W;0) 298.15 -4000+T; 6000 N !"),
-        ("added", "PARAMETER L(C15,W:FE,W;0) 298.15 3*(-4000+T); 6000.00 N !")]
+        ("added", "PARAMETER L(C15,W:FE,W;0) 298.15 -12000+3*T; 6000.00 N !")]
 
 
 def test_rescale_without_flip_values_change(tmp_path):
@@ -124,7 +124,7 @@ def test_rescale_without_flip_values_change(tmp_path):
     d = diff_tdb(b, bn, "B as given", "B", old_perms=perms_from_notes(notes))
     assert [g.title for g in d.groups] == ["C15"] and all(e.change == "changed" for e in d.entries)
     e = next(e for e in d.entries if e.old.kind == "PARAMETER" and "W:W;0" in e.old.text)
-    assert "GHSERWW+5000;" in e.old.text and "3*(GHSERWW+5000);" in e.new.text
+    assert "GHSERWW+5000;" in e.old.text and "3*GHSERWW+15000;" in e.new.text
 
 
 def test_removal_unchanged_and_order(tmp_path):
@@ -291,3 +291,18 @@ def test_lines_are_the_files_own_text():
     assert [x.text for x in L] == ["FUNCTION GHSERFE 298.15 1225.7+124.134*T; 6000 N !",
                                    "PARAMETER G(LIQUID,FE;0) 298.15 VV0001+GHSERFE+12040.17-6.55843*T; 6000 N REF !"]
     assert re.fullmatch(r"PARAMETER .* !", L[1].text)
+
+
+def test_scaled_expressions_are_simplified():
+    """Rescaled parameters are written with the factor folded into the terms (as for VV#### values), exact:
+    no nested k*((e)/k), c/n kept as a fraction when it has no short decimal, unparsable text left as k*(e)."""
+    from calphad_tools.tdbparse import scale_expr, scale_piecewise, Piecewise
+    assert scale_expr("(GHSERWW+2*GHSERFE-30000+6*T)/3", 3) == "GHSERWW+2*GHSERFE-30000+6*T"
+    assert scale_expr("GHSERWW+2*GHSERFE-30000+6*T", 1 / 3) == "GHSERWW/3+2*GHSERFE/3-10000+2*T"
+    assert scale_expr("+9*GHSERFE+4*GHSERWW-76287.8+46.48*T", 1 / 3) == "3*GHSERFE+4*GHSERWW/3-76287.8/3+46.48*T/3"
+    assert scale_expr("-4000+T", 3) == "-12000+3*T"
+    assert scale_expr("2*GHSERFE", 0.5) == "GHSERFE"
+    assert float(scale_expr("1043", 1 / 3)) == 1043 / 3                 # a plain number stays a number
+    assert scale_expr("-26.4711*T*LN(T)+93399*T**(-1)", 2) == "-52.9422*T*LN(T)+186798*T**(-1)"
+    pw = scale_piecewise(Piecewise([(298.15, 1000, "GHSERFE+10"), (1000, 6000, "(GHSERFE-5)/3")], "R"), 3)
+    assert [e for _, _, e in pw.ranges] == ["3*GHSERFE+30", "GHSERFE-5"] and pw.reference == "R"

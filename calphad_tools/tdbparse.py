@@ -272,11 +272,16 @@ def _is_number(e: str) -> bool:
 
 
 def scale_expr(e: str, k: float) -> str:
-    """One T-range expression multiplied by ``k`` as valid TDB text: ``k*(e)`` (``(e)/n`` when k = 1/n, ``-(e)`` for
-    k = -1, a plain number when ``e`` is one)."""
+    """One T-range expression multiplied by ``k`` as valid TDB text.  Simplified where possible: ``k`` is
+    distributed into the terms (``(GHSERWW+2*GHSERFE-30000+6*T)/3`` x 3 -> ``GHSERWW+2*GHSERFE-30000+6*T``), as the
+    VV#### substitution does, checked numerically against the exact product; otherwise ``k*(e)`` (``(e)/n`` when
+    k = 1/n, ``-(e)`` for k = -1, a plain number when ``e`` is one)."""
     k = float(k)
     if k == 1.0:
         return e
+    simple = None if _is_number(e) else _scale_terms(e, k)      # a plain number stays a number (below)
+    if simple is not None:
+        return simple
     if _is_number(e):
         x = float(re.sub(r"[Dd]", "E", e))
         n = 1.0 / k if k != 0.0 else 0.0
@@ -292,6 +297,123 @@ def scale_expr(e: str, k: float) -> str:
     if k == int(k) and abs(k) < 1e15:
         return f"{int(k)}*({e})"
     return f"{k!r}*({e})"
+
+
+def _short_num(x: float):
+    """``x`` as a short decimal (<= 12 significant digits) if that is exactly ``x``, else None."""
+    t = f"{x:.12g}".upper()
+    return t if float(t) == x else None
+
+
+def _scale_terms(e: str, k: float):
+    """``e`` x ``k`` with ``k`` folded into each term's numeric coefficient (a coefficient c/n that has no short
+    decimal stays written as c.../n), or None when ``e`` does not parse or the result does not evaluate to exactly
+    (rel 1e-12) the product at random values of T and the names."""
+    try:
+        from .tdbtables import _parse, _fmt_sum
+        terms = _parse(e)
+    except Exception:  # noqa: BLE001 - unparsable: the safe k*(e) form
+        return None
+    n_inv = 1.0 / k
+    div = int(round(n_inv)) if abs(k) < 1.0 and abs(n_inv - round(n_inv)) <= 1e-12 * abs(n_inv) else None
+
+    def num(f) -> float:
+        return float(re.sub(r"[Dd]", "E", f[1]))
+
+    def split(terms):
+        """[(coefficient, other factors)], with a lone (sum) term - optionally times / over numbers - opened."""
+        if len(terms) == 1:
+            sign, fac = terms[0]
+            groups = [f for op, f in fac if op == "*" and f[0] == "group"]
+            nums = [(op, f) for op, f in fac if f[0] == "num"]
+            if len(groups) == 1 and len(nums) == len(fac) - 1:
+                c = float(sign)
+                for op, f in nums:
+                    c = c * num(f) if op == "*" else c / num(f)
+                return [(c * cc, rest) for cc, rest in split(groups[0][1])]
+        out = []
+        for sign, fac in terms:
+            c, rest = float(sign), []
+            for op, f in fac:
+                if f[0] == "num":
+                    c = c * num(f) if op == "*" else c / num(f)
+                else:
+                    rest.append((op, f))
+            out.append((c, rest))
+        return out
+    out = []
+    for c, rest in split(terms):
+        if c == 0.0:
+            continue
+        v = c * k
+        tail = []
+        if div is not None and _short_num(abs(v)) is None:
+            mag, tail = _short_num(abs(c)) or repr(abs(c)), [("/", ("num", str(div)))]
+        else:
+            mag = _short_num(abs(v)) or repr(abs(v))
+        if rest and rest[0][0] == "/":
+            rest = [("*", ("num", "1"))] + rest
+        body = ([] if (mag == "1" and rest) else [("*", ("num", mag))]) + rest + tail
+        if body and body[0][0] == "/":
+            body = [("*", ("num", "1"))] + body
+        out.append([1 if v > 0 else -1, body])
+    if not out:
+        return "0"
+    text = _fmt_sum(out, False, False)
+    try:
+        ok = _same_value(e, text, k)
+    except Exception:  # noqa: BLE001
+        ok = False
+    return text if ok else None
+
+def _same_value(old: str, new: str, k: float, n: int = 6) -> bool:
+    """``new`` == ``k`` x ``old`` at random positive values of T and every name (rel 1e-12)."""
+    import math as _m
+    import random as _r
+    from .tdbtables import _parse
+    to, tn = _parse(old), _parse(new)
+    rng = _r.Random(1)
+    names = {}
+
+    def node(x, env):
+        kd = x[0]
+        if kd == "num":
+            return float(re.sub(r"[Dd]", "E", x[1]))
+        if kd == "name":
+            return env.setdefault(x[1], rng.uniform(0.5, 3.0))
+        if kd == "group":
+            return tsum(x[1], env)
+        if kd == "neg":
+            return -node(x[1], env)
+        if kd == "pow":
+            return node(x[1], env) ** node(x[2], env)
+        if kd == "call":
+            a = [tsum(arg, env) for arg in x[2]]
+            fn = x[1].upper()
+            if fn in ("LN", "LOG"):
+                return _m.log(a[0])
+            if fn == "EXP":
+                return _m.exp(a[0])
+            return env.setdefault(f"{fn}()", rng.uniform(0.5, 3.0))
+        raise ValueError(kd)
+
+    def tsum(terms, env):
+        tot = 0.0
+        for sign, fac in terms:
+            v = 1.0
+            for op, f in fac:
+                x = node(f, env)
+                v = v * x if op == "*" else v / x
+            tot += sign * v
+        return tot
+    for _ in range(n):
+        env = dict(names)
+        env["T"] = rng.uniform(300.0, 3000.0)
+        a, b = k * tsum(to, env), tsum(tn, env)
+        if not _m.isclose(a, b, rel_tol=1e-12, abs_tol=1e-9):
+            return False
+        names = {key: v for key, v in env.items() if key != "T"}
+    return True
 
 
 def scale_piecewise(pw: "Piecewise", k: float) -> "Piecewise":
