@@ -1,0 +1,211 @@
+[
+{
+"compound": "Hf1Ni5",
+"auid": "aflow:0465c4ec3923c7ad",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Hf_pvNi_pv/474",
+"spacegroup_relax": 189,
+"Pearson_symbol_relax": "hP6",
+"species": [
+"Hf",
+"Ni"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB5_hP6_189_a_cg",
+"aflow_prototype_label_relax": "AB5_hP6_189_a_cg",
+"spacegroup_orig": 189,
+"Pearson_symbol_orig": "hP6",
+"enthalpy_formation_atom": -0.30946,
+"prototype": "474",
+"catalog": "LIB2"
+},
+{
+"compound": "Hf1Ni5",
+"auid": "aflow:5703fe522d999e52",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Hf_pvNi_pv/ICSD_150940.AB",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Hf",
+"Ni"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB5_cF24_216_a_ce",
+"aflow_prototype_label_relax": "AB5_cF24_216_c_ae",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": -0.334786,
+"prototype": "ICSD_150940.AB",
+"catalog": "LIB2"
+},
+{
+"compound": "Hf1Ni5",
+"auid": "aflow:653d2ce7bcd7079d",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Hf_pvNi_pv/252",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Hf",
+"Ni"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB5_cF24_216_a_ce",
+"aflow_prototype_label_relax": "AB5_cF24_216_a_ce",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": -0.349993,
+"prototype": "252",
+"catalog": "LIB2"
+},
+{
+"compound": "Hf1Ni5",
+"auid": "aflow:7e7282facc1cb6b4",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Hf_pvNi_pv/141",
+"spacegroup_relax": 65,
+"Pearson_symbol_relax": "oS12",
+"species": [
+"Hf",
+"Ni"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB5_oC12_38_a_2a3b",
+"aflow_prototype_label_relax": "AB5_oC12_65_a_cij",
+"spacegroup_orig": 38,
+"Pearson_symbol_orig": "oS12",
+"enthalpy_formation_atom": -0.31174,
+"prototype": "141",
+"catalog": "LIB2"
+},
+{
+"compound": "Hf1Ni5",
+"auid": "aflow:c7d8056c9a1f3c2f",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Hf1Ni5_ICSD_150940",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Hf",
+"Ni"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB5_cF24_216_a_ce",
+"aflow_prototype_label_relax": "AB5_cF24_216_a_ce",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Hf1Ni5_ICSD_150940",
+"catalog": "ICSD"
+},
+{
+"compound": "Hf1Ni5",
+"auid": "aflow:d261bca60b4bd883",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Hf_pvNi_pv/128",
+"spacegroup_relax": 12,
+"Pearson_symbol_relax": "mS12",
+"species": [
+"Hf",
+"Ni"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB5_mC12_8_a_5a",
+"aflow_prototype_label_relax": "AB5_mC12_12_d_a2i",
+"spacegroup_orig": 8,
+"Pearson_symbol_orig": "mS12",
+"enthalpy_formation_atom": -0.295666,
+"prototype": "128",
+"catalog": "LIB2"
+},
+{
+"compound": "Hf1Ni5",
+"auid": "aflow:dff161a3e11c305e",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Hf_pvNi_pv/478",
+"spacegroup_relax": 123,
+"Pearson_symbol_relax": "tP6",
+"species": [
+"Hf",
+"Ni"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB5_tP6_123_d_agh",
+"aflow_prototype_label_relax": "AB5_tP6_123_d_agh",
+"spacegroup_orig": 123,
+"Pearson_symbol_orig": "tP6",
+"enthalpy_formation_atom": -0.145258,
+"prototype": "478",
+"catalog": "LIB2"
+},
+{
+"compound": "Hf1Ni5",
+"auid": "aflow:e9907f6e81e20aa6",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Hf_pvNi_pv/204",
+"spacegroup_relax": 191,
+"Pearson_symbol_relax": "hP6",
+"species": [
+"Hf",
+"Ni"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB5_hP6_191_a_cg",
+"aflow_prototype_label_relax": "AB5_hP6_191_a_cg",
+"spacegroup_orig": 191,
+"Pearson_symbol_orig": "hP6",
+"enthalpy_formation_atom": -0.297576,
+"prototype": "204",
+"catalog": "LIB2"
+},
+{
+"compound": "Hf2Ni1",
+"auid": "aflow:004d4e429d50fab6",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Hf_pvNi_pv/288",
+"spacegroup_relax": 139,
+"Pearson_symbol_relax": "tI6",
+"species": [
+"Hf",
+"Ni"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A2B_tI6_139_e_a",
+"aflow_prototype_label_relax": "A2B_tI6_139_e_a",
+"spacegroup_orig": 139,
+"Pearson_symbol_orig": "tI6",
+"enthalpy_formation_atom": -0.318427,
+"prototype": "288",
+"catalog": "LIB2"
+},
+{
+"compound": "Hf2Ni4",
+"auid": "aflow:00d956cdd5dc6208",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Hf_pvNi_pv/147",
+"spacegroup_relax": 63,
+"Pearson_symbol_relax": "oS12",
+"species": [
+"Hf",
+"Ni"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB2_oC12_63_c_2c",
+"aflow_prototype_label_relax": "AB2_oC12_63_c_2c",
+"spacegroup_orig": 63,
+"Pearson_symbol_orig": "oS12",
+"enthalpy_formation_atom": -0.278223,
+"prototype": "147",
+"catalog": "LIB2"
+},
+{
+"compound": "Hf3Ni6",
+"auid": "aflow:01c1c5bb12b38483",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Hf_pvNi_pv/208",
+"spacegroup_relax": 189,
+"Pearson_symbol_relax": "hP9",
+"species": [
+"Hf",
+"Ni"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB2_hP9_189_bc_fg",
+"aflow_prototype_label_relax": "AB2_hP9_189_bc_fg",
+"spacegroup_orig": 189,
+"Pearson_symbol_orig": "hP9",
+"enthalpy_formation_atom": -0.188898,
+"prototype": "208",
+"catalog": "LIB2"
+}
+]

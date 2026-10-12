@@ -12,6 +12,9 @@ Looked up in this order (later wins):
 ``[hpc]`` (:class:`calphad_tools.hpc.HPCConfig`): where ESPEI optimisations run - batched on a Flux cluster when one
 is detected, else directly on this machine - and how big the runs are.
 
+``[structure]`` / ``[labels]`` (:class:`StructureConfig`, :class:`LabelsConfig`): structure identification for compound
+labels (calphad_tools.structure_id); CALPHAD_STRUCTURE_ONLINE=0 switches its online lookups off.
+
 ``[merge]`` (:class:`MergeConfig`): defaults of the tentative parameters that merge_tdbs / staged_merge /
 combine_databases / extend_phase add for mixings no source describes (calphad_tools.tentative).
 """
@@ -103,11 +106,30 @@ class MergeConfig:
 
 
 @dataclass
+class StructureConfig:
+    """Structure identification for compound labels (calphad_tools.structure_id): AFLOW / OQMD lookups send only
+    chemical formulas.  CALPHAD_STRUCTURE_ONLINE=0 (or 1) overrides ``online``."""
+    online: bool = True                        # false = offline table, cache and phase names only
+    timeout_s: float = 15.0                    # per request
+    cache_days: float = 180.0                  # online answers are reused this long (~/.calphad_agent)
+    sources: list = field(default_factory=lambda: ["aflow", "oqmd"])
+
+
+@dataclass
+class LabelsConfig:
+    """Phase-diagram labels: ``phase_labels`` maps a phase name or formula to a family suffix ("1:5") or a full
+    label ("CeCo₅ (1:5)"); it beats every other source."""
+    phase_labels: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     hpc: HPCConfig = field(default_factory=HPCConfig)
     merge: MergeConfig = field(default_factory=MergeConfig)
+    structure: StructureConfig = field(default_factory=StructureConfig)
+    labels: LabelsConfig = field(default_factory=LabelsConfig)
     source_files: list = field(default_factory=list)
     profiles: list = field(default_factory=list)
     profile: str = ""
@@ -136,6 +158,9 @@ def load_config(path: Optional[str] = None, profile: Optional[str] = None) -> Co
             _apply(cfg.agent, data.get("agent", {}))
             _apply(cfg.hpc, data.get("hpc", {}))
             _apply(cfg.merge, data.get("merge", {}))
+            _apply(cfg.structure, data.get("structure", {}))
+            if isinstance(data.get("labels", {}).get("phase_labels"), dict):
+                cfg.labels.phase_labels.update(data["labels"]["phase_labels"])
             profiles.update(data.get("profiles", {}))
             cfg.source_files.append(str(p))
     cfg.profiles = sorted(profiles)
@@ -153,6 +178,8 @@ def load_config(path: Optional[str] = None, profile: Optional[str] = None) -> Co
         cfg.hpc.scheduler = sch
     if str(cfg.hpc.scheduler).strip().lower() not in ("auto", "flux", "local"):
         raise ValueError(f"[hpc] scheduler must be auto, flux or local, not {cfg.hpc.scheduler!r}")
+    if env.get("CALPHAD_STRUCTURE_ONLINE", "").strip():
+        cfg.structure.online = env["CALPHAD_STRUCTURE_ONLINE"].strip().lower() not in ("0", "false", "no", "off")
     if env.get("CALPHAD_LLM_PROVIDER"):
         cfg.llm.provider = env["CALPHAD_LLM_PROVIDER"]
     if env.get("CALPHAD_LLM_BASE_URL"):
@@ -233,6 +260,17 @@ save_notebooks = true                     # <figure>.ipynb next to every phase d
 tentative = true                          # false = add none
 tentative_mixing_per_atom = 50000         # rule 1: new pair on a sublattice of an intermetallic, J/mol-atom x atoms/fu
 tentative_vacancy = 200000                # rule 2: L(phase,X,VA:...;0) on a substitutional sublattice, J/mol as written
+
+[structure]
+# Compound labels "Fe2Nb (C14)", "CeCo5 (1:5)": the structure family comes from phase-name tokens, a built-in table,
+# then the keyless AFLOW and OQMD web APIs (only chemical formulas are sent, never database content).
+online = true                             # false (or CALPHAD_STRUCTURE_ONLINE=0) = offline table + cache only
+# timeout_s = 15
+# cache_days = 180                        # answers cached in ~/.calphad_agent/structure_cache.json
+
+[labels]
+# phase name or formula -> family suffix or full label; beats every other source
+# phase_labels = { CECO5 = "1:5", CE2CO17_H = "Ce₂Co₁₇ (2:17H)" }
 
 [hpc]
 # ESPEI optimisations (optimize_system): batched on a Flux cluster when one is detected, else run here.

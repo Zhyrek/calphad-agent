@@ -363,6 +363,57 @@ added, and the labels avoid those points.
   GAMMA_PRIME → γ′, LAVES_C14 → C14. Formula names are split into the database's elements: FE3CR4 → Fe₃Cr₄,
   M23C6 → M₂₃C₆, COSI → CoSi. A miscibility gap is BCC+BCC. `phase_labels` overrides any name, e.g.
   `{"SIGMA": "σ-phase"}`. The rules are a table in `calphad_tools/phase_names.py`.
+* **Compound names.** A stoichiometric phase's own label is its formula from the sublattice model, plus a family
+  name for well-known structures: "Fe₂Nb (C14)", "CeCo₂ (C15)", "CeCo₅ (1:5)", "Ce₂Co₁₇ (2:17R)", "Fe₇Mo₆ (μ)",
+  and just "Al₃Ni₂" or "CeCo₃" otherwise. Multi-phase labels use the short name so they stay compact: the family
+  where there is one (BCC+C14, L+C15, 1:5+Ce₅Co₁₉, L+2:17), else the formula (C15+CeCo₃). A Laves field with a
+  solubility range is "C14" too.
+  * *Formula:* one constituent per sublattice, the one that gives the composition closest to where the phase sits
+    in the diagram ((Fe)2(Fe,Nb) near X(Nb) = 1/3 is Fe₂Nb). Vacancies are dropped and counts reduced
+    (0.6667:0.3333 → Fe₂Nb). Elements are in the order of the phase name when it is a formula of the same elements
+    (AL8CR5_L → Al₈Cr₅-LT; `M` is the remaining element, so M3V is Ni₃V on the Ni–V edge), else in sublattice
+    order. On a ternary edge the formula is that binary's; a ternary line compound inside the triangle is written
+    with its mixed sublattice, e.g. (Co,Ni)₃V.
+  * *Family:* only from evidence in the phase name, never from the ratio alone (ZrNi₅, HfNi₅ and UNi₅ are not
+    CaCu5-type, WAl₁₂ is not ThMn12-type, MoSi₂, CuAl₂ and Ni₂Zr are not Laves). Laves: tokens C14, C15, C36, LAVES,
+    MGZN2, MGCU2, MGNI2. Greek letters: SIGMA, MU, CHI, ETA, ZETA, TAU … (not α, β, γ). CaCu5 family: tokens CACU5 /
+    D2D → 1:5, THMN12 / D2B → 1:12, TH2ZN17 / TH2NI17 → 2:17, RT5 / RT12 / RE2TM17 / CE2T17-style R–T names, and as
+    the only fallback a formula name (CECO5, CE2CO17) of a rare earth (La–Lu, Y, Sc) or Th with Mn, Fe, Co, Ni or Cu
+    (Zn too for 2:17) in the ratio 1:5, 1:12 or 2:17. When in doubt, the formula alone. Where
+    `calphad_tools/structure_id.py` knows a compound end-member (its curated table, its cache, or AFLOW / OQMD when
+    `[structure] online` allows; `CALPHAD_STRUCTURE_ONLINE=0` switches that off), its answer is used too, and it
+    can add a Strukturbericht suffix to a compound's own label ("Nb₃Sn (A15)", "Ni₃Al (L1₂)", "MoSi₂ (C11b)",
+    with real subscripts, letters included, in PNG / PDF and SVG). Solution phases (FCC_A1, BCC_A2, B2_BCC,
+    L12_FCC …) never get one. Multi-phase labels show only the families above, never a Strukturbericht symbol.
+    The result text lists the evidence for each family name ("CeCo₅ (1:5): phase name token D2D",
+    "Ce₂Co₁₇ (2:17H): … end-members: Ce2Co17 2:17H (table …)").
+  * *2:17R / 2:17H:* Th2Zn17-type is 2:17R, Th2Ni17-type 2:17H.
+    * A phase name that says (tokens TH2ZN17, R, RHOMB, R3M / TH2NI17, H, HEX, P63MMC: CE2FE17_H) decides for the
+      whole phase, on every label.
+    * Otherwise the structure of each binary end-member comes from `calphad_tools/structure_id.py` when that module
+      is there. A name of the end-member's binary (a ternary edge, a binary compound below the axis) uses that
+      end-member's structure: one Ce2(Co,Fe)17 model gives "Ce₂Fe₁₇ (2:17R)" at the Ce–Fe edge and "Ce₂Co₁₇
+      (2:17H)" at the Ce–Co edge. Labels inside the triangle and multi-phase labels say 2:17R or 2:17H only when
+      all end-members agree, else "2:17" (L+2:17). The result text and the JSON (`warnings`) then say: "WARNING:
+      CE2TM17 is a single CALPHAD phase representing both 2:17H (Ce2Co17) and 2:17R (Ce2Fe17) - be careful with
+      these labels." Any family with variants is handled the same way.
+    * Two different 2:17 phases with nothing to tell them apart: if one is known, the other is the other kind. If
+      neither is, on a binary the phase whose field reaches the higher temperature is taken as 2:17H, with a
+      warning that this is a guess. On an isotherm both stay "2:17" and the text says so (set `phase_labels`).
+    * show_code scripts get the structures as data (the `structures` argument of `label_diagram`), so they draw
+      the same labels without structure_id.
+* **Practically stoichiometric phases.** A phase whose model has composition freedom but whose field stays within
+  `label_style.stoich_tolerance` (default 0.01 mole fraction) of one compound end-member of its model is labelled
+  like a line compound. The measure is the largest deviation of any boundary composition of the field, at any
+  mapped temperature, from that end-member's ideal composition (1/3 Nb for Fe₂Nb). On a ternary it can also be a
+  line between two end-members in different binaries (a line compound such as (Co,Ni)₃V); a field stretched along
+  one binary edge has a range in that binary and is not one. The result text lists the phases treated so, with
+  deviation and field width, and the near misses (within 3× the tolerance) with the tolerance that would include
+  them. Example: the combined Fe–Nb database where C14 becomes (Fe)2(Fe,Nb). Its field reaches X(Nb) = 0.3211 at
+  the eutectic, 0.0122 from Fe₂Nb, so at the default 0.01 it stays a narrow C14 field (named below the axis as
+  "C14"), and the text says `stoich_tolerance 0.013` would include it. With that setting it is "Fe₂Nb (C14)". μ
+  (Fe)7(Nb)2(Fe,Nb)4 of the same database is within 0.004 of Fe₇Nb₆, so it is "Fe₇Nb₆ (μ)" by default. A model
+  without composition freedom is always a compound.
 * **Regions.** Two-phase fields and tie-triangles come exactly from the mapped phase boundaries. The rest of the
   diagram is named from a coarse equilibrium grid. Before a label is drawn, an equilibrium calculation at its
   position must give exactly the phases it names. Any region that can't be confirmed is left out, and the result
@@ -381,9 +432,14 @@ added, and the labels avoid those points.
       labels. The result text says e.g. "named at its corner: BCC (Cr), L (Al)".
   * *Ternary, at an edge:* a field that touches an edge but no corner (the phase exists in that binary) is named
     beyond that edge, like a stoichiometric phase (below). The name sits at the middle of its contact with the
-    edge, or of the longer contact if it touches two.
+    edge. A field that reaches two (or three) edges is named on each one. The second and third edges count only
+    where an equilibrium just inside them has the phase. A compound on two edges is named on both too, each with
+    that binary's formula: a C15 (Ce)(Co,Fe)2 across the triangle gives "CeCo₂ (C15)" at the Ce–Co edge and
+    "CeFe₂ (C15)" at the Ce–Fe edge; M3V in Co–Ni–V gives Co₃V and Ni₃V.
   * *Binary:* a field that reaches the bottom of the plot is named below the x axis at its composition there, at
-    60°. Example: a C14 with a narrow range.
+    60°. Example: a C14 with a narrow range. A practically stoichiometric field is named the same way, at its mean
+    composition, with its compound name; if it ends above the bottom it is named right below its lowest point
+    (next item), else with a leader line.
   * *Binary:* a field that ends higher up is named right below its lowest point, inside the axes. The text is at
     60° with no box; it starts about 2 pt below that point and runs down and away, only where it crosses no line
     or other label.
@@ -425,6 +481,83 @@ added, and the labels avoid those points.
   Unicode name (`relabel {text: "Al₃Ni₂"}`).
 * **Standalone code.** `show_code` reproduces the labels without the toolkit: the script contains copies of the
   three label modules.
+
+### Structure identification
+
+The suffix in a compound label ("Fe₂Nb (C14)", "CeCo₅ (1:5)", "Ce₂Fe₁₇ (2:17R)", "Fe₇Mo₆ (μ)", "Nb₃Sn (A15)",
+"Ni₃Al (L1₂)") must come from the crystal structure, not from the formula's ratio: ZrNi₅, HfNi₅ and UNi₅ are
+AuBe5-type, so they are "ZrNi₅ (C15b)", not 1:5; WAl₁₂ is WAl12-type, not ThMn12; MoSi₂ (C11b) and CuAl₂ (C16) are
+not Laves. `calphad_tools/structure_id.py` answers this per formula (one end-member), and the `identify_structure`
+tool exposes it to the agent.
+
+The suffix of an identified structure is chosen in this order:
+
+1. a Greek letter: σ, μ, χ, R (only for transition-metal compounds);
+2. the CaCu5 family: 1:5, 1:12, 2:17R (Th2Zn17), 2:17H (Th2Ni17), or 2:17 when the variant is unknown;
+3. Laves: C14, C15, C36;
+4. the prototype's Strukturbericht designation. Examples: A15, B2, B8₁, L1₀, L1₂, D0₃, D0₁₁, D0₁₉, D0₂₂, D0₂₃, D0₂₄,
+   D0ₐ, D8₄, D8₈, C11b, C15b, C16, C32, C40, E9₃. There are 54 designated types in all, among 61 recognised structures;
+5. otherwise no suffix. This covers WAl12, PuNi3, Ce2Ni7 and any unknown structure.
+
+The designation is returned in subscript markup that the labeller renders: `"L1_{2}"`, `"D0_{19}"`, `"C11_{b}"`.
+`suffix_plain` gives the same without markup ("L12", "D019", "C11b"). Elemental designations (A1–A12) are never
+used, and pure elements get no suffix, so FCC, BCC and HCP keep their names. Use the suffix for compound phases only.
+Solution phases keep their short names, even ordered ones named B2_BCC or L12_FCC; the labeller makes that call.
+
+Sources, in order (the first one that answers wins):
+
+1. **Overrides:** `[labels] phase_labels` in `calphad_agent.toml`, keyed by phase name or formula. A value is a suffix
+   (`{CECO5 = "1:5"}`), a full label (`{CECO5 = "CeCo₅ (1:5)"}`) or `""` for no suffix.
+2. **Phase-name tokens:** C14 / C15 / C36 / LAVES / MGZN2, CACU5 / D2D / THMN12 / D2B / TH2ZN17 / TH2NI17 / RT5 /
+   RE2TM17 / 1_5 / 2_17, SIGMA / D8B, MU / D85, CHI, and the other designations (D019 or D0_19, L12, L1_0, C11B …).
+   Tokens match whole words, so MU never matches inside another name. A1–A13 tokens (CBCC_A12, CUB_A13: the Mn
+   solutions) and the ambiguous B1, B3, B4, C1, C2 are not used. In a 2:17 phase, _R / _H (also RHOMB, HEX) decide the
+   variant: CE2FE17_R is 2:17R.
+3. **A built-in table** of 138 well-established compounds (Pearson / Strukturbericht data), so offline clusters get the
+   common cases. Examples: Ni3Al L1₂, NiAl / FeAl / CoAl B2, Fe3Al D0₃, Ni3Ti D0₂₄, Ni3Nb D0ₐ, TiAl L1₀, Ti3Al D0₁₉,
+   Al3Ti D0₂₂, Al3Zr D0₂₃, Nb3Sn A15, Fe3C D0₁₁, Cr23C6 D8₄, Mn5Si3 D8₈, TiB2 C32, plus the Laves, CaCu5, σ and μ
+   compounds. Each entry has a short source note, and polymorphs are listed as alternatives (Sm2Co17: Th2Zn17-type
+   at low T and Th2Ni17-type at high T, so the family is "2:17"; Cr2Nb: C15, with C14 at high T). σ is matched by
+   composition range (Fe–Cr, Fe–V, Co–Cr, Cr–Mn, Fe–Mo, Mo–Re, Re–W).
+4. **The cache:** `~/.calphad_agent/structure_cache.json` (under `CALPHAD_STATE_DIR` if set) holds earlier online
+   answers for `[structure] cache_days` (default 180).
+5. **AFLOW and OQMD** (keyless web APIs). AFLOW's AFLUX search returns every entry of the element system; ICSD
+   entries give the experimental prototype label (`aflow_prototype_label_orig`), and computed ones give the relaxed
+   label and `enthalpy_formation_atom`. OQMD's `formationenergy` gives `prototype`, `spacegroup`, `natoms`, `delta_e`
+   and `stability`. The answer is the reported (ICSD) structure with the lowest formation energy. Other structures are
+   listed as alternatives. Two databases that agree give high confidence; disagreement gives low. If both 2:17
+   polymorphs are reported, the answer is "2:17". Timeouts are short (`[structure] timeout_s`, default 15 s), and a
+   failure only adds a note.
+6. **A chemistry rule**, used only as a last resort (low confidence): a rare earth (La–Lu, Y, Sc) or Th with Mn, Fe,
+   Co, Ni or Cu (or Zn for 2:17) at 1:5, 1:12 or 2:17 is in the CaCu5 family. It never applies to Zr, Hf, U or Al,
+   and it never gives Laves or a Greek letter.
+
+Each answer has a suffix, prototype, space group, AFLOW label, source, confidence (high / medium / low), one line of
+evidence ("AFLOW AB5_hP6_191_a_cg (CaCu5-type), 9 ICSD entries") and alternatives.
+
+**Privacy and offline use.** Only chemical formulas (element symbols and counts) are sent to aflowlib.duke.edu and
+oqmd.org; database content never is. `[structure] online = false`, or `CALPHAD_STRUCTURE_ONLINE=0` in the
+environment (which beats the config), keeps everything offline: the table, the cache and the phase names are then
+the only sources. A tool call can switch lookups off (`online: false`) but cannot switch them on against these
+settings.
+
+**The tool.** `identify_structure` takes `formula` (comma-separated for several), or `tdb` + `phase`, or `tdb` alone
+to check every stoichiometric or near-stoichiometric phase of a database (`elements` narrows the list). It prints one
+line per end-member, plus a WARNING when one CALPHAD phase covers several structures, e.g. "CE2TM17 is a single
+CALPHAD phase representing both 2:17R (Ce2Fe17) and 2:17H (Ce2Co17) - be careful with these labels".
+
+**For the labeller.** `identify(formula, phase_name=..., allow_online=...)` returns a `StructureID`. A phase is
+handled with `phase_family(phase_name, endmember_formulas)`, which returns a `PhaseFamily` with these fields:
+
+* `per_endmember`: one `StructureID` per end-member formula;
+* `consensus`: the suffix when every end-member that has an answer agrees, and none lists a conflicting polymorph;
+* `ambiguous_label`: the label of the whole family, "2:17" or "Laves";
+* `name_suffix` / `name_evidence`: from the phase name, which decides for the whole phase;
+* `warning`.
+
+`assign_217(phases)` tells two 2:17 phases of one diagram apart. It uses name tokens first, then each phase's
+structure data, then the partner's variant (the other phase is the other kind). As a last resort, the
+higher-temperature phase is taken as 2:17H, with low confidence. `assign_217_detail` returns the evidence too.
 
 ### Data-science plotting: operations and tools
 

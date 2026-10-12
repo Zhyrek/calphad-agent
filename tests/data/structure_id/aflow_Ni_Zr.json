@@ -1,0 +1,325 @@
+[
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:39dfad5b6a8490d7",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Ni5Zr1_ICSD_647169",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_cF24_216_ae_c",
+"aflow_prototype_label_relax": "A5B_cF24_216_ce_a",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Ni5Zr1_ICSD_647169",
+"catalog": "ICSD"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:3b0475cec189a1c7",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Ni5Zr1_ICSD_647157",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_cF24_216_ae_c",
+"aflow_prototype_label_relax": "A5B_cF24_216_ce_a",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Ni5Zr1_ICSD_647157",
+"catalog": "ICSD"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:429e0e7b8c5765d8",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Ni_pvZr_sv/145",
+"spacegroup_relax": 65,
+"Pearson_symbol_relax": "oS12",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_oC12_38_3a2b_b",
+"aflow_prototype_label_relax": "A5B_oC12_65_agh_c",
+"spacegroup_orig": 38,
+"Pearson_symbol_orig": "oS12",
+"enthalpy_formation_atom": -0.257792,
+"prototype": "145",
+"catalog": "LIB2"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:42da225be7ae2e40",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Ni_pvZr_sv/480",
+"spacegroup_relax": 65,
+"Pearson_symbol_relax": "oS12",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_oC12_65_cij_a",
+"aflow_prototype_label_relax": "A5B_oC12_65_cij_a",
+"spacegroup_orig": 65,
+"Pearson_symbol_orig": "oS12",
+"enthalpy_formation_atom": -0.25074,
+"prototype": "480",
+"catalog": "LIB2"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:5fcc108fcfae44c3",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Ni_pvZr_sv/ICSD_54985.AB",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_cF24_216_ae_c",
+"aflow_prototype_label_relax": "A5B_cF24_216_ce_a",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": -0.321186,
+"prototype": "ICSD_54985.AB",
+"catalog": "LIB2"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:737fa9ae95ce1b08",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Ni5Zr1_ICSD_150939",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_cF24_216_ae_c",
+"aflow_prototype_label_relax": "A5B_cF24_216_ce_a",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Ni5Zr1_ICSD_150939",
+"catalog": "ICSD"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:826a52d3a799df04",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Ni5Zr1_ICSD_601018",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_cF24_216_ce_a",
+"aflow_prototype_label_relax": "A5B_cF24_216_ae_c",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Ni5Zr1_ICSD_601018",
+"catalog": "ICSD"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:8f0cfbd4a3bbcc35",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Ni5Zr1_ICSD_54985",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_cF24_216_ae_c",
+"aflow_prototype_label_relax": "A5B_cF24_216_ae_c",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Ni5Zr1_ICSD_54985",
+"catalog": "ICSD"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:a71d59d4239d2f14",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Ni5Zr1_ICSD_647156",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_cF24_216_ae_c",
+"aflow_prototype_label_relax": "A5B_cF24_216_ce_a",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Ni5Zr1_ICSD_647156",
+"catalog": "ICSD"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:aa7431b3e1bf7d6f",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Ni_pvZr_sv/253",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_cF24_216_ce_a",
+"aflow_prototype_label_relax": "A5B_cF24_216_ce_a",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": -0.325139,
+"prototype": "253",
+"catalog": "LIB2"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:beabfb48f2e55b52",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Ni_pvZr_sv/132",
+"spacegroup_relax": 12,
+"Pearson_symbol_relax": "mS12",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_mC12_8_5a_a",
+"aflow_prototype_label_relax": "A5B_mC12_12_a2i_c",
+"spacegroup_orig": 8,
+"Pearson_symbol_orig": "mS12",
+"enthalpy_formation_atom": -0.242424,
+"prototype": "132",
+"catalog": "LIB2"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:cd0888825012516f",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Ni_pvZr_sv/205",
+"spacegroup_relax": 191,
+"Pearson_symbol_relax": "hP6",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_hP6_191_cg_a",
+"aflow_prototype_label_relax": "A5B_hP6_191_cg_a",
+"spacegroup_orig": 191,
+"Pearson_symbol_orig": "hP6",
+"enthalpy_formation_atom": -0.292865,
+"prototype": "205",
+"catalog": "LIB2"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:d11021d12aa83962",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Ni5Zr1_ICSD_150648",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_cF24_216_ae_c",
+"aflow_prototype_label_relax": "A5B_cF24_216_ae_c",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Ni5Zr1_ICSD_150648",
+"catalog": "ICSD"
+},
+{
+"compound": "Ni5Zr1",
+"auid": "aflow:f78eaa5b42389054",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Ni5Zr1_ICSD_189201",
+"spacegroup_relax": 216,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A5B_cF24_216_ae_c",
+"aflow_prototype_label_relax": "A5B_cF24_216_ce_a",
+"spacegroup_orig": 216,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Ni5Zr1_ICSD_189201",
+"catalog": "ICSD"
+},
+{
+"compound": "Ni1Zr2",
+"auid": "aflow:0032d37b3e90ed23",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Ni_pvZr_sv/287",
+"spacegroup_relax": 139,
+"Pearson_symbol_relax": "tI6",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB2_tI6_139_a_e",
+"aflow_prototype_label_relax": "AB2_tI6_139_a_e",
+"spacegroup_orig": 139,
+"Pearson_symbol_orig": "tI6",
+"enthalpy_formation_atom": -0.269221,
+"prototype": "287",
+"catalog": "LIB2"
+},
+{
+"compound": "Ni2Zr2",
+"auid": "aflow:066047024263eff9",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Ni_pvZr_sv/28",
+"spacegroup_relax": 166,
+"Pearson_symbol_relax": "hR4",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB_hR4_166_c_c",
+"aflow_prototype_label_relax": "AB_hR4_166_c_c",
+"spacegroup_orig": 166,
+"Pearson_symbol_orig": "hR4",
+"enthalpy_formation_atom": -0.0406728,
+"prototype": "28",
+"catalog": "LIB2"
+},
+{
+"compound": "Ni1Zr1",
+"auid": "aflow:06235f7080ef9519",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/Ni_pvZr_sv/61",
+"spacegroup_relax": 221,
+"Pearson_symbol_relax": "cP2",
+"species": [
+"Ni",
+"Zr"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB_cP2_221_a_b",
+"aflow_prototype_label_relax": "AB_cP2_221_a_b",
+"spacegroup_orig": 221,
+"Pearson_symbol_orig": "cP2",
+"enthalpy_formation_atom": -0.35153,
+"prototype": "61",
+"catalog": "LIB2"
+}
+]

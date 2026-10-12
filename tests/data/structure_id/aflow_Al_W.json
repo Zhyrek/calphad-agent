@@ -1,0 +1,97 @@
+[
+{
+"compound": "Al12W1",
+"auid": "aflow:28c7cbb043bbe3e1",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/AlW_pv/ICSD_58207.AB",
+"spacegroup_relax": 204,
+"Pearson_symbol_relax": "cI26",
+"species": [
+"Al",
+"W"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A12B_cI26_204_g_a",
+"aflow_prototype_label_relax": "A12B_cI26_204_g_a",
+"spacegroup_orig": 204,
+"Pearson_symbol_orig": "cI26",
+"enthalpy_formation_atom": -0.0783889,
+"prototype": "ICSD_58207.AB",
+"catalog": "LIB2"
+},
+{
+"compound": "Al12W1",
+"auid": "aflow:d36b7ae2509366c2",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/BCC/Al12W1_ICSD_58207",
+"spacegroup_relax": 204,
+"Pearson_symbol_relax": "cI26",
+"species": [
+"Al",
+"W"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A12B_cI26_204_g_a",
+"aflow_prototype_label_relax": "A12B_cI26_204_g_a",
+"spacegroup_orig": 204,
+"Pearson_symbol_orig": "cI26",
+"enthalpy_formation_atom": null,
+"prototype": "Al12W1_ICSD_58207",
+"catalog": "ICSD"
+},
+{
+"compound": "Al2W1",
+"auid": "aflow:00fc8dfad425db7f",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/AlW_pv/269",
+"spacegroup_relax": 164,
+"Pearson_symbol_relax": "hP3",
+"species": [
+"Al",
+"W"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A2B_hP3_164_d_a",
+"aflow_prototype_label_relax": "A2B_hP3_164_d_a",
+"spacegroup_orig": 164,
+"Pearson_symbol_orig": "hP3",
+"enthalpy_formation_atom": -0.0156907,
+"prototype": "269",
+"catalog": "LIB2"
+},
+{
+"compound": "Al4W2",
+"auid": "aflow:004d1dd8f27d2324",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/AlW_pv/182",
+"spacegroup_relax": 227,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Al",
+"W"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A2B_cF24_227_d_a",
+"aflow_prototype_label_relax": "A2B_cF24_227_d_a",
+"spacegroup_orig": 227,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": 0.157384,
+"prototype": "182",
+"catalog": "LIB2"
+},
+{
+"compound": "Al4W4",
+"auid": "aflow:009bc63a73680c57",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/AlW_pv/408",
+"spacegroup_relax": 194,
+"Pearson_symbol_relax": "hP8",
+"species": [
+"Al",
+"W"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB_hP8_194_bc_f",
+"aflow_prototype_label_relax": "AB_hP8_194_bc_f",
+"spacegroup_orig": 194,
+"Pearson_symbol_orig": "hP8",
+"enthalpy_formation_atom": 0.219145,
+"prototype": "408",
+"catalog": "LIB2"
+}
+]

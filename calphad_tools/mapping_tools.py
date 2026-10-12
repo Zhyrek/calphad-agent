@@ -658,7 +658,9 @@ def map_phase_diagram(tdb: str, elements: Sequence[str], out_png: str, *, tmin: 
         o_text = orientation_text(kind, els, (f"MU({_cap(mu_el)})" if mu_el else _lc(U.comp_label(els[1])))
                                   if kind == "binary" else None)
     if labels is not None:
-        summary["labels"] = {k: labels[k] for k in ("labels", "skipped", "seconds", "equilibrium_checks")}
+        summary["labels"] = {k: labels[k] for k in ("labels", "skipped", "seconds", "equilibrium_checks",
+                                                    "stoichiometry", "compound_names", "warnings") if k in labels}
+        summary["warnings"] = list(labels.get("warnings") or [])
     jpath = str(outdir / f"{stem}.json")
     Path(jpath).write_text(json.dumps(summary, indent=1, default=str))
     files["json"] = jpath
@@ -1856,7 +1858,10 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
              "phase_labels": {"type": "object", "additionalProperties": {"type": "string"},
                               "description": "label text overrides, e.g. {\"SIGMA\": \"σ-phase\"}"},
              "label_style": {"type": "object", "description": "fontsize, min_fontsize (default 8; labels that "
-                                                              "do not fit are left out), color, background, rotate"},
+                                                              "do not fit are left out), color, background, rotate, "
+                                                              "stoich_tolerance (default 0.01: a field within this "
+                                                              "mole fraction of its model's ideal composition is "
+                                                              "labelled as a compound, e.g. 'Fe₂Nb (C14)')"},
              "formats": {**STRS, "description": "extra files svg/pdf/eps with editable text (default svg+pdf "
                                                  "when shaded or labelling)"},
              "style": STYLE,

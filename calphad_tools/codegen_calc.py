@@ -726,7 +726,9 @@ def _summary_code(ctx: Ctx, a: Dict, kind: str, els, png: str, system: str, cu: 
                    orient=Ctx.py(orient), preg=("\n    \"phase_regions\": " + ('iso["summary"],' if regions else "[],"))
                    if kind == "isopleth" else ""))
     if labelled:
-        code += 'summary["labels"] = {k: report[k] for k in ("labels", "skipped", "seconds", "equilibrium_checks")}\n'
+        code += ('summary["labels"] = {k: report[k] for k in ("labels", "skipped", "seconds", "equilibrium_checks", '
+                 '"stoichiometry", "compound_names", "warnings") if k in report}\n'
+                 'summary["warnings"] = list(report.get("warnings") or [])\n')
     code += f"(OUT / {files['json']!r}).write_text(json.dumps(summary, indent=1, default=str))\n"
     return code
 
@@ -876,6 +878,13 @@ def label_code(ctx: Ctx, recipe: Dict, db, models_expr: Optional[str], *, mapped
     kw["T_unit"] = rec.get("T_unit", "K")
     if style:
         kw["style"] = dict(style)
+    if kind in ("binary", "ternary"):    # structure families of the phases (formula + family labels), as data
+        from .label_place import phase_structures
+        from .phase_regions import model_info
+        models = {p: m for p in rec["phases"] for m in [model_info(db, p, rec["elements"])] if m is not None}
+        structs = phase_structures(models, (), kw["elements"], rec["elements"])
+        if structs:
+            kw["structures"] = structs
     ctx.need("import time")
     args = ", ".join(f"{k}={Ctx.py(val)}" for k, val in kw.items())
     return _T('''

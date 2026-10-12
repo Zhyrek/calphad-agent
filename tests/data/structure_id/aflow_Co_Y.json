@@ -1,0 +1,211 @@
+[
+{
+"compound": "Co34Y4",
+"auid": "aflow:1486b0a11fdb832f",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/HEX/Co17Y2_ICSD_625643",
+"spacegroup_relax": 194,
+"Pearson_symbol_relax": "hP38",
+"species": [
+"Co",
+"Y"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A17B2_hP38_194_fgjk_bc",
+"aflow_prototype_label_relax": "A17B2_hP38_194_fgjk_bc",
+"spacegroup_orig": 194,
+"Pearson_symbol_orig": "hP38",
+"enthalpy_formation_atom": null,
+"prototype": "Co17Y2_ICSD_625643",
+"catalog": "ICSD"
+},
+{
+"compound": "Co17Y2",
+"auid": "aflow:226c2af571ba3530",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/RHL/Co17Y2_ICSD_625556",
+"spacegroup_relax": 166,
+"Pearson_symbol_relax": "hR19",
+"species": [
+"Co",
+"Y"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A17B2_hR19_166_cdfh_c",
+"aflow_prototype_label_relax": "A17B2_hR19_166_cdfh_c",
+"spacegroup_orig": 166,
+"Pearson_symbol_orig": "hR19",
+"enthalpy_formation_atom": null,
+"prototype": "Co17Y2_ICSD_625556",
+"catalog": "ICSD"
+},
+{
+"compound": "Co17Y2",
+"auid": "aflow:34d877914eed9b60",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/CoY_sv/ICSD_603927.AB",
+"spacegroup_relax": 166,
+"Pearson_symbol_relax": "hR19",
+"species": [
+"Co",
+"Y"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A17B2_hR19_166_cdfh_c",
+"aflow_prototype_label_relax": "A17B2_hR19_166_cdfh_c",
+"spacegroup_orig": 166,
+"Pearson_symbol_orig": "hR19",
+"enthalpy_formation_atom": -0.0955851,
+"prototype": "ICSD_603927.AB",
+"catalog": "LIB2"
+},
+{
+"compound": "Co34Y4",
+"auid": "aflow:5e7cd399a4aff4c1",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/HEX/Co17Y2_ICSD_625566",
+"spacegroup_relax": 63,
+"Pearson_symbol_relax": "oS76",
+"species": [
+"Co",
+"Y"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A17B2_hP38_194_fgjk_bc",
+"aflow_prototype_label_relax": "A17B2_oC76_63_ad2f3gh_2c",
+"spacegroup_orig": 194,
+"Pearson_symbol_orig": "hP38",
+"enthalpy_formation_atom": null,
+"prototype": "Co17Y2_ICSD_625566",
+"catalog": "ICSD"
+},
+{
+"compound": "Co34Y4",
+"auid": "aflow:614456c872583c87",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/HEX/Co17Y2_ICSD_108324",
+"spacegroup_relax": 194,
+"Pearson_symbol_relax": "hP38",
+"species": [
+"Co",
+"Y"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A17B2_hP38_194_fgjk_bc",
+"aflow_prototype_label_relax": "A17B2_hP38_194_fgjk_bc",
+"spacegroup_orig": 194,
+"Pearson_symbol_orig": "hP38",
+"enthalpy_formation_atom": null,
+"prototype": "Co17Y2_ICSD_108324",
+"catalog": "ICSD"
+},
+{
+"compound": "Co17Y2",
+"auid": "aflow:795ea8d6226f3a8a",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/RHL/Co17Y2_ICSD_603927",
+"spacegroup_relax": 166,
+"Pearson_symbol_relax": "hR19",
+"species": [
+"Co",
+"Y"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A17B2_hR19_166_cdfh_c",
+"aflow_prototype_label_relax": "A17B2_hR19_166_cdfh_c",
+"spacegroup_orig": 166,
+"Pearson_symbol_orig": "hR19",
+"enthalpy_formation_atom": null,
+"prototype": "Co17Y2_ICSD_603927",
+"catalog": "ICSD"
+},
+{
+"compound": "Co34Y4",
+"auid": "aflow:8123beb8f10cefdb",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/CoY_sv/ICSD_108324.AB",
+"spacegroup_relax": 194,
+"Pearson_symbol_relax": "hP38",
+"species": [
+"Co",
+"Y"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A17B2_hP38_194_fgjk_bc",
+"aflow_prototype_label_relax": "A17B2_hP38_194_fgjk_bc",
+"spacegroup_orig": 194,
+"Pearson_symbol_orig": "hP38",
+"enthalpy_formation_atom": -0.0934374,
+"prototype": "ICSD_108324.AB",
+"catalog": "LIB2"
+},
+{
+"compound": "Co17Y2",
+"auid": "aflow:ab2fd93ad2262a6e",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/RHL/Co17Y2_ICSD_625619",
+"spacegroup_relax": 166,
+"Pearson_symbol_relax": "hR19",
+"species": [
+"Co",
+"Y"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A17B2_hR19_166_cdfh_c",
+"aflow_prototype_label_relax": "A17B2_hR19_166_cdfh_c",
+"spacegroup_orig": 166,
+"Pearson_symbol_orig": "hR19",
+"enthalpy_formation_atom": null,
+"prototype": "Co17Y2_ICSD_625619",
+"catalog": "ICSD"
+},
+{
+"compound": "Co4Y2",
+"auid": "aflow:00819f92be882d61",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Co2Y1_ICSD_603249",
+"spacegroup_relax": 227,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Co",
+"Y"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A2B_cF24_227_d_a",
+"aflow_prototype_label_relax": "A2B_cF24_227_c_b",
+"spacegroup_orig": 227,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Co2Y1_ICSD_603249",
+"catalog": "ICSD"
+},
+{
+"compound": "Co4Y2",
+"auid": "aflow:0034424b0541fd9d",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Co2Y1_ICSD_602139",
+"spacegroup_relax": 227,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Co",
+"Y"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A2B_cF24_227_c_b",
+"aflow_prototype_label_relax": "A2B_cF24_227_c_b",
+"spacegroup_orig": 227,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Co2Y1_ICSD_602139",
+"catalog": "ICSD"
+},
+{
+"compound": "Co3Y4",
+"auid": "aflow:0126ece7b4d5a613",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/LIB2_WEB/CoY_sv/263",
+"spacegroup_relax": 139,
+"Pearson_symbol_relax": "tI14",
+"species": [
+"Co",
+"Y"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A3B4_tI14_139_ae_2e",
+"aflow_prototype_label_relax": "A3B4_tI14_139_ae_2e",
+"spacegroup_orig": 139,
+"Pearson_symbol_orig": "tI14",
+"enthalpy_formation_atom": 0.0536709,
+"prototype": "263",
+"catalog": "LIB2"
+}
+]

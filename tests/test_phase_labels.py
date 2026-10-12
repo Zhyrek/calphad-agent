@@ -20,6 +20,16 @@ from calphad_tools.phase_names import plain_text as name   # the name a text sho
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _structures_offline(tmp_path_factory):
+    """Structure lookups for compound labels (structure_id): curated table only - no network, no answers cached
+    by earlier sessions."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("CALPHAD_STRUCTURE_ONLINE", "0")
+        mp.setenv("CALPHAD_STATE_DIR", str(tmp_path_factory.mktemp("state")))
+        yield
+
+
 # ---------------------------------------------------------------------------------------------------------
 # names
 # ---------------------------------------------------------------------------------------------------------
@@ -114,6 +124,12 @@ def stored(png):
 
 def labels_of(ax, prefix=("phase_label:", "invariant_label:")):
     return [t for t in ax.texts if (t.get_gid() or "").startswith(prefix)]
+
+
+def base(s):
+    """A compound label without its structure suffix ('Al₃Ni (D0₂₀)' -> 'Al₃Ni'): the suffixes come from
+    structure_id's table, which grows."""
+    return re.sub(r" \([^()]*\)$", "", s)
 
 
 MIN_FS = 8.0                                    # default label_style.min_fontsize
@@ -539,9 +555,9 @@ def test_binary_alni_compounds_outside(tb, tmp_path):
     fig, ax = stored(images[0])
     comps = {c["key"][0]: c for c in ax._calphad_diagram["regions"]["compounds"]}
     assert {"AL3NI1", "AL3NI5"} <= set(comps), comps
-    outs = {name(t): t for t in labels_of(ax, ("phase_label:",)) if is_outside(t)}
+    outs = {base(name(t)): t for t in labels_of(ax, ("phase_label:",)) if is_outside(t)}
     assert {s_ for s_, t in outs.items() if t._calphad_label["kind"] == "compound"} == {"Al₃Ni", "Al₃Ni₅"}, outs
-    inside = [name(t) for t in labels_of(ax) if not is_outside(t)]
+    inside = [base(name(t)) for t in labels_of(ax) if not is_outside(t)]
     assert "Al₃Ni" not in inside and "Al₃Ni₅" not in inside          # never in the figure
     # Al3Ni2 has a range (a region): inside if it fits, else below the axis at its mid composition
     assert ("Al₃Ni₂" in inside) != ("Al₃Ni₂" in outs)
@@ -572,13 +588,13 @@ def test_binary_alni_compounds_outside(tb, tmp_path):
     assert check_invariants(fig, ax)
     rects = check_layout(fig, ax)
     xl = text_rect(ax.xaxis.label, r)                                 # the axis title moved clear of the names
-    assert not any(rects_overlap(xl, p) for s, p in rects if s in outs)
+    assert not any(rects_overlap(xl, p) for s, p in rects if base(s) in outs)
     svg = files_from(text)["svg"].read_text()
-    assert svg_has(svg, "Al₃Ni₅") and 'id="phase_label:AL3NI5"' in svg
+    assert svg_has(svg, name(outs["Al₃Ni₅"])) and 'id="phase_label:AL3NI5"' in svg
     assert check_svg(svg) >= 10
     # PNG / PDF: real subscripts (mathtext); the plain name stays on the text
     t = outs["Al₃Ni₅"]
-    assert t.get_text() == r"Al$_\mathregular{3}$Ni$_\mathregular{5}$" and name(t) == "Al₃Ni₅"
+    assert t.get_text().startswith(r"Al$_\mathregular{3}$Ni$_\mathregular{5}$") and base(name(t)) == "Al₃Ni₅"
     assert "Al3Ni" in re.sub(r"\s", "", _pdf_text(files_from(text)["pdf"]))
     for h in hidden:
         assert not re.search(r"<text[^>]*>" + re.escape(h) + "</text>", svg), h
@@ -620,7 +636,7 @@ _json.dump({"ticks": [t.get_text() for t in _ax.get_xticklabels() if t.get_visib
                                                "tmin": 400, "tmax": 1800, "temperature_unit": "C", "formats": [],
                                                "output_prefix": "nial_labels"})
     figm, axm = stored(imgs_m[0])
-    outm = {name(t): t for t in labels_of(axm, ("phase_label:",)) if is_outside(t)}
+    outm = {base(name(t)): t for t in labels_of(axm, ("phase_label:",)) if is_outside(t)}
     assert set(outm) == set(outs)
     assert abs(outm["Al₃Ni"].xy[0] - 0.75) < 1e-6 and abs(outm["Al₃Ni₅"].xy[0] - 0.375) < 1e-6
     assert outm["Al₃Ni"].get_rotation() == 60
@@ -674,7 +690,7 @@ def test_ternary_tie_triangles_and_compounds(tb, tmp_path):
         n_in += 1
     assert n_in >= 2
     assert any(abs(t.get_rotation()) > 1 for t in labs if not is_outside(t))     # turned in a skinny triangle
-    outs = {name(t): t for t in labs if is_outside(t)}
+    outs = {base(name(t)): t for t in labs if is_outside(t)}
     bottom = {s_ for s_, t in outs.items() if t._calphad_label["outside"] == "bottom"}
     assert {"AlCr₂", "Al₈Cr₅-LT", "Al₉Cr₄-LT", "Al₄Cr", "Al₁₁Cr₂", "Al₁₃Cr₂"} <= bottom, outs
     assert all(outs[s_].get_rotation() == 60 for s_ in bottom)
@@ -734,17 +750,17 @@ def _edge_of(ax, xy, tol=1e-6):
 EDGE_ROT = {"bottom": 60.0, "left": -30.0, "right": 30.0}
 
 
-@pytest.mark.parametrize("case,want", [("conv", {"M₃V": ("right",), "CoV₃": ("left",)}),
-                                       ("cvn", {"M₃V": ("bottom", "right"), "CoV₃": ("bottom",)})])
+@pytest.mark.parametrize("case,want", [("conv", {"Ni₃V": ("right",), "Co₃V": ("left",), "CoV₃": ("left",)}),
+                                       ("cvn", {"Ni₃V": ("right",), "Co₃V": ("bottom",), "CoV₃": ("bottom",)})])
 def test_ternary_compounds_outside(ternary_compounds, case, want):
-    """Line compound M₃V and point compound CoV₃ (Co-Ni-V, 900 °C): named just outside the nearest triangle edge
-    (bottom 60°, slanted edges ±30°, square to the edge), never inside; covered tick labels hidden.  M₃V runs
-    from edge to edge in the Co-V-Ni orientation: either end will do."""
+    """Line compound M₃V, (Co,Fe,Ni)3(Cr,V), and point compound CoV₃ (Co-Ni-V, 900 °C): named just outside the
+    triangle edge (bottom 60°, slanted edges ±30°, square to the edge), never inside; covered tick labels hidden.
+    M₃V runs from the Co-V edge to the Ni-V edge: named on both, each with that binary's formula (Co₃V, Ni₃V)."""
     text, images = ternary_compounds[case]
     fig, ax = stored(images[0])
-    outs = {name(t): t for t in labels_of(ax, ("phase_label:",)) if is_outside(t)}
+    outs = {base(name(t)): t for t in labels_of(ax, ("phase_label:",)) if is_outside(t)}
     assert {s_ for s_, t in outs.items() if t._calphad_label["kind"] == "compound"} == set(want), (set(outs), text)
-    assert not set(want) & {name(t) for t in labels_of(ax) if not is_outside(t)}
+    assert not set(want) & {base(name(t)) for t in labels_of(ax) if not is_outside(t)}
     # others outside are single-phase fields too small inside: BCC at the V corner (top / bottom-right), FCC
     assert all(len(t._calphad_label["key"]) == 1 for t in outs.values())
     check_corner_names(fig, ax, {"BCC": 2 if case == "conv" else 1})
@@ -1155,12 +1171,34 @@ def test_binary_thin_field_reaching_the_bottom(tb, tmp_path):
     assert check_anchors(ax) >= 8
     check_layout(fig, ax)
     assert check_clearance(fig, ax) >= 2.0
+    # practically stoichiometric?  Its field reaches X(Nb) = 0.3211 (at the eutectic), 0.0122 from Fe₂Nb: not within
+    # the default stoich_tolerance (0.01), and the report says by how much; μ (Fe)7(Nb)2(Fe,Nb)4 is (0.0039)
+    m = re.search(r"not treated as stoichiometric \(max deviation >= stoich_tolerance 0.01\): C14 \(max deviation "
+                  r"(0\.\d+) from Fe₂Nb, field width (0\.\d+); stoich_tolerance (0\.\d+) would include it\)", text)
+    assert m and abs(float(m.group(1)) - 0.0122) < 5e-4 and float(m.group(3)) == 0.013, text
+    assert "Fe₇Nb₆ (μ) (max deviation 0.0039" in text and re.search(r"family names: Fe₇Nb₆ \(μ\): [^;\n]*MU", text)
+    mu = next(t for t in labels_of(ax, ("phase_label:",)) if name(t) == "Fe₇Nb₆ (μ)")
+    assert mu._calphad_label["kind"] == "compound" and mu._calphad_label["outside"] == "bottom"
+    # a tolerance of 0.013 takes C14 for a compound: Fe₂Nb (C14), below the axis at its mean composition
+    text13, images13 = call(tb, "edit_figure", {"image": images[0], "operations": [
+        {"op": "label_phase_regions", "stoich_tolerance": 0.013}], "output": "fenb_c14_tol.png"})
+    fig13, ax13 = stored(images13[0])
+    t13 = [t for t in labels_of(ax13, ("phase_label:",)) if "C14" in name(t) and "+" not in name(t)]
+    assert [name(t) for t in t13] == ["Fe₂Nb (C14)"], [name(t) for t in labels_of(ax13)]
+    assert t13[0]._calphad_label == {**t13[0]._calphad_label, "kind": "compound", "outside": "bottom",
+                                     "short": "C14", "formula": "Fe₂Nb", "family": "C14"}
+    assert t13[0].get_rotation() == 60 and 0.321 < t13[0].xy[0] < 0.334
+    assert "treated as stoichiometric" in text13 and "Fe₂Nb (C14) (max deviation 0.0122" in text13.replace("; ", "\n")
+    assert "BCC+C14" in {name(t) for t in labels_of(ax13)}            # multi-phase labels keep the short name
+    check_layout(fig13, ax13)
+    from calphad_tools.label_place import find_labels
+    assert find_labels(ax13, text="C14") == t13 and find_labels(ax13, text="Fe₂Nb") == t13   # old name still finds it
     # the original database: C14 a line compound, named the same way
     text0, images0 = call(tb, "map_phase_diagram", {"tdb": "FeNb-90Hua-LB.tdb", "elements": ["FE", "NB"],
                                                     "tmin": 300, "tmax": 3000, "temperature_unit": "C",
                                                     "formats": [], "output_prefix": "fenb_orig"})
     fig0, ax0 = stored(images0[0])
-    t0 = next(t for t in labels_of(ax0, ("phase_label:",)) if name(t) == "C14")
+    t0 = next(t for t in labels_of(ax0, ("phase_label:",)) if name(t) == "Fe₂Nb (C14)")
     assert t0._calphad_label["kind"] == "compound" and t0._calphad_label["outside"] == "bottom"
     assert abs(t0.xy[0] - 1 / 3) < 1e-6 and t0.get_rotation() == 60
     # show_code
@@ -1285,4 +1323,298 @@ def test_save_vector_svg_subscripts(tmp_path):
     assert 'rotate(-60' in svg                               # the rotated label keeps its transform
     assert all(x.get_text().count("$") >= 2 for x in texts)             # restored after the SVG pass
     assert "Ce5Co19" in re.sub(r"\s", "", _pdf_text(tmp_path / "f.pdf"))
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# compound labels: formula of the sublattice model + structure family
+# ---------------------------------------------------------------------------------------------------------
+def _model(sites, cons):
+    return {"sites": list(sites), "constituents": [list(c) for c in cons]}
+
+
+@pytest.mark.parametrize("phase,model,X,label,evidence", [
+    ("C14_LAVES", _model([2, 1], [["FE"], ["NB"]]), None, "Fe₂Nb (C14)", "name token C14"),
+    # (Fe)2(Fe,Nb): Fe on both sublattices is pure Fe; at X(Nb) ~ 1/3 the formula is Fe₂Nb
+    ("C14_LAVES", _model([2, 1], [["FE"], ["FE", "NB"]]), {"FE": 0.675, "NB": 0.325}, "Fe₂Nb (C14)", "C14"),
+    ("C14_LAVES", _model([0.6667, 0.3333], [["FE"], ["NB"]]), None, "Fe₂Nb (C14)", "C14"),
+    ("LAVES_C15", _model([1, 2], [["CE"], ["CO"]]), None, "CeCo₂ (C15)", "name token C15"),
+    ("CECO2_C15", _model([1, 2], [["CE"], ["CO"]]), None, "CeCo₂ (C15)", "name token C15"),
+    ("MGZN2", _model([1, 2], [["MG"], ["ZN"]]), None, "MgZn₂ (C14)", "name token MGZN2"),
+    ("CECO5_D2D", _model([1, 5], [["CE"], ["CO"]]), None, "CeCo₅ (1:5)", "name token D2D"),
+    ("CECO5", _model([1, 5], [["CE"], ["CO"]]), None, "CeCo₅ (1:5)", "R-T 1:5 by chemistry"),
+    ("CE2CO17", _model([2, 17], [["CE"], ["CO"]]), None, "Ce₂Co₁₇ (2:17)", "R-T 2:17 by chemistry"),
+    ("TH2NI17", _model([2, 17], [["CE"], ["CO"]]), None, "Ce₂Co₁₇ (2:17H)", "name token TH2NI17"),
+    ("SMFE12_THMN12", _model([1, 12], [["SM"], ["FE"]]), None, "SmFe₁₂ (1:12)", "name token THMN12"),
+    ("MU_D85", _model([7, 2, 4], [["FE"], ["MO"], ["FE", "MO"]]), {"FE": 0.54, "MO": 0.46}, "Fe₇Mo₆ (μ)",
+     "Greek-letter name MU_D85"),
+    ("SIGMA", None, None, "σ", "Greek-letter name SIGMA"),
+    ("CHI_A12", _model([24, 10, 24], [["FE"], ["CR"], ["CR", "FE"]]), {"FE": 0.5, "CR": 0.5}, "Fe₁₂Cr₁₇ (χ)", "CHI"),
+    ("AL3NI2", _model([3, 2, 1], [["AL"], ["AL", "NI"], ["NI", "VA"]]), {"AL": 0.6, "NI": 0.4}, "Al₃Ni₂", None),
+    ("CECO3", _model([1, 3], [["CE"], ["CO"]]), None, "CeCo₃", None),
+    ("AL8CR5_L", _model([8, 5], [["AL"], ["CR"]]), None, "Al₈Cr₅-LT", None),
+    ("AL3NI1", _model([0.75, 0.25], [["AL"], ["NI"]]), None, "Al₃Ni", None),
+    # never a family from the ratio alone: ZrNi5 / HfNi5 / UNi5 are AuBe5-type, WAl12 is WAl12-type, MoSi2 C11b,
+    # CuAl2 C16, Ni2Zr not a Laves phase by name
+    ("ZRNI5", _model([1, 5], [["ZR"], ["NI"]]), None, "ZrNi₅", None),
+    ("HFNI5", _model([1, 5], [["HF"], ["NI"]]), None, "HfNi₅", None),
+    ("UNI5", _model([1, 5], [["U"], ["NI"]]), None, "UNi₅", None),
+    ("WAL12", _model([1, 12], [["W"], ["AL"]]), None, "WAl₁₂", None),
+    ("NI2ZR", _model([2, 1], [["NI"], ["ZR"]]), None, "Ni₂Zr", None),
+    ("MOSI2", _model([1, 2], [["MO"], ["SI"]]), None, "MoSi₂", None),
+    ("CUAL2", _model([1, 2], [["CU"], ["AL"]]), None, "CuAl₂", None),
+    ("CEZN17", _model([1, 17], [["CE"], ["ZN"]]), None, "CeZn₁₇", None),
+])
+def test_compound_label_formula_and_family(phase, model, X, label, evidence):
+    from calphad_tools.phase_names import compound_label
+    s, info = compound_label(phase, model, X)
+    assert s == label, (s, info)
+    if evidence is None:
+        assert info["family"] is None
+    else:
+        assert evidence in info["evidence"], info
+
+
+def test_compound_label_edges_lines_and_overrides():
+    from calphad_tools.phase_names import compound_label, to_mathtext
+    m3v = _model([3, 1], [["CO", "FE", "NI"], ["CR", "V"]])
+    assert compound_label("M3V", m3v, {"NI": 0.75, "V": 0.25}, ["NI", "V"])[0] == "Ni₃V"       # on the Ni-V edge
+    assert compound_label("M3V", m3v, {"CO": 0.75, "V": 0.25}, ["CO", "V"])[0] == "Co₃V"
+    ends = [{"NI": 0.75, "V": 0.25}, {"CO": 0.6, "NI": 0.15, "V": 0.25}]
+    assert compound_label("M3V", m3v, X_ends=ends)[0] == "(Co,Ni)₃V"                         # a line inside
+    c15 = _model([1, 2], [["CE"], ["CO", "FE"]])
+    assert compound_label("LAVES_C15", c15, {"CE": 1 / 3, "FE": 2 / 3}, ["CE", "FE"])[0] == "CeFe₂ (C15)"
+    assert compound_label("LAVES_C15", c15, {"CE": 1 / 3, "CO": 2 / 3}, ["CE", "CO"])[0] == "CeCo₂ (C15)"
+    # an override (phase_labels) is used as written; names without a model keep the formula of the name
+    assert compound_label("C14_LAVES", _model([2, 1], [["FE"], ["NB"]]), overrides={"C14_LAVES": "λ2"})[0] == "λ2"
+    assert compound_label("FE3CR4", None, elements=["FE", "CR"])[0] == "Fe₃Cr₄"
+    assert to_mathtext("Fe₂Nb (C14)") == r"Fe$_\mathregular{2}$Nb (C14)"
+    assert to_mathtext("Ce₂Co₁₇ (2:17R)") == r"Ce$_\mathregular{2}$Co$_\mathregular{17}$ (2:17R)"
+
+
+def _stub_structures(phase_name, formulas):
+    """Stand-in for structure_id.phase_family: Ce2Fe17 is Th2Zn17-type (2:17R), Ce2Co17 Th2Ni17-type (2:17H)."""
+    known = {"Ce2Fe17": "2:17R", "Ce2Co17": "2:17H"}
+    per = {f: known[f] for f in formulas if f in known}
+    labs = sorted(set(per.values()))
+    return {"per_endmember": per, "consensus": labs[0] if len(labs) == 1 else None,
+            "ambiguous_label": "2:17" if per else None, "name_evidence": None}
+
+
+def test_two_17_phases_rhombohedral_and_hexagonal():
+    """2:17R / 2:17H.  Name tokens decide for the whole phase, everywhere (CE2FE17_H, CE2CO17_R); a binary
+    end-member's structure (structure_id) decides at that binary (an edge, below a binary axis); inside a ternary
+    and in multi-phase labels only a structure all end-members share, else "2:17" - with a warning when one CALPHAD
+    phase spans both.  Two 2:17 phases with nothing to tell them apart: by temperature on a binary (a guess,
+    warned), else "2:17"."""
+    from calphad_tools.label_place import phase_structures, resolve_families, structure_label
+    span = _model([2, 17], [["CE"], ["CO", "FE"]])
+    els = ["CE", "CO", "FE"]
+    st = phase_structures({"CE2TM17": span}, (), els, els, lookup=_stub_structures)["CE2TM17"]
+    assert structure_label(st, "Ce₂Fe₁₇") == "2:17R" and structure_label(st, "Ce₂Co₁₇") == "2:17H"
+    assert structure_label(st) == "2:17"                                   # inside / multi-phase labels
+    assert st["warning"] == ("WARNING: CE2TM17 is a single CALPHAD phase representing both 2:17H (Ce2Co17) and "
+                             "2:17R (Ce2Fe17) - be careful with these labels.")
+    # a name token is authoritative everywhere; a phase whose end-members agree gets that structure everywhere
+    sts = phase_structures({"CE2FE17_H": _model([2, 17], [["CE"], ["FE"]]),
+                            "CE2CO17_R": _model([2, 17], [["CE"], ["CO"]]),
+                            "CE2CO17": _model([2, 17], [["CE"], ["CO"]])}, (), els, els, lookup=_stub_structures)
+    assert structure_label(sts["CE2FE17_H"], "Ce₂Fe₁₇") == "2:17H" and structure_label(sts["CE2FE17_H"]) == "2:17H"
+    assert structure_label(sts["CE2CO17_R"], "Ce₂Co₁₇") == "2:17R" and structure_label(sts["CE2CO17_R"]) == "2:17R"
+    assert structure_label(sts["CE2CO17"]) == "2:17H" and not any(f["warning"] for f in sts.values())
+    # without structure data (standalone scripts): name tokens and the R-T chemistry rule only
+    none = lambda n, f: None                                               # noqa: E731
+    m = _model([2, 17], [["CE"], ["CO"]])
+    f = resolve_families(phase_structures({"TH2ZN17": m, "TH2NI17": m}, (), lookup=none), {})
+    assert (structure_label(f["TH2ZN17"]), structure_label(f["TH2NI17"])) == ("2:17R", "2:17H")
+    f = resolve_families(phase_structures({"CE2CO17_R": m, "CE2CO17": m}, (), lookup=none), {})
+    assert (structure_label(f["CE2CO17_R"]), structure_label(f["CE2CO17"])) == ("2:17R", "2:17H")
+    assert "CE2CO17_R is 2:17R" in f["CE2CO17"]["evidence"]
+    regions = {"phase_T": {"CE2CO17": [600, 1400], "CE2CO17_2": [1300, 1500]}}
+    f = resolve_families(phase_structures({"CE2CO17": m, "CE2CO17_2": m}, (), lookup=none), regions, "binary")
+    assert (structure_label(f["CE2CO17"]), structure_label(f["CE2CO17_2"])) == ("2:17R", "2:17H")
+    assert "guess" in f["CE2CO17_2"]["evidence"] and "temperature only" in f["CE2CO17_2"]["warning"]
+    f = resolve_families(phase_structures({"CE2CO17": m, "CE2CO17_2": m}, (), lookup=none), regions, "ternary")
+    assert structure_label(f["CE2CO17"]) == "2:17" and "not decided" in f["CE2CO17"]["evidence"]
+    f = resolve_families(phase_structures({"CE2CO17": m}, (), lookup=none), {})    # one 2:17 phase: just 2:17
+    assert structure_label(f["CE2CO17"]) == "2:17"
+    from calphad_tools.phase_names import compound_label
+    assert compound_label("CE2CO17_H", m)[0] == "Ce₂Co₁₇ (2:17H)"         # _H names the structure: no -HT
+
+
+CECOFE_217_TDB = """$ Synthetic Ce-Co-Fe test database: one 2:17 phase (Ce)2(Co,Fe)17 spanning the Ce-Co and Ce-Fe edges
+ ELEMENT /-   ELECTRON_GAS              0.0000E+00  0.0000E+00  0.0000E+00!
+ ELEMENT VA   VACUUM                    0.0000E+00  0.0000E+00  0.0000E+00!
+ ELEMENT CE   FCC_A1                    1.4012E+02  0.0000E+00  0.0000E+00!
+ ELEMENT CO   HCP_A3                    5.8933E+01  0.0000E+00  0.0000E+00!
+ ELEMENT FE   BCC_A2                    5.5847E+01  0.0000E+00  0.0000E+00!
+ TYPE_DEFINITION % SEQ *!
+ PHASE LIQUID:L % 1 1 !
+ CONST LIQUID:L : CE CO FE : !
+ PAR G(LIQUID,CE;0) 298.15 +12000-10*T; 6000 N !
+ PAR G(LIQUID,CO;0) 298.15 +16000-9*T; 6000 N !
+ PAR G(LIQUID,FE;0) 298.15 +14000-8*T; 6000 N !
+ PAR G(LIQUID,CE,CO;0) 298.15 -40000; 6000 N !
+ PAR G(LIQUID,CE,FE;0) 298.15 -20000; 6000 N !
+ PHASE BCC_A2 % 2 1 3 !
+ CONST BCC_A2 : CE CO FE : VA : !
+ PAR G(BCC_A2,CE:VA;0) 298.15 0; 6000 N !
+ PAR G(BCC_A2,CO:VA;0) 298.15 0; 6000 N !
+ PAR G(BCC_A2,FE:VA;0) 298.15 0; 6000 N !
+ PAR G(BCC_A2,CE,CO:VA;0) 298.15 +40000; 6000 N !
+ PAR G(BCC_A2,CE,FE:VA;0) 298.15 +40000; 6000 N !
+ PAR G(BCC_A2,CO,FE:VA;0) 298.15 -5000; 6000 N !
+ PHASE CE2TM17 % 2 2 17 !
+ CONST CE2TM17 : CE : CO FE : !
+ PAR G(CE2TM17,CE:CO;0) 298.15 -190000; 6000 N !
+ PAR G(CE2TM17,CE:FE;0) 298.15 -150000; 6000 N !
+"""
+
+
+def test_ternary_217_phase_spanning_two_structures(tb, monkeypatch, tmp_path):
+    """One CALPHAD phase (Ce)2(Co,Fe)17 across a synthetic Ce-Co-Fe isotherm, with structure data saying Ce2Fe17 is
+    2:17R and Ce2Co17 2:17H: each edge is named with its own end-member's structure, the regions inside say "2:17",
+    and the tool text and the JSON warn that one phase stands for both."""
+    import calphad_tools.label_place as lp
+    monkeypatch.setattr(lp, "_family_lookup", _stub_structures)
+    tdb = tmp_path / "CeCoFe-217.tdb"
+    tdb.write_text(CECOFE_217_TDB)
+    text, images = call(tb, "map_phase_diagram", {"tdb": str(tdb), "elements": ["CE", "CO", "FE"],
+                                                  "temperature": 1000, "temperature_unit": "K", "formats": [],
+                                                  "output_prefix": "cecofe_217"})
+    fig, ax = stored(images[0])
+    outs = {name(t): t._calphad_label["outside"] for t in labels_of(ax, ("phase_label:",)) if is_outside(t)}
+    assert outs.get("Ce₂Co₁₇ (2:17H)") == "bottom" and outs.get("Ce₂Fe₁₇ (2:17R)") == "left", outs
+    inside = {name(t) for t in labels_of(ax, ("phase_label:",)) if in_region(t)}
+    assert {"BCC+2:17", "L+2:17"} <= inside, inside
+    warn = ("WARNING: CE2TM17 is a single CALPHAD phase representing both 2:17H (Ce2Co17) and 2:17R (Ce2Fe17) - "
+            "be careful with these labels.")
+    assert warn in text.splitlines()
+    summary = json.loads(files_from(text)["json"].read_text())
+    assert summary["warnings"] == [warn] and summary["labels"]["warnings"] == [warn]
+    check_layout(fig, ax)
+
+
+def test_ternary_phase_on_two_edges_synthetic():
+    """A C15 line compound (Ce)(Co,Fe)2 across a Ce-Co-Fe isotherm is named on both binary edges, each with that
+    binary's formula: CeCo₂ (C15) below the Ce-Co edge, CeFe₂ (C15) beyond the Ce-Fe edge.  A thin single-phase
+    field (no compound) running from the bottom edge to the right edge is named on both edges."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from pycalphad.plot import triangular  # noqa: F401
+    from calphad_tools.label_place import label_diagram
+    fig = plt.figure(figsize=(7, 6))
+    ax = fig.add_subplot(projection="triangular")
+    ax.plot([2 / 3, 0], [0, 2 / 3], color="k", lw=1)
+    band = [[0.30 + 0.002 * (i % 2), 0.7 * i / 40] for i in range(41)]
+    regions = {"polygons": [], "invariants": [], "phase_points": {"MU_PHASE": band},
+               "axes_elements": ["CE", "CO", "FE"],
+               "models": {"LAVES_C15": _model([1, 2], [["CE"], ["CO", "FE"]]),
+                          "MU_PHASE": _model([7, 2, 4], [["CO", "FE"], ["CE"], ["CE", "CO", "FE"]])},
+               "compounds": [{"key": ("LAVES_C15",), "line": [[2 / 3, 0.0], [0.0, 2 / 3]],
+                              "X_ends": [{"CE": 1 / 3, "CO": 2 / 3, "FE": 0.0}, {"CE": 1 / 3, "CO": 0.0, "FE": 2 / 3}]}]}
+    rep = label_diagram(ax, regions, None, None, kind="ternary", elements=["CE", "CO", "FE"])
+    got = {(lab["text"], lab.get("outside")) for lab in rep["labels"]}
+    assert {("CeCo₂ (C15)", "bottom"), ("CeFe₂ (C15)", "left"), ("μ", "bottom"), ("μ", "right")} <= got, got
+    rot = {lab["text"] + lab["outside"]: lab["rotation"] for lab in rep["labels"]}
+    assert rot["CeCo₂ (C15)bottom"] == 60 and rot["CeFe₂ (C15)left"] == -30 and rot["μright"] == 30
+    t = next(t for t in ax.texts if name(t) == "CeFe₂ (C15)")
+    assert np.allclose(t.xy, (0.0, 2 / 3), atol=1e-6) and t._calphad_label["family"] == "C15"
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    rects = [text_rect(t, r) for t in ax.texts if (t.get_gid() or "").startswith("phase_label:")]
+    assert len(rects) == 4
+    for i in range(len(rects)):
+        for j in range(i + 1, len(rects)):
+            assert not rects_overlap(rects[i], rects[j])
+    plt.close(fig)
+
+
+def test_binary_ceco_compound_names(tb):
+    """Ce-Co (CeCo-24Liu): every compound below the x axis at 60°, formula + family where there is evidence:
+    CeCo₂ (C15) from the C15 token, CeCo₅ (1:5) from D2D, Ce₂Co₁₇ (2:17H) from the structure table (Th2Ni17-type);
+    the others by formula only; the crowded Co-rich names spread apart without overlapping; multi-phase labels
+    use the short names (the family: L+C15, 1:5+Ce₅Co₁₉); show_code draws the same."""
+    text, images = call(tb, "map_phase_diagram", {"tdb": "CeCo-24Liu.tdb", "elements": ["CE", "CO"], "tmin": 300,
+                                                  "tmax": 1800, "temperature_unit": "C", "formats": [],
+                                                  "output_prefix": "ceco_compounds"})
+    fig, ax = stored(images[0])
+    outs = {name(t): t for t in labels_of(ax, ("phase_label:",)) if is_outside(t)}
+    outs.update({base(s_): t for s_, t in list(outs.items())})
+    want = {"CeCo₂ (C15)", "CeCo₅ (1:5)", "Ce₂Co₁₇ (2:17H)", "CeCo₃", "Ce₂Co₇", "Ce₅Co₁₉", "Ce₂₄Co₁₁"}
+    assert want <= set(outs), set(outs)
+    for s_ in want:
+        t = outs[s_]
+        assert t._calphad_label["kind"] == "compound" and t._calphad_label["outside"] == "bottom"
+        assert t.get_rotation() == 60
+    assert abs(outs["CeCo₅ (1:5)"].xy[0] - 5 / 6) < 1e-3 and abs(outs["Ce₂Co₁₇ (2:17H)"].xy[0] - 17 / 19) < 1e-3
+    assert re.search(r"CeCo₅ \(1:5\): [^;]*D2D", text) and re.search(r"CeCo₂ \(C15\): [^;]*C15", text), text
+    assert re.search(r"Ce₂Co₁₇ \(2:17H\): [^\n]*end-members: Ce2Co17 2:17H \(table", text), text
+    inside = {name(t) for t in labels_of(ax, ("phase_label:",)) if not is_outside(t)}
+    assert not any("(" in s_ for s_ in inside), inside                    # short names in multi-phase labels:
+    assert {"L+C15", "C15+CeCo₃"} <= inside, inside                       # the family, else the formula
+    assert any("1:5" in s_ for s_ in inside) and any("2:17H" in s_ for s_ in inside), inside
+    check_layout(fig, ax)
+    shown, hidden = tick_state(ax, "x")
+    assert hidden and "0.0" in shown
+    from calphad_tools import codegen
+    import tempfile
+    cells, ctx = codegen.build_cells(tb, images[0])
+    script = codegen.to_script(tb, cells, ctx)
+    assert "calphad_tools" not in script
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "gen.py").write_text(script + LABEL_DUMP)
+        run = subprocess.run([sys.executable, "-W", "ignore", "gen.py"], cwd=d, capture_output=True, text=True,
+                             timeout=900, env={**os.environ, "MPLBACKEND": "Agg"})
+        assert run.returncode == 0, run.stderr[-3000:]
+        art = json.loads((Path(d) / "art.json").read_text())
+    want_art = {t.get_gid(): [getattr(t, "_calphad_plain", None) or t.get_text(), t._calphad_label.get("outside"),
+                              bool(t._calphad_label.get("leader"))] for t in labels_of(ax)}
+    assert art["labels"] == want_art, (art["labels"], want_art)
+
+
+def test_strukturbericht_suffix_subscripts(tmp_path):
+    """Structure suffixes with subscript markup (from structure_id: "L1_{2}", "C11_{b}") on compound labels: real
+    subscripts in the PNG (mathtext), Inkscape subscript tspans in the SVG - letters too - and a plain name for the
+    editing tools.  Solution phases (L12_FCC, B2_BCC, FCC_A1) never get a structure suffix."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import xml.etree.ElementTree as ET
+    from calphad_tools.label_place import label_diagram, phase_structures, find_labels, save_vector
+
+    def stub(phase_name, formulas):
+        known = {"Ni3Al": "L1_{2}", "MoSi2": "C11_{b}"}
+        per = {f: known[f] for f in formulas if f in known}
+        return {"per_endmember": per, "consensus": next(iter(per.values()), None), "ambiguous_label": None}
+    models = {"NI3AL": _model([3, 1], [["NI"], ["AL"]]), "MOSI2": _model([1, 2], [["MO"], ["SI"]]),
+              "L12_FCC": _model([0.75, 0.25], [["AL", "NI"], ["AL", "NI"]]), "B2_BCC": _model([1, 1], [["AL", "NI"], ["AL", "NI"]])}
+    structs = phase_structures(models, (), lookup=stub)
+    assert set(structs) == {"NI3AL", "MOSI2"}                              # never a solution phase
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1000)
+    regions = {"polygons": [], "invariants": [], "models": models,
+               "compounds": [{"key": ("NI3AL",), "x": 0.25, "y0": 0.0, "y1": 900.0},
+                             {"key": ("MOSI2",), "x": 0.667, "y0": 0.0, "y1": 900.0}]}
+    rep = label_diagram(ax, regions, None, None, kind="binary", elements=["AL", "MO", "NI", "SI"],
+                        structures=structs)
+    assert {lab["text"] for lab in rep["labels"]} == {"Ni₃Al (L1₂)", "MoSi₂ (C11b)"}, rep["labels"]
+    a, b = (find_labels(ax, text=s_)[0] for s_ in ("Ni₃Al (L1₂)", "MoSi₂ (C11b)"))
+    assert a.get_text() == r"Ni$_\mathregular{3}$Al (L1$_\mathregular{2}$)"
+    assert b.get_text() == r"MoSi$_\mathregular{2}$ (C11$_\mathregular{b}$)"
+    assert name(a) == "Ni₃Al (L1₂)" and b._calphad_label["family"] == "C11_{b}"
+    fig.savefig(tmp_path / "s.png")                                      # mathtext renders
+    save_vector(fig, tmp_path / "s.svg")
+    root = ET.fromstring((tmp_path / "s.svg").read_bytes())
+    ns = "{http://www.w3.org/2000/svg}"
+    got = {}
+    for g in root.iter(ns + "g"):
+        if (g.get("id") or "").startswith("phase_label:"):
+            t = next(g.iter(ns + "text"))
+            got[g.get("id")] = ["".join(t.itertext()), [sp.text for sp in t.iter(ns + "tspan")]]
+            assert all(sp.get("style") == "font-size:65%;baseline-shift:sub" for sp in t.iter(ns + "tspan"))
+    assert got == {"phase_label:NI3AL": ["Ni3Al (L12)", ["3", "2"]],
+                   "phase_label:MOSI2": ["MoSi2 (C11b)", ["2", "b"]]}, got
     plt.close(fig)

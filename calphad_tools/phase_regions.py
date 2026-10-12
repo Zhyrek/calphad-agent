@@ -193,15 +193,98 @@ def composition_dof(db, phase: str, elements: Sequence[str]) -> Optional[int]:
     return n
 
 
+# solution phases (ordered ones too: B2_BCC, L12_FCC) - never a compound (the same set as label_place's)
+SOLUTION_TOKENS = {"LIQUID", "LIQ", "GAS", "FCC", "BCC", "HCP", "DHCP", "CBCC", "CUB", "BCT", "DIAMOND", "IONIC",
+                   "SLAG", "A1", "A2", "A3", "GRAPHITE"}
+
+
+def model_info(db, phase: str, elements: Sequence[str]) -> Optional[Dict]:
+    """Sublattice model of a phase within a system: {"sites": [site ratios], "constituents": [[EL or VA, ...], ...]}
+    (constituents that are elements of the system or VA; other species dropped); None if the database lacks it."""
+    ph = db.phases.get(base_name(phase)) if db is not None else None
+    if ph is None:
+        return None
+    els = {str(e).upper() for e in elements} | {"VA"}
+    cons = []
+    for sub in ph.constituents:
+        cons.append(sorted({str(getattr(sp, "name", sp)).upper() for sp in sub} & els))
+    return {"sites": [float(x) for x in ph.sublattices], "constituents": cons}
+
+
+def ideal_points(model: Dict, elements: Sequence[str], cap: int = 20000) -> List[Tuple[tuple, np.ndarray]]:
+    """End-members of a model (one constituent per sublattice) that are compounds (two or more elements): [(choice,
+    mole fractions in the order of ``elements``)]."""
+    els = [str(e).upper() for e in elements]
+    out = []
+    for k, ch in enumerate(itertools.product(*model["constituents"])):
+        if k >= cap:
+            break
+        amt = np.zeros(len(els))
+        for site, c in zip(model["sites"], ch):
+            if c in els:
+                amt[els.index(c)] += float(site)
+        if amt.sum() > 0 and (amt > 0).sum() >= 2:
+            out.append((ch, amt / amt.sum()))
+    return out
+
+
+def _near_stoichiometric(kind, recipe, n, pts, model) -> Optional[Dict]:
+    """How close a phase's field (its boundary compositions ``pts``, mole fractions in the recipe's element order)
+    is to stoichiometric: the largest deviation of any point from the nearest compound end-member of its model
+    (point), or - ternary - from the nearest line between two end-members that differ on one sublattice and lie in
+    different binaries (a line compound, e.g. (Co,Ni)3V; a field stretched along one binary edge has a range in
+    that binary and is not one), and the field's width (largest range of one mole fraction).  None if the model has no compound end-member or the
+    field is far from it (> 0.05)."""
+    cap = 0.05
+    ideal = ideal_points(model, recipe["elements"])
+    if not ideal or not len(pts):
+        return None
+    X = np.asarray(pts, float)
+    width = float(np.ptp(X, axis=0).max())
+    out = {"key": (n,), "width": width}
+    dev = [float(np.abs(X - P).max()) for _, P in ideal]
+    k = int(np.argmin(dev))
+    els = recipe["elements"]
+    if dev[k] < cap:
+        Xm = X.mean(axis=0)
+        px, py = fractions_to_plot(recipe, dict(zip(els, Xm)))
+        out["point"] = {"dev": dev[k], "X": {e: float(v) for e, v in zip(els, Xm)},
+                        "ideal": {e: float(v) for e, v in zip(els, ideal[k][1])}, "x": float(px)}
+        if kind == "ternary":
+            out["point"]["y"] = float(py)
+    if kind == "ternary":
+        best = None
+        for (c1, P1), (c2, P2) in itertools.combinations(ideal, 2):
+            if sum(a != b for a, b in zip(c1, c2)) != 1 or ((P1 > 0) | (P2 > 0)).sum() < 3:
+                continue                         # (a line along one binary edge is a range in that binary)
+            d = P2 - P1
+            t = np.clip((X - P1) @ d / max(float(d @ d), 1e-12), 0.0, 1.0)
+            dv = float(np.abs(X - (P1 + t[:, None] * d)).max())
+            if best is None or dv < best[0]:
+                best = (dv, P1, d, t)
+        if best is not None and best[0] < cap:
+            dv, P1, d, t = best
+            ends = [P1 + t.min() * d, P1 + t.max() * d]
+            if float(np.abs(ends[1] - ends[0]).max()) > 2e-3:
+                line = [list(map(float, fractions_to_plot(recipe, dict(zip(els, E))))) for E in ends]
+                out["line"] = {"dev": dv, "line": line,
+                               "X_ends": [{e: float(v) for e, v in zip(els, E)} for E in ends]}
+    return out if ("point" in out or "line" in out) else None
+
+
 def regions_from_lines(lines, invariants, recipe: Dict, db=None) -> Dict:
     """Polygons / compounds / invariant lines (plotted coordinates) from ZPF lines and three-phase nodes.
 
     lines: [{"phases": [n1, n2], "points": [{"T": K, "phases": [(n1, X1), (n2, X2)]}, ...]}, ...]
     invariants: [{"T_K": K, "phases": [...], "compositions": {name: {el: x}}, "type": optional}, ...]
     db: when given, a phase is a compound (named outside the plot) only if its model has no composition freedom
-    in this system (a ternary line: one) - a solution phase whose boundary hardly moves is not one."""
+    in this system (a ternary line: one) - a solution phase whose boundary hardly moves is not one.  With db, also
+    "models" (sublattice model of each phase: the formula of a compound label), "near_compounds" (phases whose
+    field lies within 0.05 of a compound end-member of their model: label_place treats those within
+    label_style.stoich_tolerance as compounds), "phase_T" (binary: temperature range of each phase's boundaries, K)
+    and "axes_elements"; each compound has "X" (mole fractions; a ternary line: "X_ends")."""
     kind = recipe["kind"]
-    polys, traces = [], {}
+    polys, traces, phase_T = [], {}, {}
     for ln in lines:
         pts = ln["points"]
         if len(pts) < 2 or len(ln["phases"]) != 2:
@@ -213,6 +296,8 @@ def regions_from_lines(lines, invariants, recipe: Dict, db=None) -> Dict:
         for k, n in enumerate(ln["phases"]):
             X = np.array([[p["phases"][k][1][e] for e in recipe["elements"]] for p in pts], float)
             traces.setdefault(base_name(n), []).append((X, a if k == 0 else b))
+            T_seen = phase_T.setdefault(base_name(n), [np.inf, -np.inf])
+            T_seen[:] = [min(T_seen[0], min(p["T"] for p in pts)), max(T_seen[1], max(p["T"] for p in pts))]
     compounds = []
     for n, trs in traces.items():
         for X, path in trs:
@@ -255,19 +340,25 @@ def regions_from_lines(lines, invariants, recipe: Dict, db=None) -> Dict:
                 if hit:
                     hit["y0"], hit["y1"] = min(hit["y0"], y0), max(hit["y1"], y1)
                 else:
-                    compounds.append({"key": (n,), "x": xc, "y0": y0, "y1": y1})
+                    compounds.append({"key": (n,), "x": xc, "y0": y0, "y1": y1,
+                                      "X": {e: float(v) for e, v in zip(recipe["elements"], X.mean(axis=0))}})
             else:
                 xc, yc = float(np.mean(xs[:, 0])), float(np.mean(xs[:, 1]))
                 if max(X.mean(axis=0)) > 1 - 2e-3:
                     continue                     # a pure element (corner); compounds on an edge are kept
                 if not any(c["key"] == (n,) and abs(c["x"] - xc) < 2e-3 and abs(c["y"] - yc) < 2e-3
                            for c in compounds):
-                    compounds.append({"key": (n,), "x": xc, "y": yc})
+                    compounds.append({"key": (n,), "x": xc, "y": yc,
+                                      "X": {e: float(v) for e, v in zip(recipe["elements"], X.mean(axis=0))}})
     if db is not None:
         def is_compound(c):
             dof = composition_dof(db, c["key"][0], recipe["elements"])
             return dof is None or dof <= (1 if "line" in c else 0)
         compounds = [c for c in compounds if is_compound(c)]
+    for c in compounds:
+        if "line" in c:
+            c["X_ends"] = [{e: float(np.squeeze(v)) for e, v in plot_to_fractions(recipe, *q).items()}
+                           for q in c["line"]]
     tris, inv_lines = [], []
     edge_pts: Dict[str, list] = {n: [p for _, path in trs for p in path] for n, trs in traces.items()}
     for inv in invariants or []:
@@ -288,7 +379,33 @@ def regions_from_lines(lines, invariants, recipe: Dict, db=None) -> Dict:
         if len(arr):
             idx = np.unique(np.linspace(0, len(arr) - 1, min(len(arr), 300)).astype(int))
             phase_points[n] = [list(map(float, q)) for q in arr[idx]]
-    return {"polygons": tris + polys, "compounds": compounds, "invariants": inv_lines, "phase_points": phase_points}
+    out = {"polygons": tris + polys, "compounds": compounds, "invariants": inv_lines, "phase_points": phase_points}
+    if db is not None and kind in ("binary", "ternary"):
+        els = recipe["elements"]
+        exact = {c["key"][0] for c in compounds}
+        models, near = {}, []
+        for n in sorted(set(recipe.get("phases") or []) | set(traces)):
+            m = model_info(db, n, els)
+            if m is not None:
+                models[base_name(n)] = m
+        for n, trs in sorted(traces.items()):
+            ph = db.phases.get(n)
+            if n in exact or n not in models or (ph is not None and ph.model_hints.get("liquid")) \
+                    or n.startswith(("LIQ", "IONIC_LIQ", "GAS")) or set(n.split("_")) & SOLUTION_TOKENS:
+                continue                         # (solution phases, ordered ones too, keep their own names)
+            Xs = [X for X, _ in trs] + [np.array([[inv["compositions"][q][e] for e in els]], float)
+                                         for inv in invariants or [] for q in inv["phases"] if base_name(q) == n]
+            cand = _near_stoichiometric(kind, recipe, n, np.vstack(Xs), models[n])
+            if cand is None:
+                continue
+            if kind == "binary":
+                ys = np.concatenate([np.asarray(path, float)[:, 1] for _, path in trs]
+                                    + [np.asarray([q[1]], float) for q in edge_pts.get(n, [])])
+                cand["y0"], cand["y1"] = float(np.nanmin(ys)), float(np.nanmax(ys))
+            near.append(cand)
+        out.update(models=models, near_compounds=near, axes_elements=list(els),
+                   phase_T={n: [float(a), float(b)] for n, (a, b) in phase_T.items()})
+    return out
 
 
 def mapping_conditions(recipe: Dict, step: float = 0.02, T_step: float = 10.0) -> Dict:

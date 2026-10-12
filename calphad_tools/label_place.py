@@ -24,7 +24,13 @@ per cell):
    field: on an edge, their name goes outside, next to the composition (binary: below the x axis, text at 60
    degrees; ternary: beyond the nearest edge, 60 degrees at the bottom edge, -30 / +30 degrees - square to the
    edge - at the left / right edge); tick labels they cover are hidden (:class:`TickLabelHider`), and axis titles
-   moved clear.  A ternary compound inside the triangle gets a leader label (and a dot at a point compound);
+   moved clear.  A ternary compound inside the triangle gets a leader label (and a dot at a point compound).
+   A compound is a phase whose model has no composition freedom, or one that is stoichiometric for all practical
+   purposes: every boundary composition of its field within ``stoich_tolerance`` (0.01 mole fraction) of one
+   compound end-member of its model (:func:`stoich_compounds`; a binary one that ends above the bottom of the
+   plot is named below its lowest point).  Its own label is "formula (family)" (phase_names.compound_label: Fe₂Nb
+   (C14), CeCo₅ (1:5), Ce₂Co₁₇ (2:17R)); on a ternary edge with that binary's formula, on every edge it reaches.
+   Multi-phase labels keep the short names (BCC+C14);
 6. every position is confirmed with ``key_at`` (an equilibrium calculation) before the label is drawn (isopleths:
    where it gives another phase set, ``confirm`` may still accept the label's by Gibbs energy);
 7. isopleths (``kind="isopleth"``, regions from isopleth_regions): every drawn line is a wall, any region - one,
@@ -41,6 +47,7 @@ text as ``_calphad_plain``); the SVG gets Inkscape subscript tspans instead (``p
 from __future__ import annotations
 
 import math
+import os
 import re
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -49,7 +56,9 @@ import matplotlib.artist
 import numpy as np
 import matplotlib.path as mpath
 
-from .phase_names import is_liquid_name, plain_text, region_label, save_vector, set_name, to_mathtext  # noqa: F401
+from .phase_names import (GREEK_FAMILY, compound_label, format_phase, ideal_compositions,  # noqa: F401
+                          is_liquid_name, model_formula, phase_family, plain_label, plain_text, region_label,
+                          save_vector, set_name, strip_compset, to_mathtext)
 
 FONT_FAMILY = ["DejaVu Sans", "Helvetica", "Arial", "sans-serif"]
 LABEL_PREFIXES = ("phase_label:", "invariant_label:")
@@ -57,7 +66,7 @@ DEFAULT_STYLE = {
     "fontsize": 9.5, "min_fontsize": 8.0, "color": "black", "family": FONT_FAMILY, "fontweight": "normal",
     "background": False, "background_alpha": 0.75, "rotate": True, "margin": 2.5,
     "invariant_fontsize": 9.0, "invariant_color": "#b2182b",
-    "res": 0.5,
+    "res": 0.5, "stoich_tolerance": 0.01,
 }
 # no longer used: reaction types are never written, and labels never get leader lines (accepted and ignored)
 IGNORED_STYLE = ("invariant_type", "leader")
@@ -643,7 +652,8 @@ def clear_labels(ax) -> int:
 def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Optional[Callable] = None, *,
                   kind: str = "binary", elements: Optional[Sequence[str]] = None, phase_labels=None,
                   liquids: Sequence[str] = (), invariants: bool = True, T_unit: str = "C",
-                  style: Optional[Dict] = None, confirm: Optional[Callable] = None) -> Dict:
+                  style: Optional[Dict] = None, confirm: Optional[Callable] = None,
+                  structures: Optional[Dict] = None) -> Dict:
     """Draw phase-region labels, outside names of stoichiometric phases and binary invariant temperatures.
 
     regions: {"polygons": [{"key", "xy" (plotted coordinates), "tri"?, "ties"?}], "compounds": [...],
@@ -655,7 +665,9 @@ def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Option
     ``min_fontsize``, or is left out; an invariant temperature lies right above or below its line, in the
     adjacent region, between ``invariant_fontsize`` and ``min_fontsize``, or is left out; a stoichiometric phase
     (line compound / ternary point or line compound) is named outside the plot next to its composition.
-    Returns {"labels": [...], "skipped": [...]}."""
+    structures: phase_structures' result (show_code passes it as data; else it is looked up here).
+    Returns {"labels": [...], "skipped": [...], "stoichiometry": [...], "compound_names": [...], "warnings": [...]}."""
+    phase_labels_in = phase_labels
     st = {**DEFAULT_STYLE, **{k: v for k, v in (style or {}).items() if k not in IGNORED_STYLE}}
     fig = ax.figure
     clear_labels(ax)
@@ -676,6 +688,50 @@ def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Option
     meas = _Measure(ax, renderer, st)
     liquids = list(liquids) + [k for r in regs for k in r["key"] if is_liquid_name(k)]
     report: Dict[str, List] = {"labels": [], "skipped": []}
+    compounds, report["stoichiometry"] = stoich_compounds(regions, kind, float(st["stoich_tolerance"]))
+    ckeys = {tuple(c["key"]) for c in compounds}
+    if structures is None:
+        structures = phase_structures(regions.get("models") or {}, {k[0] for k in ckeys}, elements,
+                                      regions.get("axes_elements"))
+    structures = resolve_families({k: dict(v) for k, v in structures.items()}, regions, kind)
+    report["warnings"] = [f["warning"] for f in structures.values() if f.get("warning")]
+    report["compound_names"] = []
+    # multi-phase (and single-phase region) labels: the family as the short name (C15, 1:5, 2:17; the specific
+    # 2:17R / 2:17H only where the name says or all end-members agree); phase_labels still win
+    user = {str(k).upper(): v for k, v in (phase_labels_in or {}).items()}
+    overridden = {n for n in structures if format_phase(n, elements, user) != format_phase(n, elements)}
+    phase_labels = {**{n: user.get(str(structure_label(f)).upper(), structure_label(f))
+                       for n, f in structures.items() if n not in overridden and _region_family(structure_label(f))},
+                    **user}
+    for note in report["stoichiometry"]:                # names for the report
+        n = strip_compset(note["phase"])
+        note["label"] = region_label((n,), elements, phase_labels, liquids)
+        if note.get("ideal") and (regions.get("models") or {}).get(n):
+            note["ideal_formula"] = compound_label(n, regions["models"][n], note["ideal"], None, None,
+                                                   elements)[1]["formula"]
+
+    def cname(key, X=None, X_ends=None, edge=None):
+        """Own label of a compound (formula + family) and its parts, at composition X (an edge: its formula)."""
+        n = strip_compset(key[0])
+        axes = regions.get("axes_elements")
+        allowed = None
+        if axes:
+            allowed = list(axes) if kind == "binary" or edge is None else \
+                {"bottom": [axes[0], axes[1]], "left": [axes[0], axes[2]], "right": [axes[1], axes[2]]}[edge]
+        s_, info = compound_label(n, (regions.get("models") or {}).get(n), X, allowed, X_ends, elements,
+                                  phase_labels_in, family=False)
+        st_ = structures.get(n)
+        fam = None
+        if n not in overridden and st_:
+            at_binary = kind == "binary" or edge is not None
+            fam = structure_label(st_, info["formula"] if at_binary else None)
+            if fam:
+                s_ = f"{info['formula']} ({fam})" if info["formula"] else fam
+        info.update(family=fam, evidence=(st_ or {}).get("evidence") if fam else None,
+                    short=phase_labels.get(n, info["short"]))
+        if not any(c["text"] == plain_label(s_) for c in report["compound_names"]):
+            report["compound_names"].append({"text": plain_label(s_), "phase": n, **info})
+        return s_, {"short": info["short"], "formula": info["formula"], "family": info["family"]}
     used_gids: Dict[str, int] = {}
     inv_px = ax.transData.inverted()
     small = f"no room for {st['min_fontsize']:g} pt"
@@ -718,6 +774,8 @@ def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Option
     sizes = _sizes(st["fontsize"], st["min_fontsize"])
     for r in sorted(regs, key=lambda r: r["cap"]):
         key = r["key"]
+        if len(key) == 1 and tuple(key) in ckeys:
+            continue                                    # a (practically) stoichiometric phase: named as a compound
         s = region_label(key, elements, phase_labels, liquids)
         m = r["mask"] & inner
         avail = m & ~obst & ~placed & ~walls            # keep clear of the drawn boundary lines
@@ -826,9 +884,11 @@ def label_diagram(ax, regions: Dict, grid: Optional[Dict] = None, key_at: Option
         report["n_obstacle_points"] = n_pts
         return report
     edges, ticks = _edges(ax, kind)
-    items, leaders = _compound_items(ax, kind, regions.get("compounds") or [], edges, check, report, name_of)
+    items, leaders, below_c = _compound_items(ax, kind, compounds, edges, check, report, cname)
     more_items, more_leaders, below, corner_items = _single_phase_items(
-        ax, kind, R, edges, report, check, liquids, regions, grid, {it["key"] for it in items + leaders}, name_of)
+        ax, kind, R, edges, report, check, liquids, regions, grid, {it["key"] for it in items + leaders + below_c},
+        name_of, ckeys)
+    below = below_c + below
     _label_outside(ax, kind, items + more_items, edges, ticks, st, meas, renderer, gid_for, record)
     _place_corners(ax, corner_items, st, meas, renderer, gid_for, record)
     for sk in report["skipped"]:
@@ -924,57 +984,287 @@ def _on_edge(ax, edge, P):
     return (xy[0], 0.0) if edge == "bottom" else (0.0, xy[1]) if edge == "left" else (xy[0], 1.0 - xy[0])
 
 
-def _compound_items(ax, kind, compounds, edges, check, report, name_of, edge_tol: float = 5e-3):
-    """Where each stoichiometric phase is named: binary - below the x axis at its composition; ternary - on (or
-    reaching) an edge: beyond that edge (bottom: along the line of constant x; slanted edges: square to the edge);
-    inside the triangle: with a leader line (and a dot at a point compound).  Returns (edge items, leader items)."""
+def stoich_compounds(regions: Dict, kind: str, tol: float = 0.01) -> Tuple[List[Dict], List[Dict]]:
+    """The phases named as compounds: those whose model has no composition freedom (``regions["compounds"]``), and
+    those that are stoichiometric for all practical purposes - every boundary composition of the field within
+    ``tol`` (mole fraction, label_style.stoich_tolerance) of one compound end-member of the model (ternary: of one
+    line between two end-members that differ on one sublattice - a line compound).  Returns (compounds, report
+    entries {phase, deviation, width, tolerance, treated, kind}) - entries for every phase within 3 x tol."""
+    out = [dict(c) for c in regions.get("compounds") or []]
+    notes = []
+    for cand in regions.get("near_compounds") or []:
+        key = tuple(cand["key"])
+        pt, ln = cand.get("point"), cand.get("line")
+        entry = {"phase": key[0], "width": round(float(cand["width"]), 4), "tolerance": tol}
+        if pt is not None and pt["dev"] < tol:
+            c = {"key": key, "x": pt["x"], "X": pt["X"], "near": True}
+            if kind == "binary":
+                c.update(y0=cand["y0"], y1=cand["y1"])
+            else:
+                c["y"] = pt["y"]
+            out.append(c)
+            notes.append({**entry, "deviation": round(pt["dev"], 4), "treated": True, "kind": "point",
+                          "ideal": pt.get("ideal")})
+        elif ln is not None and ln["dev"] < tol:
+            out.append({"key": key, "line": ln["line"], "X_ends": ln["X_ends"], "near": True})
+            notes.append({**entry, "deviation": round(ln["dev"], 4), "treated": True, "kind": "line"})
+        else:
+            dev = min(d["dev"] for d in (pt, ln) if d is not None)
+            if dev < 3 * tol:
+                notes.append({**entry, "deviation": round(dev, 4), "treated": False,
+                              "kind": "point" if pt is not None and pt["dev"] == dev else "line",
+                              "ideal": (pt or {}).get("ideal")})
+    return out, notes
+
+
+R217_GUESS = "high-T field -> 2:17H, low-T field -> 2:17R (a guess: the names do not say)"
+_UNSUB_DIGITS = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")
+
+
+def _plain_formula(s) -> str:
+    """'Ce₂Co₁₇-HT' -> 'ce2co17' (a key to compare formulas by)."""
+    return re.sub(r"[^a-z0-9(),]", "", str(s or "").split("-")[0].translate(_UNSUB_DIGITS).lower())
+
+
+def _family_lookup(phase_name: str, formulas: Sequence[str]) -> Optional[Dict]:
+    """Structure of a phase's end-members from the toolkit's structure_id module (its ``phase_family``: name tokens,
+    curated table, cache, online AFLOW / OQMD as configured - ``[structure] online`` / CALPHAD_STRUCTURE_ONLINE),
+    as plain data: {"per_endmember" {formula: suffix}, "consensus", "ambiguous_label", "name_suffix" (only a definite
+    one), "name_evidence", "warning", "sources" {formula: source}}.  None where the module is not there: standalone
+    show_code scripts get the structures as data instead (label_diagram's ``structures``)."""
+    try:
+        from . import structure_id as _sid
+    except ImportError:
+        return None
+    try:
+        pf = _sid.phase_family(phase_name, list(formulas))
+    except Exception:  # noqa: BLE001 - no structure information
+        return None
+    return {"per_endmember": {f: r.suffix for f, r in pf.per_endmember.items() if r.suffix},
+            "sources": {f: r.source for f, r in pf.per_endmember.items() if r.suffix},
+            "consensus": pf.consensus, "ambiguous_label": pf.ambiguous_label,
+            "name_suffix": pf.name_suffix if pf.name_definite else None, "name_evidence": pf.name_evidence,
+            "warning": pf.warning}
+
+
+# solution phases (also ordered ones: B2_BCC, L12_FCC) keep their short names: never a compound family
+SOLUTION_TOKENS = {"LIQUID", "LIQ", "GAS", "FCC", "BCC", "HCP", "DHCP", "CBCC", "CUB", "BCT", "DIAMOND", "IONIC",
+                   "SLAG", "A1", "A2", "A3", "GRAPHITE"}
+# families that also name a phase in multi-phase labels (the user's well-known families); other structure
+# suffixes (A15, L1_{2} ...) appear only in a compound's own label
+_LABEL_FAMILIES = ("C14", "C15", "C36", "Laves", "1:5", "1:12", "2:17")
+
+
+def is_solution_name(name: str) -> bool:
+    return bool(set(strip_compset(name).split("_")) & SOLUTION_TOKENS) or is_liquid_name(name)
+
+
+def _region_family(lab: Optional[str]) -> bool:
+    return bool(lab) and (lab in GREEK_FAMILY or str(lab).startswith(_LABEL_FAMILIES))
+
+
+def _endmember_formulas(model: Optional[Dict], elements: Optional[Sequence[str]]) -> List[str]:
+    """Formulas (plain, 'Ce2Co17') of a model's compound end-members within the system's elements."""
+    if not model:
+        return []
+    allowed = list(elements) if elements else sorted({c for cs in model["constituents"] for c in cs} - {"VA"})
+    out = []
+    for _, X in ideal_compositions(model, allowed):
+        if sum(1 for v in X.values() if v > 0) < 2:
+            continue
+        parts = model_formula(model, X, [e for e, v in X.items() if v > 0])
+        if parts:
+            f = "".join(e.capitalize() + ("" if n == 1 else str(n)) for e, n in parts)
+            if f not in out:
+                out.append(f)
+    return out
+
+
+def phase_structures(models: Dict, names=(), elements=None, axes_elements=None, lookup=None) -> Dict:
+    """Structure family of each phase: {phase: {"family" (the label when unsure, e.g. "2:17"), "name_label" (from
+    the phase name - authoritative everywhere, e.g. CE2FE17_H -> "2:17H"), "per_endmember" {formula: suffix},
+    "consensus" (all end-members agree), "evidence", "warning"}}.  The name tokens / R-T chemistry rule of
+    phase_names.phase_family, plus the structure of each compound end-member from ``lookup`` (default
+    structure_id: :func:`_family_lookup`).  Solution phases (FCC_A1, B2_BCC, L12_FCC ...) are never listed.
+    Plain data: show_code embeds it."""
+    out = {}
+    lookup = lookup or _family_lookup
+    for n in sorted({strip_compset(x) for x in list(models) + list(names)}):
+        if is_solution_name(n):
+            continue
+        mine = phase_family(n, elements)
+        formulas = _endmember_formulas(models.get(n), axes_elements)
+        r = lookup(n, formulas) if formulas else None
+        r = r if isinstance(r, dict) else {}
+        per = {str(f): str(v) for f, v in (r.get("per_endmember") or {}).items() if v}
+        name_label, evidence = r.get("name_suffix"), []
+        if name_label:
+            evidence.append(str(r.get("name_evidence") or "phase name"))
+        elif mine is not None:
+            if mine.get("variant"):                     # CE2FE17_H, TH2ZN17: the structure, from the name
+                name_label = mine["family"] + mine["variant"]
+            elif mine["family"] != "2:17" and mine["evidence"].startswith(("name token", "Greek-letter", "R-T name")):
+                name_label = mine["family"]
+        if mine is not None and not evidence:
+            evidence.append(mine["evidence"])
+        if per:
+            src = r.get("sources") or {}
+            evidence.append("end-members: " + ", ".join(f"{f} {plain_label(lab)}" + (f" ({src[f]})" if src.get(f) else "")
+                                                        for f, lab in per.items()))
+        labs = sorted(set(per.values()))
+        consensus = r.get("consensus") if r else (labs[0] if len(labs) == 1 else None)
+        family = (mine or {}).get("family") or r.get("ambiguous_label") or \
+            (os.path.commonprefix(labs).rstrip("-_ ") if labs else None) or consensus or name_label
+        if not family:
+            continue
+        info = {"family": str(family), "name_label": name_label, "per_endmember": per,
+                "name_family": (mine or {}).get("family") or (str(r["ambiguous_label"]) if r.get("name_evidence")
+                                                              and r.get("ambiguous_label") else None),
+                "consensus": consensus if consensus else (labs[0] if len(labs) == 1 and not r else None),
+                "evidence": "; ".join(evidence) or None, "warning": None}
+        if r.get("warning"):
+            info["warning"] = "WARNING: " + str(r["warning"]).rstrip(".") + "."
+        elif len(labs) > 1:
+            info["warning"] = (f"WARNING: {n} is a single CALPHAD phase representing "
+                               + ("both " if len(labs) == 2 else "") + " and ".join(
+                f"{lab} ({', '.join(f for f, x in per.items() if x == lab)})" for lab in labs)
+                + " - be careful with these labels.")
+        out[n] = info
+    return out
+
+
+def resolve_families(structures: Dict, regions: Dict, kind: str = "binary") -> Dict:
+    """2:17 phases (and any family with R / H variants) of one diagram: a phase with no specific structure from its
+    name or its end-members gets one only when the diagram has two different 2:17 phases - the other kind than a
+    named one, else (binary) by temperature: the field reaching the higher temperature is 2:17H (a guess, with a
+    warning).  Sets "heuristic" / adds "warning" in place; returns the structures."""
+    two = [n for n, f in structures.items() if f["family"] == "2:17"]
+    if len(two) < 2:
+        return structures
+
+    def specific(n):
+        f = structures[n]
+        return f["name_label"] or f["consensus"]
+    unknown = [n for n in two if not specific(n)]
+    known = [n for n in two if specific(n)]
+    if len(two) == 2 and len(unknown) == 1:
+        v = specific(known[0])[-1:]
+        other = {"R": "H", "H": "R"}.get(v)
+        if other:
+            structures[unknown[0]]["heuristic"] = "2:17" + other
+            structures[unknown[0]]["evidence"] = (structures[unknown[0]]["evidence"] or "") + \
+                f"; 2:17{other}: {known[0]} is 2:17{v}"
+        return structures
+    T = regions.get("phase_T") or {}
+    if len(unknown) >= 2 and kind == "binary" and all(n in T for n in unknown):
+        hot = max(unknown, key=lambda n: (T[n][1], T[n][0]))
+        for n in unknown:
+            structures[n]["heuristic"] = "2:17H" if n == hot else "2:17R"
+            structures[n]["evidence"] = (structures[n]["evidence"] or "") + \
+                f"; {structures[n]['heuristic']}: {R217_GUESS}"
+        structures[hot]["warning"] = (f"WARNING: {' and '.join(unknown)} are both 2:17 phases; 2:17H / 2:17R were "
+                                      "assigned by temperature only (the higher-temperature one as 2:17H) - a guess, "
+                                      "check them.")
+    elif unknown:
+        for n in unknown:
+            structures[n]["evidence"] = (structures[n]["evidence"] or "") + \
+                "; 2:17R / 2:17H not decided (no structure in the name; set phase_labels)"
+    return structures
+
+
+def structure_label(info: Optional[Dict], formula: Optional[str] = None) -> Optional[str]:
+    """The family label of a phase: from its name if it says; at a binary composition (``formula``: an edge of a
+    ternary, a binary compound) that end-member's own structure, else only what the name / chemistry say (never
+    another end-member's: Ni₃V's D0₂₂ is not Co₃V's); elsewhere (inside a ternary, multi-phase labels) the
+    structure all end-members with an answer share, else the family alone ('2:17')."""
+    if not info:
+        return None
+    if info["name_label"]:
+        return info["name_label"]
+    if formula is not None:
+        per = {_plain_formula(f): lab for f, lab in info["per_endmember"].items()}
+        if _plain_formula(formula) in per:
+            return per[_plain_formula(formula)]
+        return info.get("heuristic") or info.get("name_family", info["family"])
+    return info["consensus"] or info.get("heuristic") or info["family"]
+
+
+def _compound_items(ax, kind, compounds, edges, check, report, cname, edge_tol: float = 5e-3, reach_pt: float = 2.0):
+    """Where each stoichiometric phase is named: binary - below the x axis at its composition (a practically
+    stoichiometric field that ends above the bottom of the plot: right below its lowest point, as a single-phase
+    field); ternary - on (or reaching) an edge: beyond that edge (bottom: along the line of constant x; slanted
+    edges: square to the edge), a line compound reaching two edges on both, each with that binary's formula;
+    inside the triangle: with a leader line (and a dot at a point compound).  Returns (edge items, leader items,
+    below items)."""
     xlo, xhi = sorted(ax.get_xlim())
-    items, leaders = [], []
+    items, leaders, below = [], [], []
+    ppp = ax.figure.dpi / 72.0
     for comp in compounds:
         key = tuple(comp["key"])
-        s = name_of(key)
         if kind == "binary":
             if not (xlo <= comp["x"] <= xhi):
                 continue
+            s, names = cname(key, X=comp.get("X"))
+            probe = (comp["x"], 0.5 * (comp["y0"] + comp["y1"]))
+            y_px = ax.transData.transform((comp["x"], comp["y0"]))[1]
+            if comp.get("near") and y_px - ax.bbox.y0 > reach_pt * ppp:
+                ok = check(key, probe, contains=True)        # ends above the bottom: below its lowest point
+                if ok is False:
+                    report["skipped"].append({"label": s, "reason": "not confirmed by equilibrium"})
+                    continue
+                below.append({"key": key, "s": s, "end": (float(comp["x"]), float(comp["y0"])), "terminal": False,
+                              "ok": ok, "kind": "compound", "probe": probe, "names": names})
+                continue
             P = np.array([ax.transData.transform((comp["x"], ax.get_ylim()[0]))[0], edges["bottom"][0][1]])
-            edge, probe, xy = "bottom", (comp["x"], 0.5 * (comp["y0"] + comp["y1"])), (float(comp["x"]), 0.0)
+            hits = [("bottom", P, (float(comp["x"]), 0.0), s, names)]
         else:
-            pts = [np.asarray(p, float) for p in comp["line"]] if "line" in comp else [np.array([comp["x"], comp["y"]])]
+            line = "line" in comp
+            pts = [np.asarray(p, float) for p in comp["line"]] if line else [np.array([comp["x"], comp["y"]])]
             probe = np.mean(pts, axis=0)
-            if len(pts) == 1 and max(probe[0], probe[1], 1 - probe[0] - probe[1]) > 1 - 2e-3:
+            if not line and max(probe[0], probe[1], 1 - probe[0] - probe[1]) > 1 - 2e-3:
                 continue                                # a pure element (corner): named by the corner label
             to_mid = np.array([1 / 3, 1 / 3]) - probe   # checked a hair inside (an edge composition is degenerate)
             probe = tuple(float(v) for v in probe + 2e-3 * to_mid / max(np.linalg.norm(to_mid), 1e-12))
-            best = None
-            for p in pts:
+            ends = comp.get("X_ends") or [None, None]
+            hits, seen = [], set()
+            for i, p in enumerate(pts):
+                best = None
                 for rank, (edge_, dist) in enumerate((("right", 1 - p[0] - p[1]), ("bottom", p[1]), ("left", p[0]))):
-                    cand = (round(float(dist), 3), rank, edge_, p)
+                    cand = (round(float(dist), 3), rank, edge_)
                     if best is None or cand[:2] < best[:2]:
                         best = cand
-            dist, _, edge, p = best
-            if dist > edge_tol:                         # a ternary compound inside the triangle: leader line
+                dist, _, edge = best
+                if dist > edge_tol or edge in seen:
+                    continue
+                seen.add(edge)
+                if edge == "bottom":                    # along the line of constant x (the bottom axis reading)
+                    xy = (float(p[0]), 0.0)
+                    P = ax.transData.transform(xy)
+                else:                                   # square to the edge
+                    e0, e1, _ = edges[edge]
+                    u = (e1 - e0) / np.linalg.norm(e1 - e0)
+                    P = e0 + ((ax.transData.transform(p) - e0) @ u) * u
+                    xy = _on_edge(ax, edge, P)
+                s, names = cname(key, X=ends[i] if line else comp.get("X"), edge=edge)
+                hits.append((edge, P, xy, s, names))
+            if not hits:                                # a ternary compound inside the triangle: leader line
+                s, names = cname(key, X=comp.get("X"), X_ends=comp.get("X_ends") if line else None)
                 ok = check(key, probe, contains=True)
                 if ok is False:
                     report["skipped"].append({"label": s, "reason": "not confirmed by equilibrium"})
                     continue
                 leaders.append({"key": key, "s": s, "target": tuple(float(v) for v in np.mean(pts, axis=0)),
-                                "dot": len(pts) == 1, "ok": ok, "kind": "compound", "probe": probe})
+                                "dot": len(pts) == 1, "ok": ok, "kind": "compound", "probe": probe, "names": names})
                 continue
-            if edge == "bottom":                        # along the line of constant x (the bottom axis reading)
-                xy = (float(p[0]), 0.0)
-                P = ax.transData.transform(xy)
-            else:                                       # square to the edge
-                e0, e1, _ = edges[edge]
-                u = (e1 - e0) / np.linalg.norm(e1 - e0)
-                P = e0 + ((ax.transData.transform(p) - e0) @ u) * u
-                xy = _on_edge(ax, edge, P)
         ok = check(key, probe, contains=True)
         if ok is False:
-            report["skipped"].append({"label": s, "reason": "not confirmed by equilibrium"})
+            for h in hits:
+                report["skipped"].append({"label": h[3], "reason": "not confirmed by equilibrium"})
             continue
-        items.append({"key": key, "s": s, "edge": edge, "P": np.asarray(P, float), "xy": xy, "probe": probe,
-                      "ok": ok, "kind": "compound"})
-    return items, leaders
+        for edge, P, xy, s, names in hits:
+            items.append({"key": key, "s": s, "edge": edge, "P": np.asarray(P, float), "xy": xy, "probe": probe,
+                          "ok": ok, "kind": "compound", "names": names})
+    return items, leaders, below
 
 
 def _is_terminal(key, grid, pts_data, xlim, tol: float = 2e-3) -> bool:
@@ -996,7 +1286,7 @@ def _is_terminal(key, grid, pts_data, xlim, tol: float = 2e-3) -> bool:
     return False
 
 
-def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, grid, taken, name_of,
+def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, grid, taken, name_of, ckeys=(),
                         reach_pt: float = 2.0):
     """Single-phase fields without a label inside - too small for one, or too thin to be a region of the plot at
     all (only their boundary points, ``regions["phase_points"]``, are known).  Each region is handled on its own:
@@ -1006,14 +1296,15 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
     end-member phase); a field ending above it is named right below its lowest point, inside the axes (``below``
     items, placed by :func:`_place_below`; failing that an intermediate phase gets a leader label); the liquid never
     gets either.  Ternary: a field touching an edge (the phase exists in that binary) is named
-    beyond that edge, at the middle of its contact (the longer one); a field inside the triangle gets a leader
-    label.  Returns (edge items, leader items, below items); the report's omitted list keeps only what got
+    beyond that edge, at the middle of its contact - on each edge it touches (one field across the triangle is
+    named in both binaries; a second or third edge only where an equilibrium a hair inside it has the phase); a
+    field inside the triangle gets a leader label.  Compounds (``ckeys``) are named by _compound_items, never here.  Returns (edge items, leader items, below items); the report's omitted list keeps only what got
     nowhere."""
     ppp = R.ppp
     inv = ax.transData.inverted()
     named = {tuple(t._calphad_label["key"]) for t in ax.texts if _is_ours(t) and hasattr(t, "_calphad_label")
              and t._calphad_label.get("kind") == "region"}
-    compounds = {tuple(c["key"]) for c in regions.get("compounds") or []}
+    compounds = {tuple(c["key"]) for c in regions.get("compounds") or []} | set(ckeys)
     cands = []                                          # (key, label, display points, probe (data), skip entry)
     for sk in report["skipped"]:
         r = sk.get("_region")
@@ -1055,7 +1346,7 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
     for key, s, pts, probe, sk in cands:
         if sk is None and (key in named or key in taken):
             continue                                    # boundary points only, and the phase is named already
-        best, low, corner = None, None, None
+        best, low, corner, contacts = None, None, None, []
         if kind == "binary":
             if key[0] in liquids or is_liquid_name(key[0]):
                 continue                                # never the liquid
@@ -1085,6 +1376,7 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
                     continue
                 t_ = (pts[near] - e0) @ u
                 cand = (float(t_.max() - t_.min()), edge, e0 + 0.5 * (t_.max() + t_.min()) * u)
+                contacts.append(cand)
                 if best is None or cand[0] > best[0]:
                     best = cand
         ok = check(key, probe, contains=True)
@@ -1105,10 +1397,17 @@ def _single_phase_items(ax, kind, R, edges, report, check, liquids, regions, gri
             leaders.append({"key": key, "s": s, "target": probe, "dot": False, "ok": ok, "kind": "region",
                             "probe": probe})
             continue
-        _, edge, P = best
-        xy = (float(inv.transform(P)[0]), 0.0) if kind == "binary" else _on_edge(ax, edge, P)
-        edge_items.append({"key": key, "s": s, "edge": edge, "P": np.asarray(P, float), "xy": xy, "probe": probe,
-                           "ok": ok, "kind": "region"})
+        for length, edge, P in [best] + [c for c in contacts if c[1] != best[1]]:
+            xy = (float(inv.transform(P)[0]), 0.0) if kind == "binary" else _on_edge(ax, edge, P)
+            at, ok_ = probe, ok
+            if edge != best[1]:                         # another edge it reaches: the phase is stable there too
+                to_mid = np.array([1 / 3, 1 / 3]) - np.asarray(xy)
+                at = tuple(float(v) for v in np.asarray(xy) + 2e-3 * to_mid / max(np.linalg.norm(to_mid), 1e-12))
+                ok_ = check(key, at, contains=True)
+                if ok_ is False:
+                    continue
+            edge_items.append({"key": key, "s": s, "edge": edge, "P": np.asarray(P, float), "xy": xy,
+                               "probe": at, "ok": ok_, "kind": "region"})
     return edge_items, leaders, below, corner_items
 
 
@@ -1261,9 +1560,11 @@ def _place_below(ax, R, items, st, meas, renderer, walls, obst, placed, gid_for,
             set_name(t, it["s"])
             t.set_gid(gid_for("phase_label:", ".".join(it["key"])))
             t._calphad_label = {"kind": it["kind"], "key": list(it["key"]), "below": True,
-                                "at": [float(v) for v in it["probe"]], "end": [float(v) for v in it["end"]]}
+                                "at": [float(v) for v in it["probe"]], "end": [float(v) for v in it["end"]],
+                                **it.get("names", {})}
             _mark_text(R, placed, t, renderer)
-            record(t, it["kind"], it["key"], it["probe"], fs, rot, it["ok"], below=True, text_xy=list(xy))
+            record(t, it["kind"], it["key"], it["probe"], fs, rot, it["ok"], below=True, text_xy=list(xy),
+                   **it.get("names", {}))
             done = True
             break
         if not done:
@@ -1353,14 +1654,15 @@ def _place_leaders(ax, R, items, st, meas, renderer, inside, inner, walls, obst,
         set_name(t, it["s"])
         t.set_gid(gid)
         t._calphad_label = {"kind": it["kind"], "key": list(it["key"]), "leader": True,
-                            "at": [float(v) for v in it["probe"]]}
+                            "at": [float(v) for v in it["probe"]], **it.get("names", {})}
         if it["dot"]:
             ax.plot([it["target"][0]], [it["target"][1]], "o", ms=2.5, color=st["color"], zorder=6,
                     gid=DOT_PREFIX + gid)
         _mark_text(R, placed, t, renderer)
         placed |= line                                  # later labels keep off this leader line
         lines |= line
-        record(t, it["kind"], it["key"], it["probe"], fs, 0.0, it["ok"], leader=True, text_xy=list(xy))
+        record(t, it["kind"], it["key"], it["probe"], fs, 0.0, it["ok"], leader=True, text_xy=list(xy),
+               **it.get("names", {}))
     return failed
 
 
@@ -1466,9 +1768,9 @@ def _label_outside(ax, kind, items, edges, ticks, st, meas, renderer, gid_for, r
             set_name(t, it["s"])
             t.set_gid(gid_for("phase_label:", ".".join(it["key"])))
             t._calphad_label = {"kind": it["kind"], "key": list(it["key"]), "outside": edge,
-                                "at": [float(v) for v in it["probe"]]}
+                                "at": [float(v) for v in it["probe"]], **it.get("names", {})}
             record(t, it["kind"], it["key"], it["probe"], fs, rot, it["ok"], outside=edge, edge_xy=list(xy),
-                   guide="arrowprops" in kw)
+                   guide="arrowprops" in kw, **it.get("names", {}))
     if any((getattr(t, "_calphad_label", None) or {}).get("outside") for t in ax.texts):
         ax.add_artist(TickLabelHider())
         _clear_axis_labels(ax, renderer)
@@ -1578,6 +1880,9 @@ def find_labels(ax, id: Optional[str] = None, text: Optional[str] = None) -> Lis
     if text is not None:
         want = str(text).strip()
         hits = [t for t in labs if plain_text(t) == want or t.get_text() == want]
+        if not hits:                                    # a compound by its short name (C14) or formula (Fe₂Nb)
+            hits = [t for t in labs if want and want in ((getattr(t, "_calphad_label", None) or {}).get("short"),
+                                                         (getattr(t, "_calphad_label", None) or {}).get("formula"))]
         return hits or [t for t in labs if plain_text(t).replace(" ", "").lower() == want.replace(" ", "").lower()]
     return labs
 

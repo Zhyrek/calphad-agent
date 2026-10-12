@@ -1,0 +1,135 @@
+[
+{
+"compound": "Ce2Fe17",
+"auid": "aflow:1c26eb4237d320fe",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/RHL/Ce2Fe17_ICSD_151865",
+"spacegroup_relax": 166,
+"Pearson_symbol_relax": "hR19",
+"species": [
+"Ce",
+"Fe"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A2B17_hR19_166_c_cdfh",
+"aflow_prototype_label_relax": "A2B17_hR19_166_c_cdfh",
+"spacegroup_orig": 166,
+"Pearson_symbol_orig": "hR19",
+"enthalpy_formation_atom": null,
+"prototype": "Ce2Fe17_ICSD_151865",
+"catalog": "ICSD"
+},
+{
+"compound": "Ce2Fe17",
+"auid": "aflow:a452b6cd530f3a35",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/RHL/Ce2Fe17_ICSD_106387",
+"spacegroup_relax": 166,
+"Pearson_symbol_relax": "hR19",
+"species": [
+"Ce",
+"Fe"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A2B17_hR19_166_c_cdfh",
+"aflow_prototype_label_relax": "A2B17_hR19_166_c_cdfh",
+"spacegroup_orig": 166,
+"Pearson_symbol_orig": "hR19",
+"enthalpy_formation_atom": null,
+"prototype": "Ce2Fe17_ICSD_106387",
+"catalog": "ICSD"
+},
+{
+"compound": "Ce2Fe17",
+"auid": "aflow:a4d6ce4af4fd82d1",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/RHL/Ce2Fe17_ICSD_620990",
+"spacegroup_relax": 166,
+"Pearson_symbol_relax": "hR19",
+"species": [
+"Ce",
+"Fe"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A2B17_hR19_166_c_cdfh",
+"aflow_prototype_label_relax": "A2B17_hR19_166_c_cdfh",
+"spacegroup_orig": 166,
+"Pearson_symbol_orig": "hR19",
+"enthalpy_formation_atom": null,
+"prototype": "Ce2Fe17_ICSD_620990",
+"catalog": "ICSD"
+},
+{
+"compound": "Ce2Fe17",
+"auid": "aflow:d589015546579d57",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/RHL/Ce2Fe17_ICSD_621011",
+"spacegroup_relax": 166,
+"Pearson_symbol_relax": "hR19",
+"species": [
+"Ce",
+"Fe"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "A2B17_hR19_166_c_cdfh",
+"aflow_prototype_label_relax": "A2B17_hR19_166_c_cdfh",
+"spacegroup_orig": 166,
+"Pearson_symbol_orig": "hR19",
+"enthalpy_formation_atom": null,
+"prototype": "Ce2Fe17_ICSD_621011",
+"catalog": "ICSD"
+},
+{
+"compound": "Ce2Fe4",
+"auid": "aflow:0fe8d94af1900299",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Ce1Fe2_ICSD_620994",
+"spacegroup_relax": 227,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ce",
+"Fe"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB2_cF24_227_a_d",
+"aflow_prototype_label_relax": "AB2_cF24_227_a_d",
+"spacegroup_orig": 227,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Ce1Fe2_ICSD_620994",
+"catalog": "ICSD"
+},
+{
+"compound": "Ce2Fe4",
+"auid": "aflow:3108bb0b36e8ec2f",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Ce1Fe2_ICSD_102146",
+"spacegroup_relax": 227,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ce",
+"Fe"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB2_cF24_227_a_d",
+"aflow_prototype_label_relax": "AB2_cF24_227_b_c",
+"spacegroup_orig": 227,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Ce1Fe2_ICSD_102146",
+"catalog": "ICSD"
+},
+{
+"compound": "Ce2Fe4",
+"auid": "aflow:4484d72ad860157b",
+"aurl": "aflowlib.duke.edu:AFLOWDATA/ICSD_WEB/FCC/Ce1Fe2_ICSD_621005",
+"spacegroup_relax": 227,
+"Pearson_symbol_relax": "cF24",
+"species": [
+"Ce",
+"Fe"
+],
+"nspecies": 2,
+"aflow_prototype_label_orig": "AB2_cF24_227_b_c",
+"aflow_prototype_label_relax": "AB2_cF24_227_a_d",
+"spacegroup_orig": 227,
+"Pearson_symbol_orig": "cF24",
+"enthalpy_formation_atom": null,
+"prototype": "Ce1Fe2_ICSD_621005",
+"catalog": "ICSD"
+}
+]

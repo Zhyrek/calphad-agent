@@ -139,6 +139,8 @@ class Agent:
                                diagram_style=cfg.agent.diagram_style,
                                save_notebooks=getattr(cfg.agent, "save_notebooks", True),
                                hpc=getattr(cfg, "hpc", None), merge_cfg=getattr(cfg, "merge", None))
+        from ..structure_id import configure as configure_structure_id
+        configure_structure_id(cfg)         # [structure] / [labels] for identify_structure and the labeller
         self.turns: List = []
         self.session_start_turn = 0         # reports cover the turns since the last reset
         self.current_turn = None

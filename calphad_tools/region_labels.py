@@ -12,6 +12,7 @@ in :mod:`phase_names` (those three are also copied into show_code scripts).
 """
 from __future__ import annotations
 
+import math
 import time
 from typing import Dict, List, Optional
 
@@ -20,7 +21,7 @@ import numpy as np
 from .figures import OpContext, register_op
 from .mapping_check import GRID_N, PDENS  # noqa: F401 - equilibrium grid size (shared with the mapping check)
 STYLE_KEYS = {"fontsize", "min_fontsize", "color", "background", "background_alpha", "rotate", "margin",
-              "invariant_fontsize", "invariant_color", "fontweight"}
+              "invariant_fontsize", "invariant_color", "fontweight", "stoich_tolerance"}
 # accepted and ignored: reaction types (eutectic ...) are never written; leader lines are drawn only for
 # ternary-only single phases (no option)
 IGNORED_KEYS = {"invariant_type", "leader"}
@@ -127,9 +128,28 @@ def report_text(rep: Dict, ignored=()) -> str:
     lead = [lab["text"] for lab in labs if lab.get("leader")]
     below = [lab["text"] for lab in labs if lab.get("below")]
     inv = [lab["text"] for lab in labs if lab["kind"] == "invariant"]
+    treated = [n for n in rep.get("stoichiometry", []) if n["treated"]]
+    near = [n for n in rep.get("stoichiometry", []) if not n["treated"]]
+    names = {c["phase"]: c["text"] for c in rep.get("compound_names", [])}
     out = [f"phase labels ({len(reg)}): " + ", ".join(reg)]
     if out_:
-        out.append("stoichiometric phases named outside the plot: " + ", ".join(out_))
+        out.append("stoichiometric phases named outside the plot: " + ", ".join(dict.fromkeys(out_)))
+    if treated:
+        tol = treated[0]["tolerance"]
+        out.append(f"treated as stoichiometric (every boundary composition within {tol:g} mole fraction of the "
+                   "model's ideal composition; label_style.stoich_tolerance): " + ", ".join(
+                       f"{names.get(n['phase'], n['label'])} (max deviation {n['deviation']:.4f}, field width "
+                       f"{n['width']:.4f})" for n in treated))
+    if near:
+        tol = near[0]["tolerance"]
+        out.append(f"not treated as stoichiometric (max deviation >= stoich_tolerance {tol:g}): " + ", ".join(
+            f"{n['label']} (max deviation {n['deviation']:.4f}"
+            + (f" from {n['ideal_formula']}" if n.get("ideal_formula") else "")
+            + f", field width {n['width']:.4f}; stoich_tolerance {math.ceil(n['deviation'] * 1000 + 0.5) / 1000:g} "
+              "would include it)" for n in near))
+    fam = [c for c in rep.get("compound_names", []) if c.get("family") and c["text"] in out_]
+    if fam:
+        out.append("family names: " + "; ".join(f"{c['text']}: {c['evidence']}" for c in fam))
     if at_corner:
         out.append("named at its corner: " + ", ".join(at_corner))
     if moved:
@@ -148,6 +168,7 @@ def report_text(rep: Dict, ignored=()) -> str:
         reasons.setdefault(s["reason"], []).append(s["label"])
     for why, names in reasons.items():
         out.append(f"omitted {len(names)} ({why}): " + ", ".join(names))
+    out += list(rep.get("warnings") or [])
     if ignored:
         out.append(f"label_style {', '.join(ignored)} ignored (no reaction types; leader lines only for "
                    "ternary-only phases)")
@@ -161,7 +182,8 @@ def report_text(rep: Dict, ignored=()) -> str:
 # ---------------------------------------------------------------------------------------------------------
 @register_op("label_phase_regions",
              "label_phase_regions {invariants: true, phase_labels: {NAME: text}, fontsize, min_fontsize (8: smaller "
-             "labels are left out), margin (2.5 pt), color, background, rotate}: phase names inside each region / "
+             "labels are left out), margin (2.5 pt), color, background, rotate, stoich_tolerance (0.01 mole "
+             "fraction: practically stoichiometric phases are named as compounds)}: phase names inside each region / "
              "tie-triangle, stoichiometric and too-small single phases at the edge (ternary-only ones with a leader "
              "line), invariant temperatures next to their line; clear of "
              "data points (diagrams from map_phase_diagram or plot_diagram_with_data); replaces earlier labels",

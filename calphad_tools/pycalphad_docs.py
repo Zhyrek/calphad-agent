@@ -943,7 +943,7 @@ class _Recorder:
         return getattr(self._tb, item)
 
 
-def _first_sentence(text: str, n: int = 100) -> str:
+def _first_sentence(text: str, n: int = 96) -> str:   # 96: keeps the capability list < 20k chars
     text = " ".join(text.split())
     m = re.match(r"(.+?(?<!e\.g)(?<!i\.e)(?<!etc)\.)(\s+[A-Z(]|$)", text)
     s = m.group(1) if m else text
