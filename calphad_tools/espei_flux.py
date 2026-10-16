@@ -54,6 +54,7 @@ class Run:
     restart_trace: Optional[str] = None
     verbosity: int = 2
     cores: Optional[int] = None              # bundle mode: cores for this run
+    tags: Optional[Dict] = None              # system.tags: {tag: {excluded_model_contributions, weight, ...}}
     extra_mcmc: Dict = field(default_factory=dict)
 
 
@@ -93,6 +94,8 @@ def espei_yaml(run: Run, mcmc_input_db: Optional[str], scheduler: Optional[str],
                stage: str, base: Path) -> Dict:
     d: Dict = {"system": {"phase_models": _abs(run.phase_models, base), "datasets": _abs(run.datasets, base)},
                "output": {"verbosity": run.verbosity, "logfile": f"{stage}.log"}}
+    if run.tags:
+        d["system"]["tags"] = run.tags
     if stage == "generate":
         gp = {"excess_model": run.excess_model, "ref_state": run.ref_state}
         if run.ridge_alpha is not None:

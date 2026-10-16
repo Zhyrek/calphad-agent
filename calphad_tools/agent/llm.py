@@ -800,8 +800,9 @@ calculation finished before you have seen its tool_result. When you need no more
 
 _CALL_RE = re.compile(r"<tool_call>\s*(?:```(?:json)?\s*)?(\{.*?\})\s*(?:```\s*)?</tool_call>", re.S)
 # Claude sometimes falls back to its native call syntax in plain text; accept that too
-_INVOKE_RE = re.compile(r'<invoke name="([^"]+)">(.*?)</invoke>', re.S)
-_PARAM_RE = re.compile(r'<parameter name="([^"]+)">(.*?)</parameter>', re.S)
+_NS = r"(?:antml:)?"                       # with or without the namespace prefix, in any mix of open/close tags
+_INVOKE_RE = re.compile(rf'<{_NS}invoke name="([^"]+)">(.*?)</{_NS}invoke>', re.S)
+_PARAM_RE = re.compile(rf'<{_NS}parameter name="([^"]+)">(.*?)</{_NS}parameter>', re.S)
 _WRAPPER_RE = re.compile(r"</?(?:antml:)?function_calls>", re.S)
 
 
@@ -838,11 +839,21 @@ def claude_cli_env(passthrough: Sequence[str] = ()) -> Dict[str, str]:
     return env
 
 
+def _cli_image_block(path: str, max_px: int) -> Dict[str, Any]:
+    head, data = _data_url(path, max_px).split(",", 1)
+    return {"type": "image", "source": {"type": "base64", "media_type": head[5:].split(";")[0], "data": data}}
+
+
 def _claude_cli_run(cfg: LLMConfig, system: str, prompt: str, model: Optional[str] = None,
-                    resume: Optional[str] = None, persist: bool = False) -> Dict[str, Any]:
+                    resume: Optional[str] = None, persist: bool = False,
+                    images: Optional[List[str]] = None) -> Dict[str, Any]:
+    """One `claude -p` call.  With ``images`` the prompt goes in as a stream-json user message with image blocks
+    (plain text otherwise); the reply is the final ``result`` record either way."""
     cwd = Path(cfg.cli_workdir or (Path(tempfile.gettempdir()) / "calphad_claude_cli")).expanduser()
     cwd.mkdir(parents=True, exist_ok=True)       # neutral cwd: no CLAUDE.md / project settings picked up
-    cmd = [cfg.cli_path or "claude", "-p", "--output-format", "json", "--tools", "", "--strict-mcp-config",
+    fmt = ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"] if images else \
+        ["--output-format", "json"]
+    cmd = [cfg.cli_path or "claude", "-p", *fmt, "--tools", "", "--strict-mcp-config",
            "--setting-sources", "", "--disable-slash-commands", "--system-prompt", system]
     if model or cfg.model:
         cmd += ["--model", model or cfg.model]
@@ -852,10 +863,16 @@ def _claude_cli_run(cfg: LLMConfig, system: str, prompt: str, model: Optional[st
         cmd += ["--resume", resume]
     elif not persist:
         cmd += ["--no-session-persistence"]
+    if images:
+        content = [{"type": "text", "text": prompt}] + [_cli_image_block(i, cfg.image_max_px) for i in images]
+        prompt = json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
     p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, cwd=str(cwd),
                        env=claude_cli_env(cfg.cli_env_passthrough), timeout=cfg.timeout)
     try:
-        d = json.loads(p.stdout.strip().splitlines()[-1]) if p.stdout.strip() else {}
+        lines = [ln for ln in p.stdout.strip().splitlines() if ln.strip()]
+        if images:                               # stream-json: events, the last "result" record is the answer
+            lines = [ln for ln in lines if '"type":"result"' in ln.replace(" ", "")] or lines
+        d = json.loads(lines[-1]) if lines else {}
     except (json.JSONDecodeError, IndexError):
         raise RuntimeError(f"claude -p returned non-JSON output: {p.stdout[:300]} {p.stderr[:300]}")
     if not d or d.get("is_error"):
@@ -867,7 +884,9 @@ class ClaudeCLIBackend(Backend):
     """Drives `claude -p` (Claude Code's print mode) with all of its own tools disabled.
 
     Our tools are described in the system prompt and called through <tool_call> blocks; the conversation
-    continues across calls with --resume, so earlier turns stay real model turns.  No image input.
+    continues across calls with --resume, so earlier turns stay real model turns.  Images (the user's, and those
+    of the viewer tools: view_image, the digitizer previews ...) go in as image blocks of a stream-json message
+    when ``vision`` is on; other tools' images are named by path only.
     """
 
     def __init__(self, cfg, system, tools):
@@ -877,16 +896,32 @@ class ClaudeCLIBackend(Backend):
         self.full_system = system + TOOL_PROTOCOL + specs
         self.session_id: Optional[str] = None
         self.pending: List[str] = []
+        self.pending_images: List[str] = []
         self._n = 0
 
     def add_user(self, text, images=None):
-        note = ("\n[images saved at: " + ", ".join(images) + "]") if images else ""
+        if images and self.cfg.vision:
+            self.pending_images += list(images)
+            note = "\n[images attached: " + ", ".join(images) + "]"
+        else:
+            note = ("\n[images saved at: " + ", ".join(images) + "]") if images else ""
         self.pending.append(text + note)
 
     def step(self, on_text=None):
         prompt = "\n\n".join(self.pending) or "Continue."
-        self.pending = []
-        d = _claude_cli_run(self.cfg, self.full_system, prompt, resume=self.session_id, persist=True)
+        images, self.pending, self.pending_images = self.pending_images, [], []
+        for attempt in range(3):
+            try:
+                d = _claude_cli_run(self.cfg, self.full_system, prompt, resume=self.session_id, persist=True,
+                                    images=images or None)
+                break
+            except RuntimeError as e:
+                # Claude Code's own parser rejected an attempted native tool call (its tools are off): ask again,
+                # reminding the model of the text protocol, instead of losing the turn
+                if "could not be parsed" not in str(e) or attempt == 2:
+                    raise
+                prompt += ("\n\n[Your previous reply was rejected: you have no native tools here. Call tools only "
+                           "with <tool_call>{\"name\": ..., \"arguments\": {...}}</tool_call> text blocks.]")
         self.session_id = d.get("session_id") or self.session_id
         raw = d.get("result") or ""
         calls = []
@@ -903,7 +938,10 @@ class ClaudeCLIBackend(Backend):
     def add_tool_results(self, results):
         parts = []
         for r in results:
-            imgs = ("\n[image files: " + ", ".join(r.images) + "]") if r.images else ""
+            shown = list(r.images) if r.images and self.cfg.vision and shows_images(r.call.name, self.cfg) else []
+            self.pending_images += shown
+            imgs = (("\n[images attached: " if shown else "\n[image files: ") + ", ".join(r.images) + "]"
+                    if r.images else "")
             status = ' status="error"' if r.is_error else ""
             parts.append(f'<tool_result name="{r.call.name}" id="{r.call.id}"{status}>\n{r.text}{imgs}\n</tool_result>')
         self.pending.append("\n".join(parts))

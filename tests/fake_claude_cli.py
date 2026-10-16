@@ -15,5 +15,6 @@ stdin = sys.stdin.read()
 with open(log, "a") as f:
     f.write(json.dumps({"argv": sys.argv[1:], "stdin": stdin, "env": sorted(os.environ)}) + "\n")
 reply = script[n] if n < len(script) else "(script finished)"
-print(json.dumps({"type": "result", "is_error": False, "result": reply, "session_id": "sess-1",
+err = reply.startswith("!ERROR:")             # "!ERROR:<text>": an is_error result, as claude -p reports failures
+print(json.dumps({"type": "result", "is_error": err, "result": reply[7:] if err else reply, "session_id": "sess-1",
                   "stop_reason": "end_turn", "usage": {"input_tokens": 3, "output_tokens": 2}}))

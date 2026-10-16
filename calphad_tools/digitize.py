@@ -480,9 +480,83 @@ def color_clusters(rgb: np.ndarray, mask: np.ndarray, k_max: int = 8) -> List[Di
     return sorted(out, key=lambda d: -d["pixels"])
 
 
+def _inner_region(shape_hw, fr: Frame, pad: Optional[float] = None) -> np.ndarray:
+    """Pixels strictly inside the plot frame (the frame lines themselves excluded)."""
+    H, W = shape_hw
+    t = fr.thickness / 2 if pad is None else pad
+    out = np.zeros((H, W), bool)
+    out[max(0, int(fr.top + t) + 1):min(H, int(math.ceil(fr.bottom - t))),
+        max(0, int(fr.left + t) + 1):min(W, int(math.ceil(fr.right - t)))] = True
+    return out
+
+
+def ink_colours(rgb: np.ndarray, region: np.ndarray, bg, min_frac: float = 0.001) -> List[Dict]:
+    """The distinct INK colours (not anti-aliased blends with the background) among pixels of region.
+
+    Only 'core' pixels vote: the pixel of a stroke that differs most from the background within its 3x3
+    neighbourhood (the edge pixels of a thin stroke are blends with the background and would form spurious
+    lighter clusters).  Their Lab values are grouped greedily (most common bins first, 14 Lab units), so a
+    colour used by only a few markers (e.g. three orange-red markers next to hundreds of crimson ones) still
+    forms its own ink.  Returns [{rgb, lab, pixels}] (most pixels first)."""
+    lab = to_lab(rgb)
+    bl = to_lab(np.asarray(bg, float).reshape(1, 3))[0]
+    dbg = np.linalg.norm(lab - bl, axis=2)
+    core = (dbg > 25) & (dbg >= ndi.maximum_filter(dbg, 3) - 1e-6) & region
+    L, P = lab[core], rgb[core]
+    if len(L) < 5:
+        return []
+    keys, inv, cnt = np.unique(np.round(L / 6).astype(int), axis=0, return_inverse=True, return_counts=True)
+    inv = inv.ravel()
+    sums = np.zeros((len(keys), 3))
+    psum = np.zeros((len(keys), 3))
+    np.add.at(sums, inv, L)
+    np.add.at(psum, inv, P)
+    modes: List[List] = []
+    for k in np.argsort(-cnt):
+        c = sums[k] / cnt[k]
+        for md in modes:
+            if np.linalg.norm(md[0] / md[1] - c) < 14:
+                md[0] = md[0] + sums[k]
+                md[1] += int(cnt[k])
+                md[2] = md[2] + psum[k]
+                break
+        else:
+            modes.append([sums[k].copy(), int(cnt[k]), psum[k].copy()])
+    n_min = max(8, min_frac * len(L))
+    out = [{"rgb": md[2] / md[1], "lab": md[0] / md[1], "pixels": md[1]} for md in modes if md[1] >= n_min]
+    bgv = np.asarray(bg, float)
+    # a lighter mode on the line between the background and a more saturated ink is that ink's blend
+    keep = []
+    for i, o in enumerate(out):
+        blend = False
+        for j, q in enumerate(out):
+            if i == j or np.linalg.norm(q["lab"] - bl) <= np.linalg.norm(o["lab"] - bl):
+                continue
+            d, a = _seg_dist(o["rgb"].reshape(1, 3), o["lab"].reshape(1, 3), q["rgb"], bgv)
+            if d[0] < 8 and a[0] < 0.9:
+                blend = True
+                break
+        if not blend:
+            keep.append(o)
+    return sorted(keep, key=lambda o: -o["pixels"])
+
+
+def _seg_dist(px_rgb: np.ndarray, px_lab: np.ndarray, ink_rgb, bg_rgb) -> Tuple[np.ndarray, np.ndarray]:
+    """Lab distance of pixels (N x 3) to the anti-aliasing line background -> ink (blends are linear in RGB),
+    and the blend fraction (0 = background, 1 = ink) of the nearest point."""
+    ink = np.asarray(ink_rgb, float)
+    bgv = np.asarray(bg_rgb, float)
+    seg = ink - bgv
+    a = np.clip(((px_rgb - bgv) @ seg) / max(1e-9, float(seg @ seg)), 0, 1)
+    return np.linalg.norm(to_lab(bgv + a[:, None] * seg) - px_lab, axis=1), a
+
+
 def rival_colors(rgb: np.ndarray, fr: Frame, bg=None) -> np.ndarray:
     """Lab centres of the distinct ink colours inside the plot frame (for nearest-colour separation)."""
     bg = background_color(rgb, fr) if bg is None else bg
+    inks = ink_colours(rgb, _inner_region(rgb.shape[:2], fr, pad=fr.thickness + 1), bg)
+    if inks:
+        return np.array([o["lab"] for o in inks])
     fg, _ = _foreground(rgb, bg)
     inner = np.zeros_like(fg)
     pad = int(fr.thickness) + 2
@@ -512,21 +586,35 @@ class Marker:
     note: str = ""               # "split from a blob of N" | "may be N+ overlapping markers" (check the overlay)
 
 
+def _lab2rgb(lab) -> np.ndarray:
+    from skimage.color import lab2rgb
+    arr = np.asarray(lab, float)
+    return np.clip(lab2rgb(arr.reshape(-1, 1, 3)).reshape(arr.shape), 0, 1)
+
+
 def _foreground(rgb, bg, thr=18.0, color=None, tol=35.0, rivals: Optional[np.ndarray] = None):
-    """Foreground mask (+ distance map).  With a target colour: pixels within tol of it AND closer to it than to
-    any rival colour present in the figure (so similar series colours, e.g. blue vs purple, separate)."""
+    """Foreground mask (+ distance map).  With a target colour: pixels within tol of it whose nearest ink is
+    the target's - nearest by the distance to each ink's anti-aliasing line (background -> ink), so a light
+    edge pixel of a crimson marker is not taken for an orange-red one and vice versa (similar series colours,
+    e.g. blue vs purple or #c10020 vs #f13a13, separate)."""
     lab = to_lab(rgb)
     if color is not None:
         tl = to_lab(np.asarray(color).reshape(1, 3))[0]
         d = np.linalg.norm(lab - tl, axis=2)
         mask = d < tol
-        if rivals is not None and len(rivals):
+        if rivals is not None and len(rivals) and mask.any():
             dists = [np.linalg.norm(rv - tl) for rv in rivals]
             own = int(np.argmin(dists)) if min(dists) < max(tol, 40) else -1   # the target's own cluster
-            for i, rv in enumerate(rivals):
-                if i == own or dists[i] < 12:
-                    continue
-                mask &= d <= np.linalg.norm(lab - rv, axis=2)
+            others = [rv for i, rv in enumerate(rivals) if i != own and dists[i] >= 12]
+            if others:
+                ys, xs = np.nonzero(mask)
+                px, pl = rgb[ys, xs], lab[ys, xs]
+                own_rgb = _lab2rgb(rivals[own]) if own >= 0 else np.asarray(color, float)
+                d_own, _ = _seg_dist(px, pl, own_rgb, bg)
+                ok = np.ones(len(ys), bool)
+                for rv in others:
+                    ok &= d_own <= _seg_dist(px, pl, _lab2rgb(rv), bg)[0]
+                mask[ys[~ok], xs[~ok]] = False
         return mask, d
     bl = to_lab(np.asarray(bg).reshape(1, 3))[0]
     d = np.linalg.norm(lab - bl, axis=2)
@@ -1317,8 +1405,9 @@ def template_markers(rgb: np.ndarray, fr: Frame, center_px: Tuple[float, float],
     """Normalised cross-correlation with an example marker (any shape, open or filled, on lines)."""
     from skimage.feature import match_template, peak_local_max
     bg = background_color(rgb, fr)
-    fg, dist = _foreground(rgb, bg, color=parse_color(color) if color is not None else None, tol=tol)
-    feat = (np.clip(dist / 60.0, 0, 1) if color is None else np.clip(1 - dist / tol, 0, 1)).astype(float)
+    fg, dist = _foreground(rgb, bg, color=parse_color(color) if color is not None else None, tol=tol,
+                           rivals=rival_colors(rgb, fr, bg) if color is not None else None)
+    feat = (np.clip(dist / 60.0, 0, 1) if color is None else np.clip(1 - dist / tol, 0, 1) * fg).astype(float)
     cx, cy = center_px
     r = int(math.ceil(radius * 1.25)) + 1
     tpl = feat[int(cy) - r:int(cy) + r + 1, int(cx) - r:int(cx) + r + 1]
@@ -1536,6 +1625,404 @@ def _template_overlaps(rgb, found: List[Marker], fg: np.ndarray, fr: Frame, exam
                 m.score = min(m.score, 0.45)
             out.append(m)
     return out
+
+
+# ---------------------------------------------------------------------------
+# open (hollow) markers: outline templates of several shapes, fitted jointly to the ink
+# ---------------------------------------------------------------------------
+# shape name -> matplotlib marker (the vertex geometry of the outline); thin_diamond is reported as "diamond"
+OUTLINE_SHAPES = {"circle": "o", "square": "s", "diamond": "D", "thin_diamond": "d", "triangle_up": "^",
+                  "triangle_down": "v", "triangle_left": "<", "triangle_right": ">"}
+_HALF_OFFSETS = ((0.0, 0.0), (0.0, 0.5), (0.5, 0.0), (0.5, 0.5))
+OUTLINE_NOTE = "outline fit among overlapping markers"
+
+
+def shape_family(shape: str) -> str:
+    return "diamond" if shape in ("diamond", "thin_diamond") else shape
+
+
+def _family_members(shape: str) -> List[str]:
+    return ["diamond", "thin_diamond"] if shape_family(shape) == "diamond" else [shape]
+
+
+_TPL_CACHE: Dict[tuple, np.ndarray] = {}
+
+
+def outline_template(shape: str, m: float, w: float, off: Tuple[float, float] = (0.0, 0.0), ss: int = 5
+                     ) -> np.ndarray:
+    """Anti-aliased stroke of an open marker (odd square array, values 0..1): markersize m px (the path size,
+    as matplotlib's markersize), edge width w px, miter joins; the shape centre sits at the middle pixel + off
+    (y, x).  Polygons are exact (outer and inner offset half-planes), the circle is a ring."""
+    key = (shape, round(m, 2), round(w, 2), off, ss)
+    T = _TPL_CACHE.get(key)
+    if T is not None:
+        return T
+    R = int(math.ceil(0.75 * m + w)) + 1
+    n = 2 * R + 1
+    g = (np.arange(n * ss) + 0.5) / ss - R - 0.5
+    yy, xx = np.meshgrid(g - off[0], g - off[1], indexing="ij")
+    if shape == "circle":
+        st = np.abs(np.hypot(xx, yy) - m / 2) <= w / 2
+    else:
+        from matplotlib.markers import MarkerStyle
+        ms = MarkerStyle(OUTLINE_SHAPES[shape])
+        v = ms.get_path().transformed(ms.get_transform()).vertices[:-1] * m * [1, -1]     # image y is down
+        cen = v.mean(axis=0)
+        outer = np.ones(xx.shape, bool)
+        inner = np.ones(xx.shape, bool)
+        for i in range(len(v)):
+            e = v[(i + 1) % len(v)] - v[i]
+            nrm = np.array([e[1], -e[0]]) / np.linalg.norm(e)
+            if nrm @ (cen - v[i]) > 0:
+                nrm = -nrm
+            c = float(nrm @ v[i])
+            val = xx * nrm[0] + yy * nrm[1]
+            outer &= val <= c + w / 2
+            inner &= val <= c - w / 2
+        st = outer & ~inner
+    T = st.reshape(n, ss, n, ss).mean(axis=(1, 3))
+    if len(_TPL_CACHE) > 2000:
+        _TPL_CACHE.clear()
+    _TPL_CACHE[key] = T
+    return T
+
+
+def ink_weight(rgb: np.ndarray, region: np.ndarray, bg, color=None, tol: float = 35.0,
+               inks: Optional[List[Dict]] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Soft ink map (0..1 = blend fraction from the background to the ink) of one colour, or of all ink.
+
+    Every foreground pixel is given to the ink whose anti-aliasing line (background -> ink) passes nearest
+    (Lab); with a colour only the pixels of the ink nearest to that colour count.  A fixed colour tolerance
+    alone cannot separate close colours (crimson #c10020 / orange-red #f13a13 are 24 Lab apart), the nearest
+    ink can.  Returns (W, the ink's RGB or None)."""
+    bgv = np.asarray(bg, float)
+    lab = to_lab(rgb)
+    bl = to_lab(bgv.reshape(1, 3))[0]
+    fg = (np.linalg.norm(lab - bl, axis=2) > 8) & region
+    if inks is None:
+        inks = ink_colours(rgb, region, bgv)
+    cols = [np.asarray(o["rgb"], float) for o in inks]
+    W = np.zeros(rgb.shape[:2])
+    ys, xs = np.nonzero(fg)
+    if not len(ys):
+        return W, None
+    px, pl = rgb[ys, xs], lab[ys, xs]
+    own = -1
+    if color is not None:
+        target = parse_color(color) if not isinstance(color, np.ndarray) else color
+        tl = to_lab(np.asarray(target, float).reshape(1, 3))[0]
+        dt = [float(np.linalg.norm(o["lab"] - tl)) for o in inks]
+        if dt and min(dt) < max(tol, 40):
+            own = int(np.argmin(dt))
+        else:
+            cols.append(np.asarray(target, float))
+            own = len(cols) - 1
+    if not cols:                    # no distinct ink found: plain distance from the background
+        W[ys, xs] = np.clip((np.linalg.norm(pl - bl, axis=1) - 8) / 40.0, 0, 1)
+        return W, None
+    res = [_seg_dist(px, pl, c, bgv) for c in cols]
+    ds = np.array([r[0] for r in res])
+    al = np.array([r[1] for r in res])
+    win = np.argmin(ds, axis=0)
+    dmin = ds[win, np.arange(len(win))]
+    if own >= 0:
+        W[ys, xs] = np.where((win == own) & (dmin < tol), al[own], 0.0)
+        return W, cols[own]
+    W[ys, xs] = np.where(dmin < tol, al[win, np.arange(len(win))], 0.0)
+    return W, None
+
+
+def _stroke_measure(Wm: np.ndarray) -> float:
+    """Ink per skeleton pixel (~ the stroke width; compared with the same measure of a template)."""
+    from skimage.morphology import skeletonize
+    sk = skeletonize(Wm > 0.5)
+    return float(Wm.sum() / max(1, sk.sum()))
+
+
+def _stroke_width(crops: Sequence[np.ndarray], D: float) -> float:
+    meas = float(np.median([_stroke_measure(c) for c in crops]))
+    ws = np.arange(0.8, 4.01, 0.2)
+    tm = np.array([_stroke_measure(outline_template("circle", max(4.0, 0.8 * D), w)) for w in ws])
+    if np.all(np.diff(tm) > 0):
+        return float(np.interp(meas, tm, ws))
+    return float(ws[int(np.argmin(np.abs(tm - meas)))])
+
+
+def _corr_full(img: np.ndarray, k: np.ndarray) -> np.ndarray:
+    from scipy.signal import fftconvolve
+    return fftconvolve(img, k[::-1, ::-1], mode="same")
+
+
+def estimate_outline_geometry(W: np.ndarray, region: np.ndarray, shapes: Sequence[str] = tuple(OUTLINE_SHAPES),
+                              size: Optional[float] = None, max_crops: int = 24) -> Dict:
+    """Marker size m (path size, like matplotlib's markersize) and edge width w of the open markers in the ink
+    map W, fitted on blobs that look like single markers (convex once filled, round-ish).
+
+    Each candidate m is scored by how many blobs ONE outline template of some shape explains well (sum of Dice
+    overlap above 0.7): the right size explains the isolated markers almost exactly, a larger one only fits
+    merged pairs loosely, a smaller one nothing.  size (outer size px) narrows the search.  Returns {} without
+    ink, else {m, w, dice, n_examples, present: {shape: blobs it fits best}}."""
+    from skimage.measure import regionprops
+    lab, _ = ndi.label((W > 0.3) & region, structure=np.ones((3, 3), bool))
+    singles = []
+    for rp in regionprops(lab):
+        h, w_ = rp.bbox[2] - rp.bbox[0], rp.bbox[3] - rp.bbox[1]
+        if max(h, w_) >= 5 and min(h, w_) >= 0.45 * max(h, w_) and rp.area_filled > 0.85 * rp.area_convex:
+            singles.append((rp.label, rp.slice, max(h, w_)))
+    if not singles:
+        if not size:
+            return {}
+        return {"m": max(3.0, 0.85 * size), "w": max(1.0, 0.12 * size), "dice": None, "n_examples": 0,
+                "present": {}}
+    singles.sort(key=lambda c: c[2])
+    if size:
+        singles = [c for c in singles if 0.7 * size <= c[2] <= 1.4 * size] or singles
+    else:                          # big convex blobs are merged markers or other ink, not one marker
+        q1 = float(np.percentile([c[2] for c in singles], 25))
+        singles = [c for c in singles if c[2] <= 2.5 * q1]
+    if len(singles) > max_crops:
+        singles = [singles[i] for i in np.linspace(0, len(singles) - 1, max_crops).astype(int)]
+    H, Wd = W.shape
+    crops = []
+    for i, sl, sz in singles:
+        pad = sz // 2 + 3
+        y0, y1 = max(0, sl[0].start - pad), min(H, sl[0].stop + pad)
+        x0, x1 = max(0, sl[1].start - pad), min(Wd, sl[1].stop + pad)
+        crops.append(np.where(lab[y0:y1, x0:x1] == i, W[y0:y1, x0:x1], 0.0))
+    sizes = np.array([c[2] for c in singles], float)
+    w = _stroke_width(crops, float(np.median(sizes)))
+    # each blob is one marker: its best alignment lies within a few px of the blob's centre (direct window
+    # products there, much cheaper than full correlations)
+    Rmax = int(math.ceil(0.75 * 1.1 * max(float(sizes.max()), size or 0) + 1.3 * w)) + 3
+    pads = []
+    for c in crops:
+        cp = np.zeros((c.shape[0] + 2 * Rmax, c.shape[1] + 2 * Rmax))
+        cp[Rmax:Rmax + c.shape[0], Rmax:Rmax + c.shape[1]] = c
+        ys_, xs_ = np.nonzero(c > 0.3)
+        cy_, cx_ = (ys_.min() + ys_.max()) // 2 + Rmax, (xs_.min() + xs_.max()) // 2 + Rmax
+        r_ = int(0.15 * max(c.shape)) + 2
+        pads.append((cp, cy_, cx_, r_, float(c.sum())))
+
+    def fits(m, w, offs):
+        from numpy.lib.stride_tricks import sliding_window_view
+        names = [s for s in shapes for _ in offs]
+        Ts = np.stack([outline_template(s, m, w, off) for s in shapes for off in offs], axis=-1)
+        nT = Ts.sum(axis=(0, 1))
+        R = Ts.shape[0] // 2
+        best = [(0.0, None)] * len(crops)
+        if R > Rmax:
+            return best
+        for j, (cp, cy_, cx_, r_, sc) in enumerate(pads):
+            win = sliding_window_view(cp, Ts.shape[:2])[cy_ - r_ - R:cy_ + r_ - R + 1, cx_ - r_ - R:cx_ + r_ - R + 1]
+            d = 2 * np.tensordot(win, Ts, axes=([2, 3], [0, 1])).max(axis=(0, 1)) / (sc + nT)
+            k = int(np.argmax(d))
+            best[j] = (float(d[k]), names[k])
+        return best
+
+    def score(r):
+        return float(sum(max(0.0, d - 0.7) for d, _ in r))
+    if size:
+        grid = np.arange(max(3.0, 0.6 * size), 1.05 * size + 1e-9, 0.5)
+    else:
+        lo, hi = float(np.percentile(sizes, 5)), float(np.percentile(sizes, 95))
+        grid = np.arange(max(3.0, 0.5 * lo), 1.05 * hi + 1e-9, 1.0 if hi > 12 else 0.5)
+    sc_m = [(score(fits(m, w, _HALF_OFFSETS[::3])), float(m)) for m in grid]
+    q, m0 = max(sc_m)
+    m = m0
+    for m2 in np.arange(m0 - 0.75, m0 + 0.76, 0.25):
+        if m2 >= 3 and abs(m2 - m0) > 1e-9:
+            q2 = score(fits(m2, w, _HALF_OFFSETS[::3]))
+            if q2 > q + 1e-9:
+                q, m = q2, float(m2)
+    for w2 in (0.8 * w, 0.9 * w, 1.1 * w, 1.2 * w):
+        q2 = score(fits(m, w2, _HALF_OFFSETS[::3]))
+        if q2 > q + 1e-9:
+            q, w = q2, w2
+    r = fits(m, w, _HALF_OFFSETS)
+    good = [(d, s) for d, s in r if d >= 0.75]
+    present: Dict[str, int] = {}
+    for d, s in good:
+        present[s] = present.get(s, 0) + 1
+    return {"m": round(m, 2), "w": round(w, 2), "dice": round(float(np.median([d for d, _ in good])), 3) if good
+            else None, "n_examples": len(good), "present": present}
+
+
+def _outline_candidates(Wc: np.ndarray, Rf: np.ndarray, shapes: Sequence[str], m: float, w: float,
+                        cov_min: float = 0.7, edge_min: float = 0.3, centre_ok: Optional[np.ndarray] = None
+                        ) -> Dict[str, List[tuple]]:
+    """Per shape: local maxima of the stroke coverage (best of four half-pixel template offsets), with
+    coverage = ink under the stroke / stroke inside the region (markers clipped by the frame count; their
+    centres must still lie where centre_ok, i.e. inside the frame)."""
+    H, Wd = Wc.shape
+    out: Dict[str, List[tuple]] = {}
+    for s in shapes:
+        T0 = outline_template(s, m, w)
+        inside = _corr_full(Rf, T0) / float(T0.sum())
+        best_cov = np.zeros((H, Wd))
+        best_off = np.zeros((H, Wd), int)
+        for k, off in enumerate(_HALF_OFFSETS):
+            T = outline_template(s, m, w, off)
+            cov = _corr_full(Wc, T) / (np.maximum(inside, 1e-6) * float(T.sum()))
+            upd = cov > best_cov
+            best_cov[upd] = cov[upd]
+            best_off[upd] = k
+        best_cov[inside < edge_min] = 0
+        if centre_ok is not None:
+            best_cov[~centre_ok] = 0
+        mx = ndi.maximum_filter(best_cov, size=3)
+        out[s] = [(float(best_cov[y, x]), s, int(best_off[y, x]), int(y), int(x))
+                  for y, x in np.argwhere((best_cov >= mx - 1e-9) & (best_cov >= cov_min))]
+    return out
+
+
+def outline_pursuit(W: np.ndarray, region: np.ndarray, shapes: Sequence[str], m: float, w: float,
+                    gain_min: float = 0.25, uniq_min: float = 0.15, cands: Optional[Dict[str, List]] = None
+                    ) -> Tuple[List[Dict], Dict]:
+    """Greedy joint fit of open-marker outlines of several shapes to the ink map W.
+
+    Candidates (``_outline_candidates``) are taken best coverage first when at least gain_min of their stroke
+    covers ink that no earlier pick explains; afterwards picks whose ink the others explain (unique share <
+    uniq_min) are dropped, weakest first.  Overlapping hollow markers keep most of their own stroke visible, so
+    touching rows of circles or a dense band of mixed shapes resolve into individual markers, each with its
+    shape.  Returns (picks [{shape, cy, cx, cov, novel, unique, inside}], info)."""
+    Wc = np.clip(W, 0, 1)
+    Rf = region.astype(float)
+    H, Wd = W.shape
+    if cands is None:
+        cands = _outline_candidates(Wc, Rf, shapes, m, w)
+    order = sorted((c for s in shapes for c in cands.get(s, [])), key=lambda c: -c[0])
+
+    def window(T, y, x):
+        R = T.shape[0] // 2
+        y0, y1, x0, x1 = y - R, y + R + 1, x - R, x + R + 1
+        ty0, tx0 = max(0, -y0), max(0, -x0)
+        ty1, tx1 = T.shape[0] - max(0, y1 - H), T.shape[1] - max(0, x1 - Wd)
+        return (slice(max(0, y0), min(H, y1)), slice(max(0, x0), min(Wd, x1))), T[ty0:ty1, tx0:tx1]
+    E = np.zeros((H, Wd))
+    occ = {s: np.zeros((H, Wd), bool) for s in shapes}
+    picks: List[Dict] = []
+    for cv, s, k, y, x in order:
+        if occ[s][y, x]:
+            continue
+        T_full = outline_template(s, m, w, _HALF_OFFSETS[k])
+        sl, T = window(T_full, y, x)
+        Tm = T * Rf[sl]
+        nov = float((np.clip(Wc[sl] - E[sl], 0, 1) * Tm).sum() / max(1e-9, float(Tm.sum())))
+        if nov < gain_min:
+            continue
+        E[sl] = np.maximum(E[sl], np.minimum(Wc[sl], T))
+        ro = 2
+        occ[s][max(0, y - ro):y + ro + 1, max(0, x - ro):x + ro + 1] = True
+        picks.append({"shape": s, "k": k, "y": y, "x": x, "cov": cv, "novel": nov, "sl": sl, "T": T,
+                      "inside": float(Tm.sum() / T_full.sum())})
+    S = np.zeros((H, Wd))                  # sum of all placed strokes: what the others explain = S - own
+    for p in picks:
+        S[p["sl"]] += p["T"]
+
+    def uniq(p):
+        sl, T = p["sl"], p["T"]
+        Tm = T * Rf[sl]
+        return float(np.clip(np.minimum(Wc[sl], Tm) - (S[sl] - T), 0, 1).sum() / max(1e-9, float(Tm.sum())))
+    while picks:
+        u = [uniq(p) for p in picks]
+        i = int(np.argmin(u))
+        if u[i] >= uniq_min:
+            for p, v in zip(picks, u):
+                p["unique"] = v
+            break
+        S[picks[i]["sl"]] -= picks[i]["T"]
+        picks.pop(i)
+    info = {"residual_spots": 0}
+    if picks:
+        left = (Wc - np.minimum(S, 1.0)) > 0.5
+        lb, nl = ndi.label(left, structure=np.ones((3, 3), bool))
+        if nl:
+            sizes = ndi.sum(left, lb, range(1, nl + 1))
+            m_avg = float(np.mean([p["T"].sum() for p in picks]))
+            info["residual_spots"] = int((sizes >= 0.25 * m_avg).sum())
+    for p in picks:
+        oy, ox = _HALF_OFFSETS[p["k"]]
+        p["cy"], p["cx"] = p["y"] + oy, p["x"] + ox
+        p.pop("sl")
+        p.pop("T")
+    return picks, info
+
+
+def detect_open_markers(rgb: np.ndarray, fr: Frame, color=None, tol: float = 35.0, shape: Optional[str] = None,
+                        marker_size: Optional[float] = None, exclude: Sequence = (), legend: Sequence = (),
+                        geometry: Optional[Dict] = None, inks: Optional[List[Dict]] = None
+                        ) -> Tuple[List[Marker], Dict]:
+    """Open (hollow) markers of one colour (or all ink), several shapes at once, however much they overlap.
+
+    The ink of the colour (nearest-ink assignment, soft anti-aliasing weights) is explained by outline
+    templates synthesised for every shape present (circle, square, diamond / thin diamond, triangles) at the
+    marker size and edge width fitted on the figure's isolated markers (``geometry`` from all ink can be passed
+    in when this colour has no isolated marker).  Shapes that never fit confidently in this colour are dropped
+    and the fit repeated, so ink of one shape is not handed to another.  Markers of every shape are returned
+    (Marker.shape = the family name: thin diamonds are 'diamond'); filter by shape afterwards."""
+    bg = background_color(rgb, fr)
+    region = _inner_region(rgb.shape[:2], fr)
+    for box in list(exclude) + [tuple(b) for b in legend]:
+        x0, y0, x1, y1 = [int(round(v)) for v in box]
+        region[max(0, y0):max(0, y1), max(0, x0):max(0, x1)] = False
+    if inks is None:
+        inks = ink_colours(rgb, _inner_region(rgb.shape[:2], fr, pad=fr.thickness + 1), bg)
+    W, ink = ink_weight(rgb, region, bg, color=parse_color(color) if color is not None else None, tol=tol,
+                        inks=inks)
+    W[~region] = 0
+    # long straight lines (gridlines, axes) are not marker outlines (a row of touching triangles is a straight
+    # run of a few markers: only much longer lines go)
+    _, lines = _remove_straight_lines(W > 0.5, max(40, int(0.25 * (fr.right - fr.left))))
+    W[ndi.binary_dilation(lines)] = 0
+    ys, xs = np.nonzero(W > 0.05)
+    if not len(ys):
+        return [], {"note": "no ink of that colour inside the frame"}
+    # work on the bounding box of the ink (+ a margin): much faster for a sparse colour
+    pad = int(3 * (marker_size or (geometry or {}).get("m") or 15)) + 10
+    y0, y1 = max(0, ys.min() - pad), min(W.shape[0], ys.max() + pad + 1)
+    x0, x1 = max(0, xs.min() - pad), min(W.shape[1], xs.max() + pad + 1)
+    Wb, Rb = W[y0:y1, x0:x1], region[y0:y1, x0:x1]
+    geo = estimate_outline_geometry(Wb, Rb, size=marker_size)
+    if geometry and (not geo or geo.get("n_examples", 0) < 5):
+        geo = {**geometry, "from": "all ink"}
+    if not geo:
+        return [], {"note": "no marker-sized ink of that colour inside the frame"}
+    m, w = float(geo["m"]), float(geo["w"])
+    shapes = list(OUTLINE_SHAPES)
+    inside_frame = np.zeros(W.shape, bool)
+    e = fr.thickness / 2 + 1           # a marker centred on the frame line (a point at the axis limit) counts
+    inside_frame[max(0, int(math.floor(fr.top - e))):int(math.ceil(fr.bottom + e)) + 1,
+                 max(0, int(math.floor(fr.left - e))):int(math.ceil(fr.right + e)) + 1] = True
+    cands = _outline_candidates(np.clip(Wb, 0, 1), Rb.astype(float), shapes, m, w,
+                                centre_ok=inside_frame[y0:y1, x0:x1])
+    for _ in range(4):
+        picks, info = outline_pursuit(Wb, Rb, shapes, m, w, cands=cands)
+        # a shape with no confident instance in this colour (clean stroke, mostly its own ink) is not one of
+        # its shapes: drop it and fit again (its picks were other markers' ink)
+        confident = {p["shape"] for p in picks if p["cov"] >= 0.8 and p["novel"] >= 0.6}
+        keep = [s for s in shapes if s in confident or (shape and shape_family(s) == shape_family(shape))]
+        if set(keep) == set(shapes) or not keep:
+            break
+        shapes = keep
+    for p in picks:
+        p["cy"] += y0
+        p["cx"] += x0
+    hexc = "#%02x%02x%02x" % tuple(int(round(v * 255)) for v in (ink if ink is not None else (0, 0, 0)))
+    size = m + w
+    markers = []
+    for p in picks:
+        note = OUTLINE_NOTE if p["novel"] < 0.75 else ""
+        if p["inside"] < 0.9:
+            note = (note + "; " if note else "") + "clipped by the frame"
+        mk = Marker(cx=float(p["cx"]), cy=float(p["cy"]), area=math.pi * (size / 2) ** 2, size_px=size,
+                    shape=shape_family(p["shape"]), filled=False, color=hexc, score=round(p["cov"], 3), note=note)
+        mk.features = [p["cov"], p["novel"], p.get("unique", 0.0)]
+        markers.append(mk)
+    markers.sort(key=lambda mk: (mk.cx, mk.cy))
+    info.update({"outline_geometry": {k: geo[k] for k in ("m", "w", "dice", "n_examples") if k in geo},
+                 "outline_shapes": shapes, "marker_diameter_px": round(size, 1),
+                 "shape_counts": {s: sum(1 for p in picks if p["shape"] == s) for s in shapes}})
+    return markers, info
 
 
 # ---------------------------------------------------------------------------
@@ -2468,6 +2955,33 @@ _AXIS_SPEC ={"type": "object", "description": "{ticks: {index: value, ...} (>=2,
               "scale: linear|log}"}
 
 
+def _mostly_open(markers: List[Marker], shape: Optional[str] = None) -> bool:
+    """Most detected markers (of the requested shape, if it was detected) are open (hollow)."""
+    ms = [m for m in markers if not m.in_legend]
+    if not ms:
+        return False
+    if shape:
+        same = [m for m in ms if shape_family(m.shape) == shape_family(shape)]
+        if same and sum(m.filled for m in same) > 0.3 * len(same):
+            return False
+    return sum(not m.filled for m in ms) >= 0.7 * len(ms)
+
+
+def _prefer_outline(markers: List[Marker], outer_px: Optional[float] = None) -> bool:
+    """Auto mode, open markers: fit outlines (``detect_open_markers``) when they overlap a lot.
+
+    The component detector handles isolated and lightly touching markers well; when many detections come from
+    split or unresolved blobs, or the blobs are much bigger than one marker of the figure's fitted outline size
+    (dense bands, rows of touching circles, mixed shapes in one colour), the joint outline fit is used."""
+    ms = [m for m in markers if not m.in_legend]
+    if not ms:
+        return False
+    crowded = sum(1 for m in ms if m.note)
+    if crowded >= max(2, 0.2 * len(ms)) or (len(ms) <= 5 and crowded >= 1):
+        return True
+    return bool(outer_px) and float(np.median([m.size_px for m in ms])) > 1.4 * outer_px
+
+
 def _cal(axes_spec: Dict, ticks, fr: Frame) -> Tuple[AxisCal, AxisCal]:
     xs = dict(axes_spec.get("x") or {})
     ys = dict(axes_spec.get("y") or {})
@@ -2562,13 +3076,16 @@ def register(tb) -> None:
         inner = np.zeros_like(fg)
         pad = int(fr.thickness) + 2
         inner[int(fr.top) + pad:int(fr.bottom) - pad, int(fr.left) + pad:int(fr.right) - pad] = True
-        clusters = color_clusters(rgb_det, fg & inner)
+        inks = ink_colours(rgb_det, inner, bg)
+        clusters = ([{"color": "#%02x%02x%02x" % tuple(int(round(v * 255)) for v in o["rgb"]),
+                      "name": nearest_name(o["rgb"]), "pixels": o["pixels"]} for o in inks]
+                    or color_clusters(rgb_det, fg & inner))
         try:
             markers, info = detect_markers(rgb_det, fr)
         except Exception:  # noqa: BLE001
             markers, info = [], {}
         prev = str(Path(work).with_name(Path(work).stem + "_setup.png"))
-        colours = "colours inside the plot (largest first): " + ", ".join(
+        colours = "ink colours inside the plot (most first; give one as digitize_points color): " + ", ".join(
             f"{c['name']} {c['color']} ({c['pixels']} px)" for c in clusters[:8])
         n_fl = sum(is_flagged(m) for m in markers if not m.in_legend)
         auto = (f"auto marker estimate: {len(markers)} candidates, diameter ~{info.get('marker_diameter_px', '?')} px"
@@ -2606,7 +3123,8 @@ def register(tb) -> None:
             "color (e.g. 'red' or '#1f77b4'), shape (circle|square|triangle_up|triangle_down|diamond|plus|cross), "
             "filled true/false, group (appearance group from a previous run), or template_index (copy the look of "
             "detection #i: finds any marker shape incl. markers on lines). Legend markers are excluded. Touching / "
-            "overlapping markers are split; blobs that cannot be split are flagged ('may be N+ overlapping "
+            "overlapping markers are split (open markers of several shapes overlapping in one colour: outline "
+            "fitting, picked automatically); blobs that cannot be split are flagged ('may be N+ overlapping "
             "markers', CSV column note). Writes CSV + an overlay with numbered detections - LOOK at it and re-run "
             "with other filters/exclude_regions if points are missed or spurious - and updates the provenance "
             "figure (all series of this image, values drawn on the original) to SHOW the user. Composition "
@@ -2618,8 +3136,11 @@ def register(tb) -> None:
              "color": S, "tolerance": {"type": "number", "description": "colour distance (Lab), default 35"},
              "shape": S, "filled": {"type": "boolean"}, "group": {"type": "integer"},
              "template_index": {"type": "integer"},
-             "mode": {"type": "string", "enum": ["auto", "components", "template"],
-                      "description": "auto: template matching from the cleanest example when shape/group is given"},
+             "mode": {"type": "string", "enum": ["auto", "components", "template", "outline"],
+                      "description": "auto: template matching from the cleanest example when shape/group is given; "
+                                     "open (hollow) markers that overlap -> outline: outlines of all shapes fitted "
+                                     "jointly to the colour's ink (dense bands of mixed shapes), then filtered by "
+                                     "shape"},
              "min_score": N, "marker_size_px": N,
              "exclude_regions": {"type": "array", "items": {"type": "array", "items": N},
                                  "description": "[[l,t,r,b] px of the working image], e.g. an inset"},
@@ -2647,7 +3168,54 @@ def register(tb) -> None:
             tcal = None
         markers, info = detect_markers(rgb_det, fr, color=color, tol=tolerance, marker_size=marker_size_px,
                                        exclude=exclude_regions or (), errorbars=errorbars, keep_legend=keep_legend)
-        if template_index is None and mode != "components" and (shape or group is not None):
+        def outline_geo():
+            if "inks" not in st:
+                st["inks"] = ink_colours(rgb_det, _inner_region(rgb_det.shape[:2], fr, pad=fr.thickness + 1),
+                                         background_color(rgb_det, fr))
+            key = ("outline_geo", marker_size_px)
+            if key not in st:          # size / edge width from all ink (for colours without isolated markers)
+                reg0 = _inner_region(rgb_det.shape[:2], fr)
+                w_all, _ = ink_weight(rgb_det, reg0, background_color(rgb_det, fr), inks=st["inks"])
+                st[key] = estimate_outline_geometry(w_all, reg0, size=marker_size_px)
+            return st[key]
+        outline = mode == "outline"
+        if mode == "auto" and template_index is None and group is None and filled is not True and not errorbars:
+            ms_ = [m for m in markers if not m.in_legend]
+            if _mostly_open(markers, shape):
+                g0 = outline_geo()
+                outline = _prefer_outline(markers, (g0["m"] + g0["w"]) if g0 else None)
+            elif ms_ and len(ms_) <= 5:
+                # a few tiny 'filled' bits of this colour in a figure of open markers: fragments of overlapping
+                # outlines (e.g. three markers clipped by the frame), not filled markers
+                g0 = outline_geo()
+                outline = bool(g0 and (g0.get("dice") or 0) >= 0.8 and g0.get("n_examples", 0) >= 3
+                               and float(np.median([m.size_px for m in ms_])) < 0.6 * (g0["m"] + g0["w"]))
+        if outline:
+            if filled:
+                raise ValueError("mode 'outline' finds open (hollow) markers only; drop filled=true")
+            g0 = outline_geo()
+            legend_boxes = [tuple(b) for b in info.get("legend_boxes", [])] if not keep_legend else []
+            key = ("outline", color, float(tolerance), marker_size_px, json.dumps(exclude_regions or [], default=str),
+                   bool(keep_legend))
+            if key not in st:
+                st[key] = detect_open_markers(rgb_det, fr, color=color, tol=tolerance, marker_size=marker_size_px,
+                                              exclude=exclude_regions or (), legend=legend_boxes,
+                                              geometry=g0 or None, inks=st["inks"])
+            om, oinfo = st[key]
+            if shape and not any(shape_family(s) == shape_family(shape) for s in oinfo.get("outline_shapes", [])):
+                # the requested shape never fitted confidently in this colour: fit again keeping it in play
+                om, oinfo = detect_open_markers(rgb_det, fr, color=color, tol=tolerance, shape=shape,
+                                                marker_size=marker_size_px, exclude=exclude_regions or (),
+                                                legend=legend_boxes, geometry=g0 or None, inks=st["inks"])
+            om = [Marker(**{**m.__dict__}) for m in om]          # the cached detections stay untouched
+            if om or mode == "outline":
+                markers = om
+                info = {**info, **oinfo, "groups": assign_groups(om, use_color=color is None),
+                        "legend_markers_excluded": 0}
+                template_index = None
+            else:
+                outline = False
+        if not outline and template_index is None and mode != "components" and (shape or group is not None):
             # pick the cleanest isolated example of the requested class and template-match it (robust for
             # markers on lines, overlapping symbols and black-and-white figures)
             cls = [i for i, m in enumerate(markers) if not m.in_legend and not m.note     # never a merged blob
@@ -2666,8 +3234,13 @@ def register(tb) -> None:
             if iso:
                 template_index = pick_example(rgb_det, fr, markers, iso)
             elif mode == "template":
-                raise ValueError("no isolated example of that marker class to use as a template; give template_index")
+                raise ValueError("no isolated example of that marker class to use as a template; give template_index"
+                                 " (or mode 'outline' for open markers)")
         mode_used = "components"
+        if outline:
+            g = info.get("outline_geometry", {})
+            mode_used = (f"outline fit: open {', '.join(sorted({shape_family(s) for s in info.get('outline_shapes', [])}))}"
+                         f", size {g.get('m', '?')} px, edge {g.get('w', '?')} px")
         if template_index is not None:
             if not (0 <= template_index < len(markers)):
                 raise ValueError(f"template_index {template_index} out of range (0..{len(markers) - 1})")
@@ -2686,7 +3259,12 @@ def register(tb) -> None:
         for m in markers:
             if m.in_legend and not keep_legend:
                 continue
-            if mode == "components":
+            if outline:
+                if shape and shape_family(m.shape) != shape_family(shape):
+                    continue
+                if min_score is not None and m.score < min_score:
+                    continue
+            elif mode == "components":
                 if shape and m.shape != shape:
                     continue
                 if filled is not None and m.filled != bool(filled):
@@ -2764,7 +3342,11 @@ def register(tb) -> None:
                    f"group {g['group']}: {g['n']} x {g['shape']} {g['color']}" + (" (incl. legend entry)" if g['n_legend'] else "")
                    for g in info.get("groups", [])[:8]),
                f"legend markers excluded: {info.get('legend_markers_excluded', 0)}; oversized blobs ignored: "
-               f"{info.get('rejected_blobs', 0)}",
+               f"{info.get('rejected_blobs', 0)}" if not outline else
+               "outline fit, markers per shape in this colour (all shapes, before the shape filter): "
+               + ", ".join(f"{shape_family(k)} {v}" for k, v in info.get("shape_counts", {}).items())
+               + (f"; {info['residual_spots']} spot(s) of this colour's ink explained by no marker (other shapes? "
+                  "check the overlay)" if info.get("residual_spots") else ""),
                "first points: " + "; ".join(f"#{i} ({x:.4g}, {y:.4g})" for i, (x, y) in enumerate(zip(xs[:8], ys[:8]))),
                "Check the overlay; low-score detections are orange."]
         fl = [(i, m) for i, m in enumerate(kept) if is_flagged(m)]

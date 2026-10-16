@@ -347,6 +347,73 @@ def test_claude_cli_backend_text_protocol(tmp_path, monkeypatch):
     assert "independent security reviewer" in rev[rev.index("--system-prompt") + 1]
 
 
+def test_claude_cli_backend_sends_viewer_images(tmp_path, monkeypatch):
+    """view_image results reach `claude -p` as image blocks of a stream-json message; plots stay paths."""
+    from calphad_tools.agent.config import load_config
+    from calphad_tools.agent.session import Agent
+    from calphad_tools.agent.tools import UI
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+    fig.savefig(tmp_path / "fig.png")
+    plt.close(fig)
+    script = [f'<tool_call>{{"name": "view_image", "arguments": {{"path": "{tmp_path / "fig.png"}"}}}}</tool_call>',
+              "A straight line."]
+    (tmp_path / "script.json").write_text(json.dumps(script))
+    log = tmp_path / "cli.jsonl"
+    monkeypatch.setenv("FAKE_CLAUDE_SCRIPT", str(tmp_path / "script.json"))
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(log))
+    cfg = load_config(str(tmp_path / "none.toml"))
+    cfg.llm.provider, cfg.llm.model = "claude_cli", "sonnet"
+    cfg.llm.cli_path = str(Path(__file__).parent / "fake_claude_cli.py")
+    cfg.llm.cli_workdir = str(tmp_path / "cwd")
+    cfg.llm.cli_env_passthrough = ["FAKE_CLAUDE_SCRIPT", "FAKE_CLAUDE_LOG"]
+    cfg.agent.workdir, cfg.agent.output_dir = str(tmp_path), str(tmp_path / "out")
+    assert Agent(cfg, UI(), interactive=False).run_turn("what does fig.png show?") == "A straight line."
+    first, second = [json.loads(line) for line in log.read_text().splitlines()]
+    assert "--input-format" not in first["argv"]                         # text only: plain prompt
+    a = second["argv"]
+    assert a[a.index("--input-format") + 1] == "stream-json" and a[a.index("--output-format") + 1] == "stream-json"
+    msg = json.loads(second["stdin"])
+    kinds = [c["type"] for c in msg["message"]["content"]]
+    assert kinds == ["text", "image"] and '<tool_result name="view_image"' in msg["message"]["content"][0]["text"]
+    assert msg["message"]["content"][1]["source"]["media_type"] == "image/png"
+
+
+def test_text_tool_calls_with_namespaced_invoke():
+    """Claude's native call syntax in plain text, with the namespace prefix on some tags, is still a tool call."""
+    from calphad_tools.agent.llm import parse_text_tool_calls
+    raw = ('\n<antml:invoke name="run_python">\n<antml:parameter name="code">print(1)\nfor i in "ab": print(i)'
+           '</antml:parameter>\n</invoke>\n<invoke name="view_image">\n<parameter name="path">a.png</parameter>\n'
+           '<parameter name="axes">{"x": {"ticks": {"0": 0}}}</parameter>\n</antml:invoke>')
+    calls, text = parse_text_tool_calls(raw)
+    assert [c[0] for c in calls] == ["run_python", "view_image"] and text == ""
+    assert calls[0][1]["code"].startswith("print(1)") and calls[1][1]["axes"] == {"x": {"ticks": {"0": 0}}}
+
+
+def test_claude_cli_retries_unparsable_tool_call(tmp_path, monkeypatch):
+    """claude -p's "tool call could not be parsed" error is retried with a protocol reminder, not fatal."""
+    from calphad_tools.agent.config import load_config
+    from calphad_tools.agent.session import Agent
+    from calphad_tools.agent.tools import UI
+    script = ["!ERROR:The model's tool call could not be parsed (retry also failed).", "Recovered."]
+    (tmp_path / "script.json").write_text(json.dumps(script))
+    log = tmp_path / "cli.jsonl"
+    monkeypatch.setenv("FAKE_CLAUDE_SCRIPT", str(tmp_path / "script.json"))
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(log))
+    cfg = load_config(str(tmp_path / "none.toml"))
+    cfg.llm.provider, cfg.llm.model = "claude_cli", "sonnet"
+    cfg.llm.cli_path = str(Path(__file__).parent / "fake_claude_cli.py")
+    cfg.llm.cli_workdir = str(tmp_path / "cwd")
+    cfg.llm.cli_env_passthrough = ["FAKE_CLAUDE_SCRIPT", "FAKE_CLAUDE_LOG"]
+    cfg.agent.workdir, cfg.agent.output_dir = str(tmp_path), str(tmp_path / "out")
+    assert Agent(cfg, UI(), interactive=False).run_turn("hi") == "Recovered."
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(calls) == 2 and "no native tools" in calls[1]["stdin"]
+
+
 def test_tool_only_mode_offers_everything_but_python(tmp_path):
     """With arbitrary Python off, every plotting/data capability is still offered as a dedicated tool."""
     from fake_openai_server import serve

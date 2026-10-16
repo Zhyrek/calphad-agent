@@ -1028,6 +1028,25 @@ def _seg_dist(p: np.ndarray, poly: np.ndarray) -> float:
     return float(np.min(np.hypot(*(q - p).T)))
 
 
+def _proj_dist(p: np.ndarray, poly: np.ndarray, vertical: bool) -> Optional[float]:
+    """Distance from p to a polyline along one axis: vertical = at the same x (|dT|), else at the same T (|dx|).
+    None when the line does not cross that x (T)."""
+    k = 0 if vertical else 1                     # the coordinate held fixed
+    if len(poly) < 2:
+        return None
+    a, b = poly[:-1], poly[1:]
+    lo, hi = np.minimum(a[:, k], b[:, k]), np.maximum(a[:, k], b[:, k])
+    sel = (lo <= p[k]) & (p[k] <= hi) & (hi - lo > 1e-12)
+    if not sel.any():
+        # the line ends before the point's x (T): its nearest end along that axis, the gap weighted 5x (a branch
+        # that does not reach this composition is the wrong branch, however close in the other coordinate)
+        j = int(np.argmin(np.abs(poly[:, k] - p[k])))
+        return float(abs(poly[j, 1 - k] - p[1 - k]) + 5.0 * abs(poly[j, k] - p[k]))
+    t = (p[k] - a[sel, k]) / (b[sel, k] - a[sel, k])
+    other = a[sel, 1 - k] + t * (b[sel, 1 - k] - a[sel, 1 - k])
+    return float(np.min(np.abs(other - p[1 - k])))
+
+
 class Inferencer:
     """Calculated boundaries (pycalphad mapping, cached) + local equilibrium probes for one system."""
 
@@ -1079,6 +1098,47 @@ class Inferencer:
             self.inv.append({"phases": nm, "T": float(inv["T_K"]),
                              "xy": {n: self.norm(self._xy(comps[n], inv["T_K"])) for n in nm}})
 
+    liquid_warp: Optional[Tuple[List[float], List[float]]] = None     # data -> calculated liquidus x (eutectics)
+
+    def fit_liquid_warp(self, pts: Sequence[DPoint], liquid: str = "LIQUID", window: float = 0.08,
+                        depth: float = 15.0) -> List[Tuple[float, float]]:
+        """Binary: match the eutectic minima of the digitized liquidus to the calculated ones.
+
+        A database fitted without these data can have its eutectic liquid at 0.26 where the measured liquidus
+        has its minimum at 0.22; liquid points between the two would get the wrong solid.  For each calculated
+        invariant whose liquid lies between the two solids (a liquidus minimum), the lowest digitized liquid
+        point within +-window in x - a real minimum: the liquidus rises by >= depth K on both sides - is matched
+        to it, and liquid compositions are mapped piecewise linearly onto the calculated diagram before the
+        liquidus branch is chosen.  Returns the (data x, calculated x) pairs."""
+        if self.sys.kind != "binary":
+            return []
+        el = self.sys.indep[0]
+        L = sorted(((p.X[el], p.T) for p in pts if not p.excluded), key=lambda t: t[0])
+        if len(L) < 8:
+            return []
+        xs, Ts = np.array([a for a, _ in L]), np.array([b for _, b in L])
+        pairs = []
+        for inv in self.inv:
+            if liquid not in inv["phases"]:
+                continue
+            xl = float(inv["xy"][liquid][0])
+            others = [float(inv["xy"][n][0]) for n in inv["phases"] if n != liquid]
+            if not (min(others) < xl < max(others)):
+                continue                                   # peritectic / monotectic: no liquidus minimum
+            sel = np.abs(xs - xl) <= window
+            if sel.sum() < 4:
+                continue
+            i = int(np.flatnonzero(sel)[np.argmin(Ts[sel])])
+            left = sel & (xs < xs[i])
+            right = sel & (xs > xs[i])
+            if not (left.any() and right.any()) or Ts[left].max() < Ts[i] + depth or Ts[right].max() < Ts[i] + depth:
+                continue
+            pairs.append((float(xs[i]), xl))
+        pairs.sort()
+        if pairs and all(b2 > b1 for (_, b1), (_, b2) in zip(pairs, pairs[1:])):
+            self.liquid_warp = ([0.0] + [a for a, _ in pairs] + [1.0], [0.0] + [b for _, b in pairs] + [1.0])
+        return pairs
+
     def _xy(self, X: Dict[str, float], T: float) -> Tuple[float, float]:
         if self.sys.kind == "binary":
             return float(X[self.sys.indep[0]]), float(T)
@@ -1087,12 +1147,28 @@ class Inferencer:
     def norm(self, xy) -> np.ndarray:
         return np.array([xy[0], xy[1] / self.T_scale]) if self.sys.kind == "binary" else np.array(xy, float)
 
-    def candidates(self, p: DPoint) -> Dict[tuple, float]:
-        """category -> normalised distance to the nearest calculated boundary of that kind."""
+    def candidates(self, p: DPoint, phase: Optional[str] = None, liquid: str = "LIQUID") -> Dict[tuple, float]:
+        """category -> normalised distance to the nearest calculated boundary of that kind.
+
+        Binary, measured phase known: the boundaries of that phase are reached along one axis, the way the
+        measurement is read - a liquid's composition is on the liquidus of the solid that forms from it (same x,
+        |dT|: a database whose liquidus is 100 K off still has its branches between the right eutectics), a
+        solid's composition is its solubility at that temperature (same T, |dx|).  Lines that do not cross the
+        point's x (T) count from their nearest end, the gap weighted 5x.  An invariant is then measured from
+        the phase's own composition at the invariant.  Liquid compositions go through ``liquid_warp`` first
+        (digitized eutectic minima -> calculated ones, see ``fit_liquid_warp``)."""
         u = self.norm(self.sys.coords(p))
         out: Dict[tuple, float] = {}
+        axis = None
+        if self.sys.kind == "binary" and phase:
+            axis = phase == liquid               # True: vertical (liquid), False: horizontal (solid)
+            if axis and self.liquid_warp:
+                u = np.array([float(np.interp(u[0], *self.liquid_warp)), u[1]])
         for cat, poly in self.traces:
-            d = _seg_dist(u, poly)
+            if axis is not None and cat[1] == phase and len(poly) >= 2:
+                d = _proj_dist(u, poly, axis)
+            else:
+                d = _seg_dist(u, poly)
             if d < out.get(cat, 9e9):
                 out[cat] = d
         for inv in self.inv:
@@ -1101,6 +1177,8 @@ class Inferencer:
                 xs = [inv["xy"][n][0] for n in names]
                 y = inv["xy"][names[0]][1]
                 dx = max(0.0, min(xs) - u[0], u[0] - max(xs))
+                if axis is not None and phase in names:
+                    dx = abs(u[0] - inv["xy"][phase][0])
                 cat = ("INV", tuple(sorted(names)))
                 out[cat] = min(out.get(cat, 9e9), math.hypot(dx, u[1] - y))
             else:
@@ -1147,7 +1225,7 @@ def infer_point(inf: Inferencer, p: DPoint, near_tol: float, far_tol: float, con
                 liquid: str = "LIQUID", inv_bias: float = 0.004, apply: bool = True) -> Optional[tuple]:
     """Category from the calculated diagram (nearest boundary, checked by local equilibria).  With apply=False
     only returns it (cross-check)."""
-    cands = inf.candidates(p)
+    cands = inf.candidates(p, phase=(cons or {}).get("phase"), liquid=liquid)
     if cons and (cons.get("kind") or cons.get("phase") or cons.get("liquid_role")):
         cands = {c: d for c, d in cands.items() if satisfies(c, cons, liquid)}
     if not cands:
@@ -1645,8 +1723,13 @@ def convert(components: Sequence[str], out_dir: str, csvs: Sequence[str] = (), p
     group_info: Dict[str, Dict] = {}
     todo = [p for p in pts if not p.excluded and not p.category]
     if todo and inf is not None:
+        warp = inf.fit_liquid_warp([p for p in pts if cons[p.group].get("phase") == liquid
+                                    or cons[p.group].get("liquid_role") == "phase"], liquid)
         for p in todo:
             infer_point(inf, p, near_tol, far_tol, cons[p.group], liquid)
+            if warp and cons[p.group].get("phase") == liquid and p.category:
+                p.flags.append("liquidus branch chosen with the digitized eutectic(s) at x = "
+                               + ", ".join(f"{a:.3f} (TDB {b:.3f})" for a, b in warp))
     for g in groups:
         gp = [p for p in pts if p.group == g]
         if any(p.method.startswith(("tdb", "figure", "labels")) for p in gp):

@@ -123,7 +123,9 @@ To use Claude instead, set `provider = "anthropic"` and `model = "claude-opus-5"
 * Our tools are described in the system prompt. The model calls them with `<tool_call>{json}</tool_call>` blocks, the results come back as `<tool_result>` blocks, and the conversation continues with `--resume`.
 * The code reviewer runs as a separate `claude -p` with no session history.
 
-Limitations: there's no image input, so plots are referenced by file path, and each step is a whole CLI invocation, which is slower. It works as a stand-in, or for any model that lacks native tool calling.
+* Images: with `vision = true`, the images the model is meant to look at go in as image blocks of a stream-json message. These are `view_image`, the digitizer previews and the images you attach. Other plots are referenced by file path.
+
+Limitations: each step is a whole CLI invocation, which is slower. It works as a stand-in, or for any model that lacks native tool calling.
 
 ### Arbitrary Python: `python_tool`
 
@@ -1141,6 +1143,8 @@ The generated YAML is validated against ESPEI's schema, and the scripts are chec
 
 * `espei_validate_input` checks the YAML against ESPEI's schema, the phase models, every dataset, and whether the datasets match the phase models. It also flags datasets hit by a known ESPEI 0.9.1 bug: an equilibrium-property dataset with several temperatures *and* several compositions is compared in the wrong order. Split such datasets so only one of pressure, temperature or composition varies.
 * `espei_generate_parameters` runs parameter generation (ref state SGTE91 or SR2016, AICc penalty factors, fitting description). It writes `dft.tdb` in `<output>/espei_runs/<name>/` and lists the chosen parameters of each phase with their values. Small inputs run straight away; large ones become a background job.
+* `espei_input` (on `espei_generate_parameters`, `espei_run_mcmc` and `optimize_system`) takes an existing ESPEI input YAML, such as a tutorial's `run_param_gen.yaml`. Its phase models, datasets, `tags` and generation or MCMC settings become the defaults, and explicit arguments override them. `tags` can also be given directly, for example to exclude `idmix` and `mag` from DFT data. MCMC runs inherit the tags of the generation run with the same name.
+* **Live end-to-end check:** `tests/espei_cumg_live.py --profile claude --scenario files|image` runs the agent on the ESPEI Cu-Mg tutorial (`examples/espei/cu-mg/`). The `files` scenario uses the tutorial's datasets; the generated parameters must equal the tutorial's. The `image` scenario gives the agent only a plot of the ZPF points, which it digitizes into ZPF datasets. Both then run a short MCMC, and the results are scored against the tutorial's data.
 * `espei_run_mcmc` starts MCMC as a background job on a dask cluster on this machine: half of the available cores by default (`[hpc] local_cores`; never more workers than chains), `cores` to choose, `cores: 1` for a serial run. It supports restarting from a trace, a subset of symbols, priors and data weights. `trace.npy`, `lnprob.npy` and `mcmc.tdb` land in the run folder, where `analyze_mcmc` and `mcmc_to_tdb` find them. A folder that already holds a trace is never overwritten; the new run goes to `<name>_2`.
 * Background jobs run in their own process, so they keep going if the agent exits. `list_jobs`, `job_status` (progress, ETA, log tail, results and plots; for MCMC also an lnprob plot at any time), `wait_job` and `stop_job` follow them. Stopping an MCMC run ends it after the current iteration and keeps the chains so far. Job files are in `<output>/jobs/<id>/`.
 * `show_code` on a file made by one of these runs gives standalone code that writes the ESPEI YAML inline and calls `run_espei`.

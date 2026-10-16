@@ -252,6 +252,32 @@ def test_generate_parameters_and_show_code(tb, tmp_path):
     assert new.keys() == old.keys() and all(new[k] == pytest.approx(old[k], rel=1e-9, abs=1e-12) for k in old)
 
 
+def test_espei_input_yaml_and_tags(tmp_path):
+    """The ESPEI Cu-Mg tutorial through espei_input=run_param_gen.yaml: its tags reach ESPEI and the 22
+    parameters equal the tutorial's Cu-Mg-generated.tdb; MCMC settings inherit the tags and take run_mcmc.yaml's."""
+    import shutil
+    import yaml
+    from calphad_tools import espei_run
+    shutil.copytree(ROOT / "examples" / "espei" / "cu-mg", tmp_path / "cu-mg")
+    tb = _make_tb(tmp_path)
+    text, _ = call(tb, "espei_generate_parameters", {"name": "cumg", "espei_input": "cu-mg/run_param_gen.yaml"})
+    d = tb.out / "espei_runs" / "cumg"
+    y = yaml.safe_load((d / "espei_generate.yaml").read_text())
+    assert y["system"]["tags"]["dft"]["excluded_model_contributions"] == ["idmix", "mag"]
+    assert y["generate_parameters"]["aicc_penalty_factor"] == {"LIQUID": {"HM": 1.4, "SM": 1.4}}
+    ref = _vv_values(ROOT / "tests" / "data" / "espei_cu_mg" / "Cu-Mg-generated.tdb")
+    new = _vv_values(d / "dft.tdb")
+    assert len(ref) == 22 and new.keys() == ref.keys()
+    assert all(new[k] == pytest.approx(ref[k], rel=1e-9, abs=1e-12) for k in ref)
+    _, settings, run, _ = espei_run.mcmc_settings(tb, {"name": "cumg"})          # tags kept from the run dir
+    assert settings["system"]["tags"] == y["system"]["tags"]
+    _, settings, run, _ = espei_run.mcmc_settings(tb, {"name": "cumg", "espei_input": "cu-mg/run_mcmc.yaml",
+                                                       "iterations": 10})
+    m = settings["mcmc"]
+    assert m["iterations"] == 10 and m["chains_per_parameter"] == 4 and m["prior"]["name"] == "normal"
+    assert settings["system"]["tags"]["estimated-entropy"]["excluded_model_contributions"] == ["idmix", "mag"]
+
+
 def test_generate_as_background_job(tb):
     text, _ = call(tb, "espei_generate_parameters", {"name": "bg", "phase_models": "CrNi/phase_models.json",
                                                      "datasets": "CrNi/datasets", "background": True})

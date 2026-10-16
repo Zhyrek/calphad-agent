@@ -217,6 +217,11 @@ class ToolBox:
         path = self.p(name)
         if os.path.exists(path):
             return path
+        if not os.path.isabs(name):                  # a file this session wrote: <out>/name, or "out/..." given
+            parts = Path(name).parts                   # relative to the output folder's parent
+            for cand in (self.out / name, self.out.joinpath(*parts[1:]) if parts[:1] == (self.out.name,) else None):
+                if cand is not None and cand.exists():
+                    return str(cand)
         base = Path(name).name
         files = list(self._walk_files())
         hits = [h for h in files if Path(h).name == base]

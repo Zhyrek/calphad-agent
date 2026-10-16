@@ -75,13 +75,47 @@ def _previous_system(d: Path) -> Dict[str, str]:
                 cfg = yaml.safe_load(p.read_text()) or {}
             except yaml.YAMLError:
                 continue
-            for k in ("phase_models", "datasets"):
+            for k in ("phase_models", "datasets", "tags"):
                 if (cfg.get("system") or {}).get(k):
                     out.setdefault(k, cfg["system"][k])
             idb = (cfg.get("mcmc") or {}).get("input_db")
             if idb:
                 out.setdefault("input_db", idb if os.path.isabs(idb) else str(d / idb))
     return out
+
+
+# settings an ESPEI input YAML (e.g. a tutorial's run_param_gen.yaml / run_mcmc.yaml) can supply as defaults
+_YAML_GEN = ("ref_state", "excess_model", "ridge_alpha", "aicc_penalty_factor", "fitting_description")
+_YAML_MCMC = ("iterations", "chains_per_parameter", "chain_std_deviation", "save_interval", "prior",
+              "data_weights", "symbols", "deterministic")
+
+
+def espei_input_defaults(tb, path: Optional[str]) -> Dict[str, Any]:
+    """Arguments taken from an existing ESPEI input YAML: system.phase_models / datasets (relative to the YAML),
+    system.tags, generate_parameters and mcmc settings.  Explicit tool arguments win over these."""
+    if not path:
+        return {}
+    p = Path(tb.p(path))
+    cfg = yaml.safe_load(p.read_text()) or {}
+    sysd, gp, mc = cfg.get("system") or {}, cfg.get("generate_parameters") or {}, cfg.get("mcmc") or {}
+    out: Dict[str, Any] = {}
+    for k in ("phase_models", "datasets"):
+        if sysd.get(k):
+            out[k] = str((p.parent / sysd[k]).resolve()) if not os.path.isabs(sysd[k]) else sysd[k]
+    if sysd.get("tags"):
+        out["tags"] = sysd["tags"]
+    out.update({k: gp[k] for k in _YAML_GEN if gp.get(k) is not None})
+    out.update({k: mc[k] for k in _YAML_MCMC if mc.get(k) is not None})
+    if mc.get("input_db"):
+        idb = Path(mc["input_db"])
+        out["yaml_input_db"] = str(idb if idb.is_absolute() else p.parent / idb)
+    return out
+
+
+def _with_input(tb, args: Dict[str, Any]) -> Dict[str, Any]:
+    """args over the defaults of args['espei_input'] (an ESPEI YAML); None / empty arguments do not override."""
+    base = espei_input_defaults(tb, args.get("espei_input"))
+    return {**base, **{k: v for k, v in args.items() if v not in (None, {}, [], "")}}
 
 
 def _fitting_description(fd: Optional[str]) -> Optional[str]:
@@ -92,6 +126,7 @@ def _fitting_description(fd: Optional[str]) -> Optional[str]:
 
 def generate_settings(tb, args: Dict[str, Any]) -> Tuple[Path, Dict[str, Any], espei_flux.Run]:
     """(run dir, ESPEI generate_parameters settings, Run) for espei_generate_parameters arguments."""
+    args = _with_input(tb, args)
     name = _safe_name(args.get("name") or "espei")
     d = runs_root(tb) / name
     prev = _previous_system(d)
@@ -106,7 +141,7 @@ def generate_settings(tb, args: Dict[str, Any]) -> Tuple[Path, Dict[str, Any], e
                          ridge_alpha=args.get("ridge_alpha"),
                          aicc_penalty_factor=args.get("aicc_penalty_factor") or None,
                          fitting_description=_fitting_description(args.get("fitting_description")),
-                         verbosity=2)
+                         tags=args.get("tags") or prev.get("tags") or None, verbosity=2)
     settings = espei_flux.espei_yaml(run, None, None, None, "generate", Path(tb.workdir))
     return d, settings, run
 
@@ -170,6 +205,7 @@ def mcmc_settings(tb, args: Dict[str, Any], run_dir: Optional[Path] = None, n_ch
     (phase_models, datasets, input_db = dft.tdb) come from the directory of the run *name*; ``run_dir`` is where
     it will actually run (see :func:`mcmc_run_dir`).  ``info``: resolved input_db, cores and where they came from
     (``cores`` argument, else :func:`default_cores` - half of the available cores, capped at ``n_chains``)."""
+    args = _with_input(tb, args)
     name = _safe_name(args.get("name") or "espei")
     d0 = runs_root(tb) / name
     prev = _previous_system(d0)
@@ -183,6 +219,8 @@ def mcmc_settings(tb, args: Dict[str, Any], run_dir: Optional[Path] = None, n_ch
         idb = str(d0 / "dft.tdb")
     elif prev.get("input_db") and Path(prev["input_db"]).exists():
         idb = prev["input_db"]
+    elif args.get("yaml_input_db") and Path(args["yaml_input_db"]).exists():
+        idb = args["yaml_input_db"]                    # mcmc.input_db of the espei_input YAML
     else:
         raise ValueError(f"no input TDB: give input_db or run espei_generate_parameters name={name} first")
     rt = _restart_path(tb, args.get("restart_trace"))
@@ -200,7 +238,8 @@ def mcmc_settings(tb, args: Dict[str, Any], run_dir: Optional[Path] = None, n_ch
                          chain_std_deviation=float(args.get("chain_std_deviation") or 0.1),
                          deterministic=True if args.get("deterministic") is None else bool(args["deterministic"]),
                          prior=args.get("prior") or None, data_weights=args.get("data_weights") or None,
-                         symbols=args.get("symbols") or None, restart_trace=rt, verbosity=2)
+                         symbols=args.get("symbols") or None, restart_trace=rt,
+                         tags=args.get("tags") or prev.get("tags") or None, verbosity=2)
     same_dir = Path(idb).resolve().parent == d.resolve()
     settings = espei_flux.espei_yaml(run, Path(idb).name if same_dir else idb, "dask" if cores > 1 else None,
                                      cores if cores > 1 else None, "mcmc", Path(tb.workdir))
@@ -213,7 +252,8 @@ def flux_entry(run: espei_flux.Run, generate: bool, rel: Callable[[str], str] = 
                          "generate_parameters": generate, "ref_state": run.ref_state}
     if not generate:
         e["input_db"] = rel(run.input_db)
-    for k in ("iterations", "chains_per_parameter", "chain_std_deviation", "symbols", "prior", "data_weights"):
+    for k in ("iterations", "chains_per_parameter", "chain_std_deviation", "symbols", "prior", "data_weights",
+              "tags"):
         v = getattr(run, k)
         if v not in (None, [], {}):
             e[k] = v
@@ -882,7 +922,13 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
     B = {"type": "boolean"}
     STRS = {"type": "array", "items": {"type": "string"}}
     RUN = {"name": S, "phase_models": {**S, "description": "JSON (make_phase_models); default: from the run dir"},
-           "datasets": {**S, "description": "directory; default: from the run dir"}}
+           "datasets": {**S, "description": "directory; default: from the run dir"},
+           "espei_input": {**S, "description": "an existing ESPEI input YAML (e.g. run_param_gen.yaml): its "
+                                               "phase_models, datasets, tags, generate_parameters / mcmc settings "
+                                               "are the defaults; explicit arguments win"},
+           "tags": {"type": "object", "description": "ESPEI system.tags, e.g. {\"dft\": {\"excluded_model_"
+                                                     "contributions\": [\"idmix\", \"mag\"]}}; default: from "
+                                                     "espei_input / the run dir"}}
 
     @tb.add("espei_generate_parameters",
             "ESPEI parameter generation (AICc model selection over single-phase thermochemical data) -> "
@@ -898,12 +944,14 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
              "input_db": {**S, "description": "TDB with parameters to keep (e.g. unaries)"},
              "background": {**B, "description": "force job (true) or synchronous (false); default by size"}},
             ["name"])
-    def espei_generate_parameters(name, phase_models=None, datasets=None, ref_state="SGTE91",
-                                  excess_model="linear", aicc_penalty_factor=None, ridge_alpha=None,
-                                  fitting_description=None, input_db=None, background=None):
+    def espei_generate_parameters(name, phase_models=None, datasets=None, ref_state=None,
+                                  excess_model=None, aicc_penalty_factor=None, ridge_alpha=None,
+                                  fitting_description=None, input_db=None, background=None, espei_input=None,
+                                  tags=None):
         args = dict(name=name, phase_models=phase_models, datasets=datasets, ref_state=ref_state,
                     excess_model=excess_model, aicc_penalty_factor=aicc_penalty_factor, ridge_alpha=ridge_alpha,
-                    fitting_description=fitting_description, input_db=input_db)
+                    fitting_description=fitting_description, input_db=input_db, espei_input=espei_input,
+                    tags=tags)
         d, settings, run = generate_settings(tb, args)
         chk = check_inputs(run.phase_models, run.datasets, settings)
         if not chk["ok"]:
@@ -943,15 +991,15 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
              "data_weights": {"type": "object", "description": "e.g. {\"ZPF\": 20, \"HM\": 1}"},
              "overwrite": B},
             ["name"])
-    def espei_run_mcmc(name, phase_models=None, datasets=None, input_db=None, iterations=50,
-                       chains_per_parameter=2, chain_std_deviation=0.1, save_interval=None, cores=None,
-                       restart_trace=None, deterministic=True, symbols=None, prior=None, data_weights=None,
-                       overwrite=False):
+    def espei_run_mcmc(name, phase_models=None, datasets=None, input_db=None, iterations=None,
+                       chains_per_parameter=None, chain_std_deviation=None, save_interval=None, cores=None,
+                       restart_trace=None, deterministic=None, symbols=None, prior=None, data_weights=None,
+                       overwrite=False, espei_input=None, tags=None):
         args = dict(name=name, phase_models=phase_models, datasets=datasets, input_db=input_db,
                     iterations=iterations, chains_per_parameter=chains_per_parameter,
                     chain_std_deviation=chain_std_deviation, save_interval=save_interval, cores=cores,
                     restart_trace=restart_trace, deterministic=deterministic, symbols=symbols, prior=prior,
-                    data_weights=data_weights, overwrite=overwrite)
+                    data_weights=data_weights, overwrite=overwrite, espei_input=espei_input, tags=tags)
         d, renamed = mcmc_run_dir(tb, args, _restart_path(tb, restart_trace))
         d, settings, run, info = mcmc_settings(tb, args, d)
         d.mkdir(parents=True, exist_ok=True)
@@ -1004,12 +1052,22 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
              "time_limit": {**S, "description": "Flux MCMC job, e.g. 8h (default [hpc] time_limit)"},
              "queue": S, "bank": S, "overwrite": B},
             ["name"])
-    def optimize_system(name, phase_models=None, datasets=None, input_db=None, generate=True, iterations=1000,
-                        chains_per_parameter=2, save_interval=None, symbols=None, prior=None, data_weights=None,
-                        ref_state="SGTE91", aicc_penalty_factor=None, backend="auto", cores=None, nodes=None,
-                        cores_per_node=None, time_limit=None, queue=None, bank=None, overwrite=False):
+    def optimize_system(name, phase_models=None, datasets=None, input_db=None, generate=True, iterations=None,
+                        chains_per_parameter=None, save_interval=None, symbols=None, prior=None, data_weights=None,
+                        ref_state=None, aicc_penalty_factor=None, backend="auto", cores=None, nodes=None,
+                        cores_per_node=None, time_limit=None, queue=None, bank=None, overwrite=False,
+                        espei_input=None, tags=None):
         from . import hpc
         generate = True if generate is None else bool(generate)
+        y = _with_input(tb, dict(espei_input=espei_input, phase_models=phase_models, datasets=datasets,
+                                 iterations=iterations, chains_per_parameter=chains_per_parameter,
+                                 save_interval=save_interval, symbols=symbols, prior=prior,
+                                 data_weights=data_weights, ref_state=ref_state,
+                                 aicc_penalty_factor=aicc_penalty_factor, tags=tags))
+        phase_models, datasets, iterations = y.get("phase_models"), y.get("datasets"), y.get("iterations")
+        chains_per_parameter, save_interval = y.get("chains_per_parameter"), y.get("save_interval")
+        symbols, prior, data_weights = y.get("symbols"), y.get("prior"), y.get("data_weights")
+        ref_state, aicc_penalty_factor, tags = y.get("ref_state"), y.get("aicc_penalty_factor"), y.get("tags")
         nm = _safe_name(name)
         prev = _previous_system(runs_root(tb) / nm)
         pm = phase_models or prev.get("phase_models")
@@ -1025,7 +1083,8 @@ def register(tb) -> None:  # noqa: C901 - flat list of tool definitions
                              ref_state=ref_state or "SGTE91", aicc_penalty_factor=aicc_penalty_factor or None,
                              iterations=iters, save_interval=int(save_interval or max(1, min(20, iters // 20))),
                              chains_per_parameter=int(chains_per_parameter or 2), prior=prior or None,
-                             data_weights=data_weights or None, symbols=symbols or None, verbosity=2)
+                             data_weights=data_weights or None, symbols=symbols or None,
+                             tags=tags or prev.get("tags") or None, verbosity=2)
         base = Path(tb.workdir)
         gen_settings = espei_flux.espei_yaml(run, None, None, None, "generate", base) if generate else None
         mcmc_db = "dft.tdb" if generate else run.input_db
