@@ -391,6 +391,12 @@ def test_text_tool_calls_with_namespaced_invoke():
     calls, text = parse_text_tool_calls(raw)
     assert [c[0] for c in calls] == ["run_python", "view_image"] and text == ""
     assert calls[0][1]["code"].startswith("print(1)") and calls[1][1]["axes"] == {"x": {"ticks": {"0": 0}}}
+    # <invoke name="tool_call"> carrying our protocol's name / arguments; a repeated block runs once
+    raw = ('<invoke name="tool_call">\n<parameter name="name">tool_help</parameter>\n<parameter name="arguments">'
+           '{"names": ["wait_job"]}</parameter>\n</invoke>\n<invoke name="tool_help">\n<parameter name="names">'
+           '["wait_job"]</parameter>\n</invoke>')
+    calls, _ = parse_text_tool_calls(raw)
+    assert [(c[0], c[1]) for c in calls] == [("tool_help", {"names": ["wait_job"]})]
 
 
 def test_claude_cli_retries_unparsable_tool_call(tmp_path, monkeypatch):

@@ -826,7 +826,13 @@ def parse_text_tool_calls(raw: str):
                     args[pm.group(1)] = json.loads(v)
                 except (json.JSONDecodeError, ValueError):
                     args[pm.group(1)] = v.strip("\n")
-            calls.append((m.group(1), args, json.dumps(args), ""))
+            name = m.group(1)
+            if name == "tool_call" and isinstance(args.get("name"), str):    # our protocol inside the XML form
+                name, inner = args["name"], args.get("arguments", {})
+                args = inner if isinstance(inner, dict) else {}
+            call = (name, args, json.dumps(args), "")
+            if call not in calls:                      # the same call written twice in one reply runs once
+                calls.append(call)
     text = _WRAPPER_RE.sub("", _INVOKE_RE.sub("", text))
     return calls, text.strip()
 
