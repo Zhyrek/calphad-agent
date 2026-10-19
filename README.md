@@ -1161,3 +1161,7 @@ On the Cr-Ni test system (15 parameters, 30 chains), generation takes under a se
   * `python tests/demo_web_offline.py 8791` runs the web UI against it.
   * `python -m pytest -q tests` runs the 16 tests.
 * **Example TDBs** in `examples/tdbs` come from phasediagrams.org and the TDBDB (Brown University, van de Walle group) Elsevier supplementary files. The files in `examples/expdata` are synthetic, for testing the converters.
+
+## License
+
+The code is MIT-licensed; see [LICENSE](LICENSE). The example databases in `examples/tdbs/` and the ESPEI tutorial data are third-party material under their own terms. They are listed with their references in [examples/tdbs/SOURCES.md](examples/tdbs/SOURCES.md); please cite the original assessments.
