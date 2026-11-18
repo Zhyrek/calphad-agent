@@ -29,7 +29,7 @@ SKIP_DIR_GLOBS = ["*.egg-info"]
 # files skipped anywhere
 SKIP_FILES = [".DS_Store", "*.pyc", "*.pyo", "Thumbs.db", "*~"]
 # top-level entries skipped unless asked for
-TOP_GENERATED = {"start-agent.sh", "start-agent.bat", "pycalphad-agent-env.sh"}
+TOP_GENERATED = {"start-agent.sh", "start-agent.bat", "pycalphad-agent-env.sh", "calphad-mcp.sh"}
 TOP_CONFIG = {"calphad_agent.toml"}
 TOP_OUTPUTS = {"calphad_outputs", "outputs"}
 

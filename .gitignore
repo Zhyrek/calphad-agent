@@ -8,6 +8,7 @@ outputs/
 pycalphad-agent-venv/
 start-agent.sh
 start-agent.bat
+calphad-mcp.sh
 .DS_Store
 .claude/
 examples/calphad_outputs/

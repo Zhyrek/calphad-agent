@@ -1,6 +1,6 @@
 # calphad-tools
 
-CALPHAD automation scripts that run **as-is** (`calphad-tools …`) or **driven by an LLM** (`calphad-agent`).
+CALPHAD automation scripts that run **as-is** (`calphad-tools …`), **driven by an LLM** (`calphad-agent`), or **as tools for your own coding agent** such as Claude Code or Codex (`calphad-mcp`, an MCP server; see [From Claude Code, Codex or another agent](#from-claude-code-codex-or-another-agent-mcp-server)).
 
 The LLM never runs anything itself. The agent loop runs *inside this Python process*: the model returns
 tool-call requests and the script executes them locally. Every action therefore has exactly the
@@ -190,6 +190,54 @@ calphad-tools exp2zpf   digitized.csv --components CR NI -o datasets/
 calphad-tools phase-models my.tdb --elements CR NI -o phase_models.json
 calphad-tools espei-flux examples/espei_campaign.yaml -o espei_runs/ && bash espei_runs/submit_all.sh
 ```
+
+### From Claude Code, Codex or another agent (MCP server)
+
+`calphad-mcp` serves the chat agent's tools to any MCP client over stdio: the same ~90 tools, with the same argument checks, `@last` references, call log and reproduction notebooks. Your coding agent replaces `calphad-agent`'s own chat loop and LLM settings, so no API key is needed.
+
+**Why it gets around sandboxing.** The client starts an MCP stdio server as its own child process. It is not a command run inside the client's sandbox: Claude Code's sandbox wraps its Bash tool, and Codex's wraps the shell commands the model runs. So pycalphad, ESPEI and Flux submissions get the permissions of the user who started the client, exactly as `calphad-agent` does. This was checked with Codex in `--sandbox read-only`: the server still computed a phase diagram and wrote it outside Codex's working directory. If the client itself runs in a container or VM, the server is inside that too.
+
+**No arbitrary Python in the server.** The elevated permissions should cover the CALPHAD routines, not whatever a model writes. So the server has no `run_python`, whatever `python_tool` says in the config. When the dedicated tools can't express something, the client writes and runs its own Python, under its own sandbox and approval rules. `show_code` gives standalone pycalphad code for any output as a starting point. Every pycalphad feature has a dedicated tool (see [below](#what-the-chat-agent-can-do-without-arbitrary-python-or-internet)), so nothing CALPHAD-specific is lost. Values that end up in Flux batch scripts (queue, bank, time limits, node counts, run names) must be plain words or numbers, so a tool argument cannot smuggle a shell line into a script that gets submitted. The batch environment's `setup` lines for `optimize_system` come from `[hpc]` in the config only.
+
+**Register it.** After `./install.sh`, use the launcher it writes. It loads the cluster module and the environment, keeps their output off the protocol stream, and reads `calphad_agent.toml` from the install folder:
+
+```bash
+# Claude Code (add --scope user to have it in every project)
+claude mcp add calphad -- /path/to/calphad-agent/calphad-mcp.sh --workdir /path/to/your/data
+
+# Codex
+codex mcp add calphad -- /path/to/calphad-agent/calphad-mcp.sh --workdir /path/to/your/data
+```
+
+Without the installer, use `<venv>/bin/calphad-mcp` directly (`pip install -e .` provides it), or `<venv>\Scripts\calphad-mcp.exe --config C:\path\calphad_agent.toml` on Windows. Without `--workdir`, the tools work in the directory the client starts the server in (normally its project folder). The config's own `workdir` / `output_dir` are not used, because they are relative to the install folder.
+
+Codex asks before each MCP tool call, and with `approval_policy = "never"` (e.g. `codex exec`) it refuses such calls. It also stops a call after 60 s by default, while decks and ESPEI runs take minutes. Since the server only runs fixed routines, pre-approving all of its tools is reasonable. In `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.calphad]
+command = "/path/to/calphad-agent/calphad-mcp.sh"
+args = ["--workdir", "/path/to/your/data"]
+tool_timeout_sec = 3600                      # decks, mapping and ESPEI take minutes
+default_tools_approval_mode = "approve"      # run the CALPHAD tools without asking each time
+```
+
+In Claude Code, `/mcp` shows the server and its tools. Each tool asks once until you allow it, or put `"mcp__calphad"` in `permissions.allow` to allow them all. If long calls get cut off, raise `MCP_TOOL_TIMEOUT` (milliseconds).
+
+| Option | Meaning |
+|--------|---------|
+| `--workdir DIR` | Folder with your TDBs and data (env `CALPHAD_WORKDIR`; default: where the client starts the server) |
+| `--output-dir DIR` | Where plots, decks and datasets go, relative to the workdir (default `calphad_outputs`) |
+| `--tool-descriptions full\|compact` | `full` (default): every tool with its full schema. Claude Code loads MCP tools on demand anyway. `compact`: ~15 core tools in full, the rest one line + `tool_help`, about 70 % fewer tokens for clients that send every tool on every request |
+| `--attach-images viewers\|all\|none` | Images returned as image content: `view_image` and digitizer previews (default), every plot, or none. Image paths are always listed (absolute) in the result text |
+| `--config FILE` | Settings file (`[hpc]`, `[merge]`, diagram style, labels, ...), as for `calphad-agent` |
+
+How the agent-specific parts map:
+
+* **Guidance.** The chat agent's system prompt becomes the server's MCP instructions (units, file resolution, merge / ESPEI / digitizer workflows). It is also available as the `calphad_guide` tool, which adds the data files in the workdir, for clients that don't show server instructions.
+* **Questions.** There is no `ask_user` tool: your coding agent asks you itself. Questions raised inside a tool (e.g. "run ESPEI locally instead?") use MCP *elicitation*, a dialog in the client, when the client supports it. Otherwise they get a "decide and state your assumption" answer. Merges work as in chat: `merge_tdbs` returns the open conflicts, your agent asks you, then calls again with the decisions.
+* **Long runs.** Calls run one at a time. If the client sends a progress token, the server sends progress notifications (status lines, and a heartbeat every 15 s). Cancelling a call ends a `wait_job`, and any other call's result is discarded.
+* **No problem reports.** `report_problem` and `package_feedback` belong to the chat agent and are not served.
+* **Clean protocol stream.** Anything printed by pycalphad, ESPEI or child processes goes to stderr, never into the protocol.
 
 ## What the chat agent can do without arbitrary Python or internet
 
