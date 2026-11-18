@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import stat
 from dataclasses import dataclass, field
@@ -163,7 +164,30 @@ def _header(fs: FluxSettings) -> List[str]:
         "", "command -v espei >/dev/null || { echo 'espei not found - edit the setup lines'; exit 1; }", ""]
 
 
+_TOKEN = re.compile(r"[A-Za-z0-9_.:+=@%-]+")
+
+
+def check_script_values(fs: FluxSettings, runs: Sequence[Run]) -> None:
+    """Values that end up in the text of a batch script must be plain words or numbers.  A tool argument such as
+    queue = "pbatch\nrm -rf ~" or nodes = "1; ..." would otherwise become a shell line in a script that is then
+    submitted.  ``setup`` lines are shell by design and are not checked here."""
+    for k in ("nodes", "cores_per_node"):
+        v = getattr(fs, k)
+        if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+            raise ValueError(f"flux {k} must be a positive integer, not {v!r}")
+    for k in ("time_limit", "gen_time_limit", "queue", "bank", "job_prefix", "worker_memory_limit", "bank_flag"):
+        v = getattr(fs, k)
+        if v is not None and not _TOKEN.fullmatch(str(v)):
+            raise ValueError(f"flux {k} {v!r} must be a single word (letters, digits, _ . : + = @ % -)")
+    for r in runs:
+        if not _TOKEN.fullmatch(str(r.name)):
+            raise ValueError(f"run name {r.name!r} must be a single word (letters, digits, _ . : + = @ % -)")
+        if r.cores is not None and (isinstance(r.cores, bool) or not isinstance(r.cores, int) or r.cores < 1):
+            raise ValueError(f"run {r.name} cores must be a positive integer, not {r.cores!r}")
+
+
 def gen_script(fs: FluxSettings, run: Run) -> str:
+    check_script_values(fs, [run])
     L = ["#!/bin/bash"] + _directives(fs, f"{fs.job_prefix}-gen-{run.name}", 1, 1, fs.gen_time_limit,
                                        exclusive=False)
     L += [""] + _header(fs)
@@ -172,6 +196,7 @@ def gen_script(fs: FluxSettings, run: Run) -> str:
 
 
 def mcmc_script(fs: FluxSettings, run: Run) -> str:
+    check_script_values(fs, [run])
     n_workers = fs.nodes * fs.cores_per_node
     L = ["#!/bin/bash"] + _directives(fs, f"{fs.job_prefix}-mcmc-{run.name}", fs.nodes, None, fs.time_limit)
     L += [""] + _header(fs)
@@ -212,6 +237,7 @@ def mcmc_script(fs: FluxSettings, run: Run) -> str:
 
 
 def bundle_script(fs: FluxSettings, runs: List[Run]) -> str:
+    check_script_values(fs, runs)
     L = ["#!/bin/bash"] + _directives(fs, f"{fs.job_prefix}-bundle", fs.nodes, None, fs.time_limit)
     L += [""] + _header(fs)
     L += [f"# {len(runs)} ESPEI runs dispatched inside one allocation "
