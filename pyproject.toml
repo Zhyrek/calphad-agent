@@ -33,6 +33,7 @@ llm = ["openai>=1.40", "anthropic>=1.0"]
 [project.scripts]
 calphad-tools = "calphad_tools.cli:main"
 calphad-agent = "calphad_tools.agent.cli:main"
+calphad-mcp = "calphad_tools.mcp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["calphad_tools*"]

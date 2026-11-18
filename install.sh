@@ -138,6 +138,18 @@ if [ "\${1:-}" = "--terminal" ]; then shift; exec calphad-agent "\$@"; fi
 exec calphad-agent --web "\$@"
 EOF
 chmod +x "$HERE/start-agent.sh"
+cat > "$HERE/calphad-mcp.sh" <<EOF
+#!/usr/bin/env bash
+# The CALPHAD tools as an MCP server (stdio) for Claude Code, Codex or another MCP client - see README.
+#   claude mcp add calphad -- $HERE/calphad-mcp.sh --workdir /path/to/your/data
+#   codex mcp add calphad -- $HERE/calphad-mcp.sh --workdir /path/to/your/data
+# Settings come from $HERE/calphad_agent.toml (a later --config wins). Without --workdir, the tools work
+# in the directory the client starts the server in. stdout is the protocol: the setup below writes to stderr.
+{ . "$HERE/pycalphad-agent-env.sh"; } >&2
+export PYTHONHASHSEED="\${PYTHONHASHSEED:-0}"
+exec calphad-mcp --config "$HERE/calphad_agent.toml" "\$@"
+EOF
+chmod +x "$HERE/calphad-mcp.sh"
 
 command -v pdftoppm >/dev/null 2>&1 || echo "
   Optional: reading figures from PDF pages needs poppler ('brew install poppler' / 'sudo apt install poppler-utils')."
@@ -148,3 +160,4 @@ echo "  Start it:            ./start-agent.sh          (opens http://127.0.0.1:8
 echo "  Terminal version:    ./start-agent.sh --terminal"
 echo "  Change settings:     edit calphad_agent.toml, or: pycalphad-agent-venv/bin/calphad-agent --setup"
 echo "  Test the connection: pycalphad-agent-venv/bin/calphad-agent --check   (also shows Flux / local)"
+echo "  Claude Code / Codex: claude mcp add calphad -- $HERE/calphad-mcp.sh --workdir /path/to/data   (MCP server; see README)"

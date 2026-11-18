@@ -67,4 +67,5 @@ Write-Host "  Start it:            start-agent.bat   (opens http://127.0.0.1:876
 Write-Host "  Terminal version:    start-agent.bat --terminal"
 Write-Host "  Change settings:     edit calphad_agent.toml, or: pycalphad-agent-venv\Scripts\calphad-agent --setup"
 Write-Host "  Test the connection: pycalphad-agent-venv\Scripts\calphad-agent --check"
+Write-Host "  Claude Code / Codex: claude mcp add calphad -- $(Join-Path $Venv "Scripts\calphad-mcp.exe") --config $(Join-Path $Here "calphad_agent.toml") --workdir C:\path\to\data   (MCP server; see README)"
 Write-Host "  Optional: reading figures from PDF pages needs poppler (https://github.com/oschwartz10612/poppler-windows)."
